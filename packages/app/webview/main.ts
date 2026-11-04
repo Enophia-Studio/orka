@@ -22,9 +22,9 @@ import type {
 } from '../src/protocol';
 import { post, saveUiState, uiState } from './core/bridge';
 import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
-import { ago, applyWidths, fmt } from './core/format';
+import { ago, appendToDraft, applyWidths, fmt } from './core/format';
 import { answerDialog, closeDialog, modalOpen, showDialog } from './features/dialogs';
-import { radarBadge, radarPanelHtml, radarSettingsCard } from './features/radar';
+import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
 import { appSkeleton, layout } from './ide/layout';
 import { radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml } from './ide/sidebar';
 
@@ -184,13 +184,17 @@ function renderSidebar(): void {
 
 /** Radar in the session list's footer and in the rail, with the count of new entries. */
 function renderRadarEntries(): void {
-  const badge = radarBadge(radar);
   for (const [id, where] of [
     ['side-radar', 'list'],
     ['rail-radar', 'rail'],
   ] as const) {
     const slot = document.getElementById(id);
-    if (slot) slot.innerHTML = radarAvailable() ? radarEntryHtml(where, badge) : '';
+    const html = radarAvailable() ? radarEntryHtml(where, radar) : '';
+    // Rebuilt only when it changed, so a focused button keeps its focus while an analysis runs.
+    if (slot && slot.dataset.html !== html) {
+      slot.dataset.html = html;
+      slot.innerHTML = html;
+    }
   }
 }
 
@@ -218,6 +222,12 @@ let asideHadContent = false;
 
 function updateAside(): void {
   if (!el.aside) return;
+  // The task got a plan or changes (or a session that has them opened): they show, as they did before
+  // Radar had a tab next to them, unless the user is in the side panel right now.
+  if (asideContent() && !asideHadContent && ui.asideTab === 'radar' && !el.aside.contains(document.activeElement)) {
+    ui.asideTab = 'task';
+    saveUiState({ asideTab: 'task' });
+  }
   el.aside.hidden = !asideOpen();
   const tab = shownTab();
   if (el.asideTask) el.asideTask.hidden = tab !== 'task';
@@ -240,13 +250,14 @@ function renderAsideTabs(): void {
   if (el.asideTabs.hidden) return;
   el.asideTabs.setAttribute('aria-label', t('Side panel'));
   const current = shownTab();
-  const tab = (id: 'task' | 'radar', label: string, extra: string, disabled: boolean) =>
+  const tab = (id: 'task' | 'radar', label: string, extra: string, disabled: boolean, name?: string) =>
     `<button role="tab" id="aside-tab-${id}" aria-selected="${current === id}" aria-controls="${id === 'task' ? 'aside-task' : 'radar-panel'}" tabindex="${current === id ? 0 : -1}" class="${
       current === id ? 'on' : ''
-    }" data-action="aside-tab" data-tab="${id}"${disabled ? ' disabled' : ''}>${label}${extra}</button>`;
+    }" data-action="aside-tab" data-tab="${id}"${disabled ? ' disabled' : ''}${name ? ` aria-label="${attr(name)}"` : ''}>${label}${extra}</button>`;
   const changes = Number(session.changes.length) || 0;
   const html =
-    tab('task', escapeHtml(t('Plan and changes')), changes ? `<span class="count">${changes}</span>` : '', !asideContent()) + tab('radar', `${icon('radar')}<span>Radar</span>`, radarBadge(radar), false);
+    tab('task', escapeHtml(t('Plan and changes')), changes ? `<span class="count">${changes}</span>` : '', !asideContent()) +
+    tab('radar', `${icon('radar')}<span>Radar</span>`, radarBadge(radar), false, radar?.pending ? radarLabel('Radar', radar) : undefined);
   // Rebuilt only when it changed, so a focused tab keeps its focus.
   if (el.asideTabs.dataset.html !== html) {
     el.asideTabs.dataset.html = html;
@@ -276,18 +287,46 @@ function renderRadar(): void {
   if (!panel || !radar || panel.hidden) return;
   const open = new Set([...panel.querySelectorAll<HTMLDetailsElement>('details[data-open-key]')].filter((d) => d.open).map((d) => d.dataset.openKey!));
   const active = document.activeElement;
-  const focused = active instanceof HTMLElement && panel.contains(active) ? focusSelector(active) : undefined;
+  const inPanel = active instanceof HTMLElement && panel.contains(active);
+  const focused = inPanel ? focusSelector(active) : undefined;
   panel.setAttribute('aria-labelledby', 'aside-tab-radar');
   panel.innerHTML = radarPanelHtml(radar, radarReport, { providers: config?.providers ?? [], modelOptions });
   panel.querySelectorAll<HTMLDetailsElement>('details[data-open-key]').forEach((d) => (d.open = open.has(d.dataset.openKey!)));
   applyWidths(panel);
-  if (focused) panel.querySelector<HTMLElement>(focused)?.focus();
+  if (inPanel) restoreRadarFocus(panel, focused);
 }
 
 /** A selector that finds the same control after a re-render. */
 function focusSelector(node: HTMLElement): string | undefined {
+  // A report section's <summary>, through its <details>.
+  const details = node.tagName === 'SUMMARY' ? node.parentElement : undefined;
+  if (details?.dataset.openKey) return `details[data-open-key="${CSS.escape(details.dataset.openKey)}"] > summary`;
   const attrs = ['data-action', 'data-radar', 'data-setting', 'data-cluster', 'data-url'].filter((a) => node.hasAttribute(a));
   return attrs.length ? attrs.map((a) => `[${a}="${CSS.escape(node.getAttribute(a)!)}"]`).join('') : undefined;
+}
+
+/** Analyze and Stop take each other's place when a run starts or ends. */
+const RADAR_FOCUS_SWAP: Record<string, string> = {
+  '[data-action="radar-analyze"]': '[data-action="radar-stop"]',
+  '[data-action="radar-stop"]': '[data-action="radar-analyze"]',
+};
+
+/** Keyboard focus after a re-render: the same control, else the one that took its place, else the panel itself (never the page). */
+function restoreRadarFocus(panel: HTMLElement, selector: string | undefined): void {
+  for (const candidate of selector ? [selector, RADAR_FOCUS_SWAP[selector]] : []) {
+    const target = candidate ? panel.querySelector<HTMLElement>(candidate) : null;
+    target?.focus();
+    if (target && document.activeElement === target) return;
+  }
+  panel.focus();
+}
+
+/** Radar's card in Settings > Control as last rendered: an analysis posts its state on every model call, and the card shows none of that. */
+let radarCardShown = '';
+
+function radarCard(): string {
+  radarCardShown = radar ? radarSettingsCard(radar, radarAvailable()) : '';
+  return radarCardShown;
 }
 
 /** Radar's state changed: its panel, its tab and the places that show its count. */
@@ -296,7 +335,8 @@ function radarChanged(): void {
   updateAside();
   renderRadarEntries();
   if (layout === 'ide') renderTopbar();
-  if (ui.view === 'settings' && ui.tab === 'control') {
+  // Settings > Control is rebuilt only when Radar's card would look different, so focus and an open list elsewhere on the page stay.
+  if (ui.view === 'settings' && ui.tab === 'control' && radar && radarSettingsCard(radar, radarAvailable()) !== radarCardShown) {
     const active = document.activeElement;
     const typing = active instanceof HTMLTextAreaElement || (active instanceof HTMLInputElement && active.type !== 'checkbox' && active.type !== 'radio');
     if (!(typing && el.settings.contains(active))) renderSettings();
@@ -1451,11 +1491,12 @@ function ideTopbar(phase: AgentPhase, folderButton: string): string {
     : open
       ? t('Hide plan and changes')
       : t('Show plan and changes');
-  // While Radar's tab is out of sight, a dot says it has something new.
-  const radarDot = radar?.pending && !(open && shownTab() === 'radar') ? `<span class="radar-dot" aria-hidden="true"></span>` : '';
+  // While Radar's tab is out of sight, a dot says it has something new (and the button's name says how much).
+  const radarNew = !!radar?.pending && !(open && shownTab() === 'radar');
+  const radarDot = radarNew ? `<span class="radar-dot" aria-hidden="true"></span>` : '';
   const aside =
     asideContent() || radarAvailable()
-      ? `<button class="icon-btn aside-btn${open ? ' on' : ''}" data-action="toggle-aside" aria-label="${attr(asideLabel)}" aria-expanded="${open}" title="${attr(`${asideLabel} (Ctrl+Alt+B)`)}">${icon('aside')}${
+      ? `<button class="icon-btn aside-btn${open ? ' on' : ''}" data-action="toggle-aside" aria-label="${attr(radarNew ? radarLabel(asideLabel, radar) : asideLabel)}" aria-expanded="${open}" title="${attr(`${asideLabel} (Ctrl+Alt+B)`)}">${icon('aside')}${
           session.changes.length ? `<span class="count">${Number(session.changes.length) || 0}</span>` : ''
         }${radarDot}</button>`
       : '';
@@ -2222,7 +2263,7 @@ function controlTab(s: SettingsView): string {
       )}<br><span class="muted">${escapeHtml(t('After a task that changed code, up to 3 lasting lessons (working commands, pitfalls, conventions) are added to .project-ai/lessons.md.'))}</span></span></label>
     </div>
     ${config?.ui ? appearanceCard(config.ui) : ''}
-    ${radar ? radarSettingsCard(radar, radarAvailable()) : ''}
+    ${radarCard()}
     ${config ? aboutCard(config.app) : ''}
     <div class="card">
       <div class="row"><span class="grow"><strong>${escapeHtml(t('Language'))}</strong><br><span class="muted small">${escapeHtml(
@@ -2875,8 +2916,9 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       closeDialog(message.id);
       break;
     case 'setInput':
-      // Going back puts the message into the box again, to edit and resend.
-      el.input.value = message.text;
+      // Going back puts the message into the box again, to edit and resend. Radar's proposal goes
+      // after a draft the user had typed: an unsent text is never replaced without asking.
+      el.input.value = message.append ? appendToDraft(el.input.value, message.text) : message.text;
       el.input.dispatchEvent(new Event('input'));
       el.input.focus();
       break;

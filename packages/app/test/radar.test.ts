@@ -1,8 +1,10 @@
 // The desktop app's Radar through the shared controller: a fake shell, a fake fetch for the feeds,
 // fake timers, and a local OpenAI-compatible server that answers each analysis stage with JSON.
-import { defaultSources, HostPacer, validateReport } from '@orka/core';
+import { defaultSources, HostPacer, setLocale, validateReport } from '@orka/core';
+import { TR } from '@orka/core/src/i18n/tr';
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -11,7 +13,9 @@ import { AppController } from '../src/AppController';
 import type { ProviderView, RadarReportView, RadarView } from '../src/protocol';
 import type { RadarHooks, RadarTimers } from '../src/radar';
 import { DESKTOP_SETTINGS, RADAR_SETTINGS, readSettings, USER_LEVEL_SETTINGS, WEBVIEW_SETTINGS } from '../src/settings';
-import { radarPanelHtml, radarSettingsCard } from '../webview/features/radar';
+import { appendToDraft } from '../webview/core/format';
+import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from '../webview/features/radar';
+import { radarEntryHtml } from '../webview/ide/sidebar';
 import { FakeShell, MemorySettings } from './fakeShell';
 
 const FIXTURES = path.resolve(__dirname, '..', '..', '..', 'core', 'test', 'fixtures', 'radar');
@@ -346,6 +350,7 @@ describe('Radar (desktop)', () => {
 
     await controller.handleMessage({ type: 'radarStartSession', cluster: report.clusters[0].key });
     const text = shell.last('setInput')?.text ?? '';
+    assert.equal(shell.last('setInput')?.append, true, 'a draft the user typed stays: the proposal goes after it');
     assert.match(text, /^Implement this feature in Orka: Background tasks$/m);
     assert.match(text, /^1\. A task can keep running while another session is open$/m);
     assert.doesNotMatch(text, /keep working in the|\/tasks|Orka runs one task at a time/, 'no release-note text, no rationale');
@@ -423,6 +428,132 @@ describe('Radar (desktop)', () => {
     assert.deepEqual([model.requests.length, on.view().pending], [0, 1]);
   });
 
+  it('"Other…" sets the model of a chosen provider that has no default model', async () => {
+    // No model list to load either (a list it loads would fill in its default model).
+    const bare = { id: 'bare', label: 'Bare', baseUrl: 'http://127.0.0.1:9/v1', requiresKey: false };
+    const { shell, controller, view } = await start({ 'radar.enabled': true, customProviders: [bare], 'radar.provider': 'custom:bare' });
+    assert.deepEqual([view().model, view().modelProblem], [undefined, 'Pick a model for Bare (Settings > Providers).']);
+    shell.inputAnswer = 'fake-1';
+    await controller.handleMessage({ type: 'customModel', agent: 'radar' });
+    assert.deepEqual(
+      shell.inputs.map((i) => [i.title, i.value]),
+      [['Model for Radar (Bare)', '']],
+    );
+    await until(() => view().model?.model === 'fake-1', 'the model');
+    assert.deepEqual([shell.settings.data['radar.provider'], view().model?.provider, view().modelProblem], ['custom:bare', 'custom:bare', undefined]);
+
+    // Following the main agent, the model picked goes with the main agent's provider.
+    const main = await start({ 'radar.enabled': true, ...localProvider(), provider: 'custom:local' });
+    main.shell.inputAnswer = 'fake-2';
+    await main.controller.handleMessage({ type: 'customModel', agent: 'radar' });
+    assert.deepEqual([main.shell.settings.data['radar.provider'], main.shell.settings.data['radar.model']], ['custom:local', 'fake-2']);
+    // Never for a provider Radar cannot run on.
+    const cli = await start({ 'radar.enabled': true, provider: 'claude-code', 'claudeCode.enabled': true, 'claudeCode.path': path.join(home, 'no-claude.exe') });
+    cli.shell.inputAnswer = 'opus';
+    await cli.controller.handleMessage({ type: 'customModel', agent: 'radar' });
+    assert.deepEqual([cli.shell.inputs.length, cli.shell.settings.isSet('radar.model')], [0, false]);
+  });
+
+  it('two windows share its files: only the one with the lock polls and analyzes, the other shows its report and takes over when it quits', async () => {
+    const first = await polled({ 'radar.provider': 'custom:local' });
+    const second = await start({ 'radar.enabled': true, ...localProvider(), 'radar.provider': 'custom:local' });
+    assert.deepEqual([first.view().elsewhere, second.view().elsewhere], [undefined, true]);
+    assert.deepEqual(
+      [...second.timers.pending.values()].map((t) => t.ms),
+      [60_000],
+      'no poll planned, only a look at what the other window writes',
+    );
+    assert.equal(second.view().pending, 1, 'it reads the shared queue');
+    // Nothing it is asked to do touches the feeds, the model or the queue.
+    for (const action of ['poll', 'analyze', 'retry'] as const) await second.controller.handleMessage({ type: 'radar', action });
+    assert.deepEqual([second.feed.requests.length, model.requests.length, second.view().analysis], [0, 0, undefined]);
+    const panel = radarPanelHtml(second.view(), undefined, { providers: [], modelOptions: () => '' });
+    assert.match(panel, /Another Orka window runs Radar/);
+    assert.doesNotMatch(panel, /data-action="radar-poll"/, 'nothing to check from here');
+    assert.match(panel, /data-action="radar-analyze" disabled/);
+
+    await first.controller.handleMessage({ type: 'radar', action: 'analyze' });
+    assert.equal(model.requests.length, 5);
+    assert.equal(second.shell.last('radarReport')?.report, undefined);
+    second.timers.fire();
+    await until(() => second.shell.last('radarReport')?.report?.clusters[0]?.title === 'Background agents', "the other window's report");
+    await until(() => second.view().pending === 0, 'the shared queue');
+
+    // The first window quits: the second one takes over on its next look and checks the feeds then.
+    await first.controller.dispose();
+    controllers = controllers.filter((c) => c !== first.controller);
+    assert.equal(existsSync(path.join(home, 'radar', 'lock')), false, 'the lock went with it');
+    second.timers.fire();
+    await until(() => second.view().elsewhere === undefined && second.timers.pending.size === 1, 'the take-over');
+    assert.deepEqual(
+      [...second.timers.pending.values()].map((t) => t.ms),
+      [0],
+    );
+  });
+
+  it('takes over a lock left behind, respects a live one, and gives its own up when turned off', async () => {
+    const lock = path.join(home, 'radar', 'lock');
+    mkdirSync(path.dirname(lock), { recursive: true });
+    const gone = spawnSync(process.execPath, ['-e', '']).pid!;
+    const other = (holder: object) => JSON.stringify({ token: 'other-window', ...holder });
+    const hourAgo = new Date(Date.now() - 3_600_000);
+    for (const [content, why, old] of [
+      [other({ pid: gone, at: new Date().toISOString() }), 'its process is gone', false],
+      [other({ pid: process.pid, at: '2026-01-01T00:00:00.000Z' }), 'nobody refreshed it for hours (the pid may be another program now)', false],
+      ['', 'its writer stopped before filling it, a while ago', true],
+    ] as const) {
+      writeFileSync(lock, content);
+      if (old) utimesSync(lock, hourAgo, hourAgo);
+      const taken = await start({ 'radar.enabled': true });
+      assert.equal(taken.view().elsewhere, undefined, why);
+      assert.deepEqual([...taken.timers.pending.values()].map((t) => t.ms), [30_000], why);
+      assert.doesNotMatch(readFileSync(lock, 'utf8'), /other-window/, why);
+      await taken.controller.dispose();
+      controllers = controllers.filter((c) => c !== taken.controller);
+      assert.equal(existsSync(lock), false, 'given up when the app quits');
+    }
+
+    for (const content of [other({ pid: process.pid, at: new Date().toISOString() }), '']) {
+      writeFileSync(lock, content);
+      const follower = await start({ 'radar.enabled': true });
+      assert.equal(follower.view().elsewhere, true, content || 'a lock being written right now');
+      // Turning it off here leaves the other window's lock alone.
+      await follower.controller.handleMessage({ type: 'setSetting', key: 'radar.enabled', value: false });
+      await until(() => !follower.view().enabled, 'Radar to be off');
+      assert.equal(follower.view().elsewhere, undefined);
+      assert.equal(readFileSync(lock, 'utf8'), content);
+    }
+
+    rmSync(lock);
+    const owner = await start({ 'radar.enabled': true });
+    assert.ok(existsSync(lock));
+    await owner.controller.handleMessage({ type: 'setSetting', key: 'radar.enabled', value: false });
+    await until(() => !existsSync(lock), 'the lock to go');
+  });
+
+  it('saves its report on top of one another window wrote meanwhile, never over it', async () => {
+    const first = await analyzed();
+    const file = path.join(home, 'radar', 'report.json');
+    const ours = first.report.clusters.map((c) => c.key);
+    // Another window's report on another feature.
+    const theirs = JSON.parse(readFileSync(file, 'utf8'));
+    const item = { ...theirs.items[0], id: 'ffffffffffffffff-1', title: 'Plan mode' };
+    const { key: _key, decision: _decision, comparison: _comparison, ...cluster } = theirs.clusters[0];
+    Object.assign(theirs, { items: [item], clusters: [{ ...cluster, key: 'plan-mode', title: 'Plan mode', itemIds: [item.id] }] });
+    assert.ok(validateReport(theirs).report, 'a valid report');
+    await first.controller.dispose();
+    controllers = controllers.filter((c) => c !== first.controller);
+
+    // This window starts with the report above; the queue starts over, so the entry is new again.
+    rmSync(path.join(home, 'radar', 'state.json'));
+    const second = await polled({ 'radar.provider': 'custom:local' });
+    writeFileSync(file, JSON.stringify(theirs));
+    await second.controller.handleMessage({ type: 'radar', action: 'analyze' });
+    const saved = validateReport(JSON.parse(readFileSync(file, 'utf8'))).report;
+    assert.deepEqual(saved?.clusters.map((c) => c.key).sort(), [...ours, 'plan-mode'].sort());
+    assert.deepEqual(second.shell.last('radarReport')?.report?.clusters.map((c) => c.key).sort(), [...ours, 'plan-mode'].sort());
+  });
+
   it('sets a corrupt report aside and never uses it; a valid one is read back', async () => {
     // A valid report from an earlier run is shown again after a restart.
     const first = await analyzed();
@@ -443,6 +574,25 @@ describe('Radar (desktop)', () => {
       assert.equal(existsSync(file), false, 'moved aside');
     }
     assert.ok(readdirSync(path.join(home, 'radar')).filter((f) => f.startsWith('report.broken-')).length >= 1);
+  });
+
+  it('leaves a report it cannot read right now where it is, and keeps the queue when the report cannot be written', async () => {
+    // A folder where report.json belongs: reading and replacing it fail, like a file another program holds.
+    const file = path.join(home, 'radar', 'report.json');
+    mkdirSync(file, { recursive: true });
+    const started = await start({ 'radar.enabled': true, ...localProvider(), 'radar.provider': 'custom:local' });
+    assert.match(started.view().error ?? '', /could not be read right now/);
+    assert.equal(readdirSync(path.join(home, 'radar')).filter((f) => f.startsWith('report.broken-')).length, 0, 'not set aside');
+    assert.ok(existsSync(file));
+
+    assert.deepEqual(started.timers.fire(), [30_000]);
+    await until(() => started.view().pending === 1 && !started.view().polling, 'the poll');
+    await started.controller.handleMessage({ type: 'radar', action: 'analyze' });
+    assert.ok(started.view().error, 'the failed save is shown');
+    assert.equal(started.view().pending, 1, 'the entry waits for the next analysis');
+    assert.equal(started.shell.last('radarReport')?.report, undefined, 'no report that was never saved');
+    assert.deepEqual(readdirSync(path.join(home, 'radar')).filter((f) => f.endsWith('.tmp')), [], 'no temp file left');
+    assert.doesNotThrow(() => readdirSync(file), 'a report that cannot be read is never written over');
   });
 });
 
@@ -520,5 +670,79 @@ describe('Radar panel', () => {
     assert.ok(html.includes('data-url="https://github.com/x&quot;onmouseover=&quot;alert(1)"'), 'attributes are escaped');
     assert.doesNotMatch(html, /\sstyle=/, 'no inline styles (the CSP blocks them)');
     assert.match(html, /data-action="radar-start" data-cluster="background-agents"/);
+  });
+
+  it('says the pending count in the names screen readers read, not on the badge alone', () => {
+    const badge = radarBadge(view({ pending: 4 }));
+    assert.match(badge, /^<span class="radar-badge" aria-hidden="true">4<\/span>$/, 'the badge is only seen');
+    for (const where of ['rail', 'list'] as const) {
+      assert.match(radarEntryHtml(where, view({ pending: 4 })), /aria-label="Radar: what other AI coding tools shipped \(4 new entries\)"/, where);
+      assert.match(radarEntryHtml(where, view({ pending: 0 })), /aria-label="Radar: what other AI coding tools shipped"/, where);
+    }
+    assert.equal(radarLabel('Show the side panel', view({ pending: 1 })), 'Show the side panel (1 new entry)');
+    assert.equal(radarLabel('Show the side panel', undefined), 'Show the side panel');
+  });
+
+  it('tells, before Radar is turned on, that automatic analysis is on when it is', () => {
+    const clickOnly = radarPanelHtml(view({ enabled: false }), undefined, deps);
+    assert.match(clickOnly, /An analysis runs only when you click Analyze/);
+    assert.doesNotMatch(clickOnly, /radar\.autoAnalyze/);
+    const auto = radarPanelHtml(view({ enabled: false, autoAnalyze: true }), undefined, deps);
+    assert.doesNotMatch(auto, /only when you click Analyze/);
+    assert.match(auto, /Automatic analysis is on: when a check finds something, Radar analyzes it right away on your own provider and API key\./);
+    assert.match(auto, /at most 100 model calls a run\./);
+    assert.match(auto, /<input type="checkbox" data-setting="radar\.autoAnalyze" checked>/, 'and it can be turned off before Radar is turned on');
+    assert.match(radarSettingsCard(view({ enabled: false, autoAnalyze: true }), true), /data-setting="radar\.autoAnalyze" checked>/, 'in Settings too');
+    assert.match(radarSettingsCard(view({ enabled: false }), true), /data-setting="radar\.autoAnalyze" disabled>/);
+  });
+
+  it('keeps its settings card the same while a check or an analysis runs (Settings > Control is not rebuilt for it)', () => {
+    const idle = radarSettingsCard(view({ pending: 0 }), true);
+    const busy = radarSettingsCard(view({ pending: 9, polling: true, lastPollAt: '2026-10-30T00:00:00.000Z', error: 'x', analysis: { stage: 'map', done: 3, total: 9, calls: 12, maxCalls: 100 } }), true);
+    assert.equal(busy, idle);
+    assert.notEqual(radarSettingsCard(view({ autoAnalyze: true }), true), idle);
+  });
+
+  it('reads naturally in Turkish', () => {
+    setLocale('tr');
+    try {
+      const report: RadarReportView = {
+        generatedAt: new Date(Date.now() - 2 * 3_600_000).toISOString(),
+        provider: { id: 'claude', model: 'claude-opus-5-5' },
+        clusters: [
+          {
+            key: 'background-agents',
+            title: 'Arka plan agentları',
+            vendors: ['OpenAI'],
+            tags: ['agents'],
+            items: [],
+            decision: { clusterKey: 'background-agents', decision: 'gap', priority: 'P1', effort: 'M', fitsPrinciples: true, rationale: '', decidedBy: 'model' },
+            canStart: false,
+          },
+        ],
+        others: [],
+        needsHuman: 0,
+        stats: { entries: 1, calls: 5, inputTokens: 1, outputTokens: 1, left: 0 },
+      };
+      const html = radarPanelHtml(view(), report, deps);
+      const off = /data-action="radar-switch" data-on="false">([^<]*)</.exec(html)?.[1];
+      assert.equal(off, 'Radar&#39;ı kapat');
+      assert.notEqual(off, TR.Close, 'not the word for closing the panel');
+      assert.match(html, /<span class="muted small">2 sa önce güncellendi · claude \/ claude-opus-5-5 · 5 çağrı<\/span>/);
+      assert.match(html, /<div class="radar-verdict" data-verdict="gap">Orka&#39;da eksik · öncelik P1, boyut M<\/div>/);
+      assert.match(radarPanelHtml(view({ enabled: false }), undefined, deps), /API anahtarınızla/);
+    } finally {
+      setLocale('en');
+    }
+  });
+});
+
+describe('message box', () => {
+  it('keeps what the user typed and adds a proposal after it, once', () => {
+    const proposal = 'Implement this feature in Orka: Background tasks\n\n1. A task keeps running';
+    assert.equal(appendToDraft('', proposal), proposal);
+    assert.equal(appendToDraft('  \n', proposal), proposal);
+    assert.equal(appendToDraft('Fix the lobby jitter first.\n', proposal), `Fix the lobby jitter first.\n\n${proposal}`);
+    assert.equal(appendToDraft(`Fix the lobby jitter first.\n\n${proposal}`, proposal), `Fix the lobby jitter first.\n\n${proposal}`, 'a second click adds nothing');
   });
 });

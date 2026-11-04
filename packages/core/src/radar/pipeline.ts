@@ -1,6 +1,6 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { type Locale, t } from '../i18n';
-import { isAbortError, type AIProvider, type ChatResponse } from '../providers/AIProvider';
+import { isAbortError, type AIProvider, type ChatResponse, ProviderError } from '../providers/AIProvider';
 import { type ChatMessage, messageText } from '../types';
 import { fetchSource, type HostPacer } from './fetch';
 import { parseFeed } from './feeds';
@@ -11,6 +11,7 @@ import {
   RADAR_BASIS,
   RADAR_TAGS,
   type RadarCluster,
+  type RadarDecision,
   type RadarEntry,
   type RadarItem,
   type RadarNeedsHuman,
@@ -49,8 +50,8 @@ export interface RadarPollOptions {
 }
 
 /**
- * Check every enabled source with a conditional GET and queue new entries in `state`. Makes no
- * model calls: while nothing is new, the radar costs nothing but a few 304 answers.
+ * Check every enabled source that is due with a plain GET and queue new entries in `state`. Makes
+ * no model calls, and a body that hashes the same as last time is not even parsed.
  */
 export async function pollSources(sources: readonly RadarSource[], state: RadarState, opts: RadarPollOptions = {}): Promise<RadarPollResult> {
   const now = opts.now ?? new Date();
@@ -68,7 +69,7 @@ export async function pollSources(sources: readonly RadarSource[], state: RadarS
       continue;
     }
     if (opts.signal?.aborted) break;
-    const fetched = await fetchSource(source, { etag: s.etag, lastModified: s.lastModified }, { fetchImpl: opts.fetchImpl, pacer: opts.pacer, signal: opts.signal, timeoutMs: opts.timeoutMs });
+    const fetched = await fetchSource(source, { fetchImpl: opts.fetchImpl, pacer: opts.pacer, signal: opts.signal, timeoutMs: opts.timeoutMs });
     if (opts.signal?.aborted) break; // a cancel is not the source's fault: it stays due
     s.lastPolledAt = now.toISOString();
     if (fetched.status === 'error') {
@@ -78,22 +79,26 @@ export async function pollSources(sources: readonly RadarSource[], state: RadarS
       continue;
     }
     delete s.lastError;
-    if (fetched.status === 'not_modified') {
+    const hash = bodyHash(source, fetched.body, fetched.truncated);
+    if (hash === s.bodyHash) {
       s.lastStatus = 'not_modified';
       results.push({ id: source.id, status: 'not_modified', newEntries: 0 });
       continue;
     }
     const { fresh, baseline } = recordEntries(state, s, parseFeed(source, fetched.body, { truncated: fetched.truncated }), now);
-    // Validators are kept only once the entries they stand for are recorded.
-    if (fetched.etag) s.etag = fetched.etag;
-    else delete s.etag;
-    if (fetched.lastModified) s.lastModified = fetched.lastModified;
-    else delete s.lastModified;
+    // The hash is kept only once the entries it stands for are recorded.
+    s.bodyHash = hash;
     s.lastStatus = baseline ? 'baseline' : fresh.length ? 'new' : 'unchanged';
     newEntries.push(...fresh);
     results.push({ id: source.id, status: s.lastStatus, newEntries: fresh.length });
   }
   return { newEntries, pending: state.pending.length, sources: results };
+}
+
+/** A body and what decides which entries it gives (parser, filters, a cut-off end), hashed. */
+function bodyHash(source: RadarSource, body: string, truncated: boolean): string {
+  const reading = JSON.stringify([source.kind, source.stable ?? '', source.titleFilter ?? '', truncated]);
+  return createHash('sha256').update(reading).update('\n').update(body).digest('hex');
 }
 
 // ------------------------------------------------------------------ analyze (model calls)
@@ -125,12 +130,31 @@ export interface RadarAnalyzeOptions {
   language?: Locale;
 }
 
+export interface AnalyzeEntriesOptions extends RadarAnalyzeOptions {
+  /** Items an earlier run made of some of the entries (its `unfinished`), by entry id: those entries are not summarized again. */
+  summarized?: Readonly<Record<string, readonly RadarItem[]>>;
+}
+
 export interface RadarAnalysis {
   report: RadarReport;
-  /** Entries this run is done with (summarized or quarantined); the others stay pending. */
+  /**
+   * Entries this run is done with: quarantined, or summarized with every relevant item (relevance
+   * 2 or more) through the decide stage. They leave the queue; the others stay pending.
+   */
   processed: string[];
+  /**
+   * By entry id, the relevant items of summarized entries that did not reach the decide stage (the
+   * run was stopped, failed or ran out of calls first). Their entries stay pending, and the next
+   * run continues with these items instead of paying for the summaries again.
+   */
+  unfinished: Record<string, RadarItem[]>;
   /** Entries the model could not summarize validly twice. */
   quarantined: Array<{ entry: RadarEntry; stage: RadarStage; reason: string }>;
+  /**
+   * Entries whose summarize call failed with a provider error while the provider answered other
+   * calls of the run (so the entry, not the provider, is the likely cause). They stay pending.
+   */
+  failed: string[];
 }
 
 /** Providers the radar refuses: a subscription CLI is not meant to run automated analysis. */
@@ -184,7 +208,7 @@ const CLUSTER_SYSTEM = `You group similar features that AI coding tools shipped.
 
 ${UNTRUSTED_RULE}
 
-Reuse the key of an existing cluster when a group continues it; otherwise use "new:<slug>" with a short slug of lowercase letters, digits and dashes.
+Reuse the key of an existing cluster when a group continues it; otherwise use "new:<slug>" with a short slug of lowercase ASCII letters (a-z), digits and dashes.
 
 ${JSON_ONLY}
 {"clusters":[{"key":"new:background-agents","title":"Background agents","itemIds":["<change id>"]}]}
@@ -244,11 +268,18 @@ export function untrustedBlock(nonce: string, text: string): string {
 
 const newNonce = () => randomBytes(9).toString('base64url');
 
-type Asked<T> = { status: 'ok'; value: T } | { status: 'invalid'; reason: string } | { status: 'skipped' };
+type Asked<T> = { status: 'ok'; value: T } | { status: 'invalid'; reason: string } | { status: 'skipped'; failed?: boolean };
+
+/** Rejected requests in a row that stop a run. */
+const REJECTED_IN_A_ROW = 3;
 
 /** One analysis run: the call budget, token counts and why it stopped early. */
 class Run {
   calls = 0;
+  /** Calls the provider answered (validly or not). */
+  answered = 0;
+  /** Requests the provider rejected one after another (a reset on each answer). */
+  private rejected = 0;
   inputTokens = 0;
   outputTokens = 0;
   stopped?: 'budget' | 'error' | 'aborted';
@@ -294,9 +325,17 @@ class Run {
       try {
         response = await this.provider.chat({ system, messages, tools: [], signal: this.signal }, () => {});
       } catch (error) {
+        // The provider rejected this one request (a content filter, say): the run goes on without it,
+        // unless it rejects every request (a wrong model name), which stops the run like any other error.
+        if (error instanceof ProviderError && error.kind === 'bad_request' && ++this.rejected < REJECTED_IN_A_ROW && !this.signal?.aborted) {
+          this.error = error.message.slice(0, 300);
+          return { status: 'skipped', failed: true };
+        }
         this.fail(error);
-        return { status: 'skipped' };
+        return { status: 'skipped', failed: this.stopped === 'error' };
       }
+      this.answered++;
+      this.rejected = 0;
       this.inputTokens += response.usage.inputTokens + response.usage.cacheReadTokens + response.usage.cacheWriteTokens;
       this.outputTokens += response.usage.outputTokens;
       let errors: string[];
@@ -334,9 +373,10 @@ async function pool<T>(list: readonly T[], limit: number, run: Run, work: (item:
  * Wake up: summarize new entries, map them to Orka's inventory, cluster similar features across
  * vendors, compare the approaches and decide what Orka lacks. Every call has no tools and a
  * validated JSON answer. Only the summarize stage sees release-note text; later stages see the
- * validated summaries. Never throws for model trouble: the report says where the run stopped.
+ * validated summaries. Never throws for model trouble: the report says where the run stopped, and
+ * what did not reach a decision is handed back (`unfinished`) for the next run to continue.
  */
-export async function analyzeEntries(entries: readonly RadarEntry[], provider: AIProvider, inventory: FeatureInventory, opts: RadarAnalyzeOptions = {}): Promise<RadarAnalysis> {
+export async function analyzeEntries(entries: readonly RadarEntry[], provider: AIProvider, inventory: FeatureInventory, opts: AnalyzeEntriesOptions = {}): Promise<RadarAnalysis> {
   if (RADAR_REFUSED_PROVIDERS.includes(provider.id)) throw new Error(t('The radar needs an API provider; the Claude Code provider cannot run it.'));
   const maxEntries = Math.max(1, opts.maxEntries ?? 40);
   const maxCalls = Math.max(1, opts.maxCalls ?? 100);
@@ -354,20 +394,28 @@ export async function analyzeEntries(entries: readonly RadarEntry[], provider: A
     decide: DECIDE_SYSTEM + languageRule(language, "the rationale and the proposal's title, problem and acceptanceCriteria"),
   };
 
-  // 1. Summarize and classify, one call per entry. Calls are held back for the later stages.
+  // 1. Summarize and classify, one call per entry, unless an earlier run did (its items carry on
+  // from where it stopped). Calls are held back for the later stages.
   const batch = entries.slice(0, maxEntries);
   const summarizeLimit = maxCalls - Math.min(Math.ceil(maxCalls * 0.4), 40);
-  const perEntry: RadarItem[][] = batch.map(() => []);
+  const perEntry: Array<RadarItem[] | undefined> = batch.map((entry) => opts.summarized?.[entry.id]?.map((item) => structuredClone(item)));
+  const toSummarize = batch.flatMap((entry, index) => (perEntry[index] ? [] : [{ entry, index }]));
+  const summarized: string[] = [];
+  const failed: string[] = [];
   let done = 0;
-  progress('summarize', 0, batch.length);
-  await pool(batch, concurrency, run, async (entry, index) => {
+  progress('summarize', 0, toSummarize.length);
+  await pool(toSummarize, concurrency, run, async ({ entry, index }) => {
     const result = await run.ask(system.summarize, summarizePrompt(entry), (v) => checkSummaries(v, `${entry.title}\n${entry.text}`), Math.max(1, summarizeLimit));
-    if (result.status === 'skipped') return;
-    processed.add(entry.id);
+    if (result.status === 'skipped') {
+      if (result.failed) failed.push(entry.id);
+      return;
+    }
     if (result.status === 'invalid') {
+      processed.add(entry.id);
       quarantined.push({ entry, stage: 'summarize', reason: result.reason });
       needsHuman.push({ stage: 'summarize', subject: entry.id, title: entry.title, reason: result.reason });
     } else {
+      summarized.push(entry.id);
       perEntry[index] = result.value.map((draft, i) => ({
         id: `${entry.id.slice(0, 16)}-${i + 1}`,
         entryId: entry.id,
@@ -379,14 +427,14 @@ export async function analyzeEntries(entries: readonly RadarEntry[], provider: A
         ...draft,
       }));
     }
-    progress('summarize', ++done, batch.length);
+    progress('summarize', ++done, toSummarize.length);
   });
-  const items = perEntry.flat();
+  const items = perEntry.flatMap((list) => list ?? []);
   const byId = new Map(items.map((i) => [i.id, i]));
 
-  // 2. Map to the inventory, in batches.
+  // 2. Map to the inventory, in batches (items an earlier run mapped keep their match).
   const features = new Map(inventory.features.map((f) => [f.id, f]));
-  const toMap = items.filter((i) => i.relevance >= 1);
+  const toMap = items.filter((i) => i.relevance >= 1 && !i.match);
   const mapBatches: RadarItem[][] = [];
   for (let i = 0; i < toMap.length; i += MAP_BATCH) mapBatches.push(toMap.slice(i, i + MAP_BATCH));
   if (features.size && mapBatches.length && !run.halted) {
@@ -419,45 +467,47 @@ export async function analyzeEntries(entries: readonly RadarEntry[], provider: A
     const previous = new Map((opts.previous?.clusters ?? []).slice(0, 100).map((c) => [c.key, c]));
     const ids = toCluster.map((i) => i.id);
     const result = await run.ask(system.cluster, clusterPrompt(toCluster, [...previous.values()]), (v) => checkClusters(v, ids, new Set(previous.keys())));
-    let drafts: ClusterDraft[];
+    // Skipped (no call left): the items wait, unclustered, for the next run.
+    let drafts: ClusterDraft[] = [];
     if (result.status === 'ok') drafts = result.value.map((d) => ({ ...d, title: previous.get(d.key)?.title ?? d.title }));
-    else {
-      if (result.status === 'invalid') needsHuman.push({ stage: 'cluster', subject: '', title: '', reason: result.reason });
+    else if (result.status === 'invalid') {
+      needsHuman.push({ stage: 'cluster', subject: '', title: '', reason: result.reason });
       drafts = tagGroups(toCluster);
     }
     clusters = drafts.map((d) => clusterOf(d, byId));
     progress('cluster', 1, 1);
   }
 
-  // 4. Compare per cluster, most relevant first.
+  // 4 and 5. Per cluster, most relevant first: compare the approaches, then decide. A decision
+  // call is held back for every cluster that still needs one, and a comparison is asked for only
+  // while that leaves room, so comparisons never use up the calls the decisions need (when calls
+  // run short, a cluster is decided without one). When every item matched the inventory the same
+  // way, the inventory decides.
   clusters.sort((a, b) => b.relevance - a.relevance || b.vendors.length - a.vendors.length);
+  const reached = new Set<string>(); // items whose cluster got through the decide stage
   if (clusters.length && !run.halted) {
-    done = 0;
-    progress('compare', 0, clusters.length);
-    await pool(clusters, concurrency, run, async (cluster) => {
+    const plans = clusters.map((cluster) => {
       const members = cluster.itemIds.map((id) => byId.get(id)!);
-      const orka = orkaFeatures(members, features);
-      const earlier = opts.previous?.clusters.find((c) => c.key === cluster.key)?.comparison;
-      const result = await run.ask(system.compare, comparePrompt(cluster, members, orka, earlier?.approaches ?? []), (v) => checkComparison(v, cluster.vendors, orka.length > 0));
-      if (result.status === 'skipped') return;
-      if (result.status === 'invalid') needsHuman.push({ stage: 'compare', subject: cluster.key, title: cluster.title, reason: result.reason });
-      else cluster.comparison = { ...result.value, basis: RADAR_BASIS };
-      progress('compare', ++done, clusters.length);
+      return { cluster, members, byInventory: inventoryDecision(cluster.key, members) };
     });
-  }
-
-  // 5. Decide. When every item matched the inventory the same way, the inventory decides.
-  if (clusters.length && !run.halted) {
-    done = 0;
-    progress('decide', 0, clusters.length);
-    await pool(clusters, concurrency, run, async (cluster) => {
-      const members = cluster.itemIds.map((id) => byId.get(id)!);
-      const matches = new Set(members.map((m) => m.match));
-      if (matches.size === 1 && (matches.has('have') || matches.has('not_for_orka'))) {
-        const decision = matches.has('have') ? 'already_have' : 'not_for_orka';
-        cluster.decision = { clusterKey: cluster.key, decision, priority: 'P3', effort: 'S', fitsPrinciples: true, rationale: '', decidedBy: 'inventory' };
-      } else {
-        const result = await run.ask(system.decide, decidePrompt(cluster, members, orkaFeatures(members, features)), (v) => checkDecision(v));
+    let owed = plans.filter((p) => !p.byInventory).length;
+    let compared = 0;
+    let decided = 0;
+    progress('compare', 0, plans.length);
+    await pool(plans, concurrency, run, async ({ cluster, members, byInventory }) => {
+      const orka = orkaFeatures(members, features);
+      if (run.calls + owed < maxCalls) {
+        const earlier = opts.previous?.clusters.find((c) => c.key === cluster.key)?.comparison;
+        const result = await run.ask(system.compare, comparePrompt(cluster, members, orka, earlier?.approaches ?? []), (v) => checkComparison(v, cluster.vendors, orka.length > 0), maxCalls - owed);
+        if (result.status === 'invalid') needsHuman.push({ stage: 'compare', subject: cluster.key, title: cluster.title, reason: result.reason });
+        else if (result.status === 'ok') cluster.comparison = { ...result.value, basis: RADAR_BASIS };
+        if (result.status !== 'skipped') progress('compare', ++compared, plans.length);
+      }
+      if (run.halted) return;
+      if (byInventory) cluster.decision = byInventory;
+      else {
+        owed--;
+        const result = await run.ask(system.decide, decidePrompt(cluster, members, orka), (v) => checkDecision(v));
         if (result.status === 'skipped') return;
         if (result.status === 'invalid') needsHuman.push({ stage: 'decide', subject: cluster.key, title: cluster.title, reason: result.reason });
         else {
@@ -465,9 +515,19 @@ export async function analyzeEntries(entries: readonly RadarEntry[], provider: A
           cluster.decision = { clusterKey: cluster.key, ...rest, decidedBy: 'model', ...(rest.decision === 'gap' && proposal ? { proposal } : {}) };
         }
       }
-      progress('decide', ++done, clusters.length);
+      for (const id of cluster.itemIds) reached.add(id);
+      progress('decide', ++decided, plans.length);
     });
   }
+
+  // An entry is done once each of its relevant items got through the decide stage (with a
+  // decision, or with a row for a person when the model failed at it twice).
+  const unfinished: Record<string, RadarItem[]> = {};
+  batch.forEach((entry, index) => {
+    const open = perEntry[index]?.filter((i) => i.relevance >= CLUSTER_RELEVANCE && !reached.has(i.id));
+    if (open?.length) unfinished[entry.id] = open;
+    else if (open) processed.add(entry.id);
+  });
 
   if (opts.signal?.aborted) run.stopped = 'aborted';
   const report = buildReport({
@@ -477,8 +537,9 @@ export async function analyzeEntries(entries: readonly RadarEntry[], provider: A
     items,
     clusters,
     needsHuman,
+    summarized,
     stats: {
-      entries: processed.size,
+      entries: perEntry.filter((list) => list).length + quarantined.length,
       calls: run.calls,
       inputTokens: run.inputTokens,
       outputTokens: run.outputTokens,
@@ -487,7 +548,8 @@ export async function analyzeEntries(entries: readonly RadarEntry[], provider: A
       ...(run.error ? { error: run.error } : {}),
     },
   });
-  return { report, processed: [...processed], quarantined };
+  // A provider that answered nothing is down or misconfigured: no entry is blamed for that.
+  return { report, processed: [...processed], unfinished, quarantined, failed: run.answered > 0 ? failed : [] };
 }
 
 // ------------------------------------------------------------------ prompts
@@ -535,6 +597,13 @@ function decidePrompt(cluster: RadarCluster, members: RadarItem[], orka: string[
 function orkaFeatures(members: RadarItem[], features: Map<string, { id: string; title: string; summary: string }>): string[] {
   const ids = new Set(members.filter((m) => m.match === 'have' || m.match === 'partial').flatMap((m) => m.featureIds ?? []));
   return [...ids].map((id) => features.get(id)).filter((f) => !!f).map((f) => `- ${f!.id}: ${f!.title}. ${f!.summary}`);
+}
+
+/** The inventory's decision when every item matched it the same way (have, or not for Orka); no model call needed. */
+function inventoryDecision(clusterKey: string, members: RadarItem[]): RadarDecision | undefined {
+  const matches = new Set(members.map((m) => m.match));
+  if (matches.size !== 1 || !(matches.has('have') || matches.has('not_for_orka'))) return undefined;
+  return { clusterKey, decision: matches.has('have') ? 'already_have' : 'not_for_orka', priority: 'P3', effort: 'S', fitsPrinciples: true, rationale: '', decidedBy: 'inventory' };
 }
 
 /** The deterministic clusters: one per first tag. Used when the model's clustering is unusable. */

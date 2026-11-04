@@ -18,38 +18,58 @@ export function radarProviders(providers: ProviderView[]): ProviderView[] {
   return providers.filter((p) => !p.agent && p.kind !== 'claude-code');
 }
 
-/** The pending count, for the tab, the rail and the session list. */
+/** The pending count, for the tab, the rail and the session list. Only seen: screen readers get it from radarLabel. */
 export function radarBadge(radar: RadarView | undefined): string {
   const n = Number(radar?.pending) || 0;
-  return n > 0 ? `<span class="radar-badge" aria-label="${attr(tn('{n} new entry', '{n} new entries', n))}">${n > 99 ? '99+' : n}</span>` : '';
+  return n > 0 ? `<span class="radar-badge" aria-hidden="true">${n > 99 ? '99+' : n}</span>` : '';
+}
+
+/** A control's accessible name with the pending count after it, when entries are waiting. */
+export function radarLabel(label: string, radar: RadarView | undefined): string {
+  const n = Number(radar?.pending) || 0;
+  return n > 0 ? `${label} (${tn('{n} new entry', '{n} new entries', n)})` : label;
 }
 
 export function radarPanelHtml(radar: RadarView, report: RadarReportView | undefined, deps: RadarPanelDeps): string {
   const state = !radar.enabled ? t('Off') : radar.polling ? t('Checking…') : radar.analysis ? t('Analyzing…') : t('On');
+  // While another window runs Radar, this one has nothing to check: that window does it.
+  const poll =
+    radar.enabled && !radar.elsewhere
+      ? `<button class="link" data-action="radar-poll"${radar.polling ? ' disabled' : ''} title="${attr(t('Check the feeds that are due now'))}">${escapeHtml(t('Check now'))}</button>`
+      : '';
   const head = `<div class="panel-head radar-head">
       <strong>Radar</strong><span class="pill${radar.enabled ? ' ok' : ''}"><span class="pill-dot"></span>${escapeHtml(state)}</span><span class="spacer"></span>
-      ${
-        radar.enabled
-          ? `<button class="link" data-action="radar-poll"${radar.polling ? ' disabled' : ''} title="${attr(t('Check the feeds that are due now'))}">${escapeHtml(t('Check now'))}</button>
-             <button class="link" data-action="radar-switch" data-on="false">${escapeHtml(t('Turn off'))}</button>`
-          : ''
-      }
+      ${poll}
+      ${radar.enabled ? `<button class="link" data-action="radar-switch" data-on="false">${escapeHtml(t('Turn off Radar'))}</button>` : ''}
     </div>`;
   const error = radar.error ? `<div class="hint warn radar-error" role="status">${icon('warn')}<span>${escapeHtml(radar.error)}</span></div>` : '';
+  const elsewhere =
+    radar.enabled && radar.elsewhere
+      ? `<div class="hint radar-elsewhere" role="status">${icon('info')}<span>${escapeHtml(t('Another Orka window runs Radar: it checks the feeds and analyzes, and this window shows its report.'))}</span></div>`
+      : '';
   const body = radar.enabled ? onHtml(radar, deps) : offHtml(radar);
-  return `${head}${error}${body}${report ? reportHtml(report, radar) : ''}`;
+  return `${head}${error}${elsewhere}${body}${report ? reportHtml(report, radar) : ''}`;
 }
 
 /** Off: what Radar would do and every host it would contact, and the switch. */
 function offHtml(radar: RadarView): string {
+  // What turning it on starts: with radar.autoAnalyze already on, the first check's finds are analyzed without a click.
+  const footnote = radar.autoAnalyze
+    ? t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. Automatic analysis is on: when a check finds something, Radar analyzes it right away on your own provider and API key.")
+    : t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on your own provider and API key.");
   return `<div class="radar-intro">
       <p>${escapeHtml(t('Radar reads the public release notes of other AI coding tools and suggests what Orka could add. It is off: nothing is fetched.'))}</p>
       ${hostsHtml(radar)}
-      <p class="footnote">${escapeHtml(
-        t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on your own provider and API key."),
-      )}</p>
+      <p class="footnote">${escapeHtml(footnote)}</p>
+      ${radar.autoAnalyze ? autoAnalyzeCheck(radar) : ''}
       <button class="btn primary" data-action="radar-switch" data-on="true">${icon('radar')}${escapeHtml(t('Turn on Radar'))}</button>
     </div>`;
+}
+
+function autoAnalyzeCheck(radar: RadarView): string {
+  return `<label class="check"><input type="checkbox" data-setting="radar.autoAnalyze"${radar.autoAnalyze ? ' checked' : ''}><span>${escapeHtml(t('Analyze right after a check finds something'))}<br><span class="muted">${escapeHtml(
+    t('Uses your provider and tokens, at most {n} model calls a run.', { n: Number(radar.maxCalls) || 0 }),
+  )}</span></span></label>`;
 }
 
 function hostsHtml(radar: RadarView): string {
@@ -83,7 +103,7 @@ function onHtml(radar: RadarView, deps: RadarPanelDeps): string {
   const quarantined = radar.quarantined
     ? `<div class="hint warn">${icon('warn')}<span>${escapeHtml(
         tn('{n} entry could not be read by the model.', '{n} entries could not be read by the model.', radar.quarantined),
-      )}</span><button class="link" data-action="radar-retry">${escapeHtml(t('Retry'))}</button></div>`
+      )}</span>${radar.elsewhere ? '' : `<button class="link" data-action="radar-retry">${escapeHtml(t('Retry'))}</button>`}</div>`
     : '';
   return `<p class="radar-checked muted small">${escapeHtml(checked)}</p>
     ${errors}
@@ -95,12 +115,10 @@ function onHtml(radar: RadarView, deps: RadarPanelDeps): string {
       ${
         run
           ? ''
-          : `<button class="btn primary" data-action="radar-analyze"${radar.pending > 0 && radar.model ? '' : ' disabled'}>${escapeHtml(t('Analyze'))}</button>`
+          : `<button class="btn primary" data-action="radar-analyze"${radar.pending > 0 && radar.model && !radar.elsewhere ? '' : ' disabled'}>${escapeHtml(t('Analyze'))}</button>`
       }
       ${quarantined}
-      <label class="check"><input type="checkbox" data-setting="radar.autoAnalyze"${radar.autoAnalyze ? ' checked' : ''}><span>${escapeHtml(t('Analyze right after a check finds something'))}<br><span class="muted">${escapeHtml(
-        t('Uses your provider and tokens, at most {n} model calls a run.', { n: Number(radar.maxCalls) || 0 }),
-      )}</span></span></label>
+      ${autoAnalyzeCheck(radar)}
     </div>`;
 }
 
@@ -169,7 +187,7 @@ function reportHtml(report: RadarReportView, radar: RadarView): string {
 function verdictLabel(cluster: RadarClusterView): string {
   switch (cluster.decision?.decision) {
     case 'gap':
-      return t('What Orka lacks');
+      return t('Orka lacks this');
     case 'already_have':
       return t('Already in Orka');
     case 'not_for_orka':
@@ -248,7 +266,7 @@ function confidenceLabel(confidence: string): string {
 
 // ------------------------------------------------------------------ Settings > Control
 
-/** The same switches as the panel; the hosts are named before Radar is turned on. */
+/** The same switches as the panel; the hosts are named before Radar is turned on. While it is off, automatic analysis can be turned off, not on. */
 export function radarSettingsCard(radar: RadarView, panel: boolean): string {
   const hosts = radar.hosts.map((h) => h.host).join(', ');
   return `<div class="card">
@@ -256,7 +274,7 @@ export function radarSettingsCard(radar: RadarView, panel: boolean): string {
       <label class="check"><input type="checkbox" data-setting="radar.enabled"${radar.enabled ? ' checked' : ''}><span>${escapeHtml(t('Watch for new features'))}<br><span class="muted">${escapeHtml(
         t('Checks these sites once an hour while it is on: {hosts}. Nothing is fetched while it is off.', { hosts }),
       )}</span></span></label>
-      <label class="check"><input type="checkbox" data-setting="radar.autoAnalyze"${radar.autoAnalyze ? ' checked' : ''}${radar.enabled ? '' : ' disabled'}><span>${escapeHtml(
+      <label class="check"><input type="checkbox" data-setting="radar.autoAnalyze"${radar.autoAnalyze ? ' checked' : ''}${radar.enabled || radar.autoAnalyze ? '' : ' disabled'}><span>${escapeHtml(
         t('Analyze right after a check finds something'),
       )}<br><span class="muted">${escapeHtml(t('Uses your provider and tokens, at most {n} model calls a run.', { n: Number(radar.maxCalls) || 0 }))}</span></span></label>
       ${

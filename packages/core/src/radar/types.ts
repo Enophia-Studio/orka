@@ -1,8 +1,9 @@
 /**
  * The radar watches public release notes of other AI coding tools. It sleeps (feeds are polled
- * with conditional requests, no model calls) until new entries appear, then summarizes them,
- * groups similar features across vendors, compares the approaches and decides what Orka lacks.
- * Everything runs on the user's PC with the user's own provider; nothing is published.
+ * with plain requests, an unchanged one is skipped, no model calls) until new entries appear,
+ * then summarizes them, groups similar features across vendors, compares the approaches and
+ * decides what Orka lacks. Everything runs on the user's PC with the user's own provider;
+ * nothing is published.
  */
 
 /** Version of the report format, bumped on any incompatible change. */
@@ -196,11 +197,12 @@ export interface RadarNeedsHuman {
 }
 
 export interface RadarRunStats {
+  /** Entries the run worked on: summarized, continued from an earlier run or quarantined. */
   entries: number;
   calls: number;
   inputTokens: number;
   outputTokens: number;
-  /** Entries left for the next run (caps, call budget, an error). */
+  /** Entries left in the queue for the next run (caps, call budget, an error, a cancel). */
   left: number;
   stopped?: 'budget' | 'error' | 'aborted';
   error?: string;
@@ -216,4 +218,6 @@ export interface RadarReport {
   clusters: RadarCluster[];
   needsHuman: RadarNeedsHuman[];
   stats: RadarRunStats;
+  /** Ids of the entries the run summarized, also those without a notable change (missing in reports of earlier versions). */
+  summarized?: string[];
 }

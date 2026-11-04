@@ -58,6 +58,6 @@ export function appSkeleton(): string {
     <aside class="aside" id="aside" hidden>
       <div class="aside-tabs" id="aside-tabs" role="tablist" hidden></div>
       <div class="aside-task" id="aside-task" role="tabpanel">${plan}${changes}</div>
-      <section class="panel radar-panel" id="radar-panel" role="tabpanel" hidden></section>
+      <section class="panel radar-panel" id="radar-panel" role="tabpanel" tabindex="-1" hidden></section>
     </aside>`;
 }

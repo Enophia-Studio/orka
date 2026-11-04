@@ -290,6 +290,8 @@ export interface RadarView {
   maxCalls: number;
   /** The analysis running now: its stage, and the model calls used of the cap. */
   analysis?: { stage: RadarStage; done: number; total: number; calls: number; maxCalls: number };
+  /** Another Orka window runs Radar (it holds the lock in <orka home>/radar): this one only shows what it writes. */
+  elsewhere?: boolean;
   /** Why the last analysis or poll failed, until the next one. */
   error?: string;
 }
@@ -348,8 +350,11 @@ export type ToWebview =
   | { type: 'hunks'; path: string; hunks: HunkView[] }
   | { type: 'dialog'; id: string; dialog: DialogView }
   | { type: 'closeDialog'; id: string }
-  /** Put text into the message box (e.g. a message the user went back to, to edit and resend). */
-  | { type: 'setInput'; text: string }
+  /**
+   * Put text into the message box (e.g. a message the user went back to, to edit and resend).
+   * append: keep what the user typed and add the text after it (Radar's "Start a session").
+   */
+  | { type: 'setInput'; text: string; append?: boolean }
   /** Desktop only: Radar's state, and its report when that changed (undefined: none yet). */
   | { type: 'radar'; radar: RadarView }
   | { type: 'radarReport'; report?: RadarReportView };

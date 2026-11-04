@@ -52,20 +52,32 @@ const MAX_REPLY = 200_000;
 const INVISIBLE = /[\u0000-\u001f\u007f​-‏‪-‮⁦-⁩﻿]/g;
 const URL_SCHEME = /\b(?:https?|ftp|file|javascript|data|vbscript|mailto):\S*/gi;
 
+/** HTML tags, Markdown links and images (their label stays), URLs, control and bidi characters out; whitespace collapsed. */
+function stripMarkup(text: string): string {
+  return (
+    text
+      .replace(/<[^<>]*>/g, ' ')
+      // What is left of angle brackets could form a tag again ("<<b>>" leaves "< >"), so it goes too.
+      .replace(/[<>]/g, ' ')
+      .replace(/!?\[([^[\]]*)\]\([^()]*\)/g, '$1')
+      // Likewise a link around a link ("[a[b](c)](d)" leaves "[ab](d)"): its "](" is broken up.
+      .replace(/\]\(/g, '] (')
+      .replace(URL_SCHEME, '')
+      .replace(/\bwww\.\S+/gi, '')
+      .replace(INVISIBLE, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  );
+}
+
 /**
- * Model text as plain text: HTML tags, Markdown links and images (their label stays), URLs,
- * control and bidi characters are removed and whitespace is collapsed. Linear on any input.
+ * Model text as plain text: HTML tags and angle brackets, Markdown links and images (their label
+ * stays), URLs, control and bidi characters are removed and whitespace is collapsed. Linear on
+ * any input, and idempotent: clean text comes out unchanged, so a stored field passes the same
+ * checks when it is read back.
  */
 export function cleanModelText(text: string): string {
-  return text
-    .slice(0, 20_000)
-    .replace(/<[^<>]*>/g, ' ')
-    .replace(/!?\[([^[\]]*)\]\([^()]*\)/g, '$1')
-    .replace(URL_SCHEME, '')
-    .replace(/\bwww\.\S+/gi, '')
-    .replace(INVISIBLE, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  return stripMarkup(text.slice(0, 20_000));
 }
 
 /** Why text may not go into a proposal as it is (proposals reach an implementing session), or undefined. */
@@ -79,13 +91,21 @@ export function markupReason(text: string): string | undefined {
 
 const WORD = /[\p{L}\p{N}]+/gu;
 
-/** Whether `candidate` repeats `words` or more consecutive words of `source` (case and punctuation ignored). */
+/**
+ * Whether `candidate` repeats `words` or more consecutive words of `source`. Case and punctuation
+ * are ignored, and both are read the way cleanModelText reads model text: a link target or a URL
+ * in the release notes does not break up a sentence the model copied without it.
+ */
 export function sharesVerbatim(candidate: string, source: string, words = VERBATIM_WORDS): boolean {
-  const mine = candidate.toLowerCase().match(WORD) ?? [];
+  const mine = stripMarkup(candidate.slice(0, 20_000)).toLowerCase().match(WORD) ?? [];
   if (mine.length < words) return false;
-  const theirs = source.slice(0, 50_000).toLowerCase().match(WORD) ?? [];
+  const text = source.slice(0, 50_000);
   const runs = new Set<string>();
-  for (let i = 0; i + words <= theirs.length; i++) runs.add(theirs.slice(i, i + words).join(' '));
+  // The notes are read both ways: stripping a stray "<" in plain text up to the next ">" must not hide a sentence.
+  for (const read of [stripMarkup(text), text]) {
+    const theirs = read.toLowerCase().match(WORD) ?? [];
+    for (let i = 0; i + words <= theirs.length; i++) runs.add(theirs.slice(i, i + words).join(' '));
+  }
   for (let i = 0; i + words <= mine.length; i++) if (runs.has(mine.slice(i, i + words).join(' '))) return true;
   return false;
 }
@@ -105,9 +125,18 @@ export function parseJsonReply(text: string): { value?: Record<string, unknown>;
   }
 }
 
-/** A cluster slug: 2-48 lowercase letters, digits and single dashes. */
+/** A cluster slug: 2-48 lowercase ASCII letters, digits and single dashes. */
 export function isSlug(text: string): boolean {
   return /^[a-z0-9-]{2,48}$/.test(text) && !text.startsWith('-') && !text.endsWith('-') && !text.includes('--');
+}
+
+/**
+ * A slug the model wrote, in ASCII: letters with accents or a cedilla lose them (ş to s, ğ to g,
+ * ü to u, ö to o, ç to c), the dotless ı and the dotted İ become i, and it is lowercased. A model
+ * that writes Turkish titles tends to write the slug in Turkish too.
+ */
+export function normalizeSlug(text: string): string {
+  return text.replace(/ı/g, 'i').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
 }
 
 // ------------------------------------------------------------------ field readers
@@ -247,9 +276,9 @@ export function checkClusters(value: Obj, itemIds: readonly string[], existingKe
     if (!c) return void errors.push(`${at}: must be an object`);
     const before = errors.length;
     const rawKey = typeof c.key === 'string' ? c.key.trim() : '';
-    const key = rawKey.startsWith('new:') ? rawKey.slice(4) : rawKey;
+    const key = rawKey.startsWith('new:') ? normalizeSlug(rawKey.slice(4)) : rawKey;
     if (!rawKey.startsWith('new:') && !existingKeys.has(rawKey)) errors.push(`${at}.key: use an existing key or "new:<slug>"`);
-    else if (!isSlug(key)) errors.push(`${at}.key: the slug must be 2-48 lowercase letters, digits and dashes`);
+    else if (!isSlug(key)) errors.push(`${at}.key: the slug must be 2-48 ASCII characters: lowercase letters a-z, digits and single dashes`);
     else if (keys.has(key)) errors.push(`${at}.key: ${key} is used twice`);
     const title = text(errors, c.title, `${at}.title`, LIMITS.title);
     const ids = list(errors, c.itemIds, `${at}.itemIds`, 1, itemIds.length);

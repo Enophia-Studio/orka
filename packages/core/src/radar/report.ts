@@ -26,6 +26,8 @@ export interface ReportParts {
   clusters: RadarCluster[];
   needsHuman: RadarNeedsHuman[];
   stats: RadarRunStats;
+  /** Entries summarized in this run. */
+  summarized?: string[];
 }
 
 export function buildReport(parts: ReportParts): RadarReport {
@@ -39,6 +41,7 @@ export function buildReport(parts: ReportParts): RadarReport {
     clusters: parts.clusters,
     needsHuman: parts.needsHuman,
     stats: parts.stats,
+    summarized: parts.summarized ?? [],
   };
 }
 
@@ -52,8 +55,9 @@ const MERGE_LIMITS: MergeLimits = { items: 500, clusters: 150, needsHuman: 100 }
 
 /**
  * One report for the panel: `next` (a run over new entries) on top of `previous`. Clusters with
- * the same key are joined; the newer comparison and decision win; the oldest items go first
- * when a cap is reached.
+ * the same key are joined; the newer comparison and decision win, and so does the newer cluster
+ * of an item a later run grouped again; the oldest items go first when a cap is reached. Earlier
+ * needs-a-human rows that `next` settled are dropped.
  */
 export function mergeReports(previous: RadarReport | undefined, next: RadarReport, limits: Partial<MergeLimits> = {}): RadarReport {
   if (!previous) return next;
@@ -61,8 +65,11 @@ export function mergeReports(previous: RadarReport | undefined, next: RadarRepor
   const seen = new Set<string>();
   const items = [...next.items, ...previous.items].filter((i) => !seen.has(i.id) && seen.add(i.id)).slice(0, cap.items);
   const kept = new Set(items.map((i) => i.id));
+  // An item sits in one cluster: one that `next` placed leaves the earlier clusters with another key.
+  const placed = new Map(next.clusters.flatMap((c) => c.itemIds.map((id) => [id, c.key] as const)));
+  const earlier = previous.clusters.map((c) => ({ ...c, itemIds: c.itemIds.filter((id) => (placed.get(id) ?? c.key) === c.key) }));
   const byKey = new Map<string, RadarCluster>();
-  for (const c of [...next.clusters, ...previous.clusters]) {
+  for (const c of [...next.clusters, ...earlier]) {
     const known = byKey.get(c.key);
     if (!known) byKey.set(c.key, { ...c, itemIds: [...c.itemIds], vendors: [...c.vendors], tags: [...c.tags] });
     else {
@@ -79,9 +86,37 @@ export function mergeReports(previous: RadarReport | undefined, next: RadarRepor
     .map((c) => ({ ...c, itemIds: c.itemIds.filter((id) => kept.has(id)) }))
     .filter((c) => c.itemIds.length > 0)
     .slice(0, cap.clusters);
+  const settled = settledBy(next);
   const reasons = new Set<string>();
-  const needsHuman = [...next.needsHuman, ...previous.needsHuman].filter((n) => !reasons.has(`${n.stage}|${n.subject}`) && reasons.add(`${n.stage}|${n.subject}`)).slice(0, cap.needsHuman);
+  const needsHuman = [...next.needsHuman, ...previous.needsHuman.filter((n) => !settled(n))]
+    .filter((n) => !reasons.has(`${n.stage}|${n.subject}`) && reasons.add(`${n.stage}|${n.subject}`))
+    .slice(0, cap.needsHuman);
   return { ...next, items, clusters, needsHuman };
+}
+
+/**
+ * Whether `report` did what an earlier needs-a-human row could not: summarized its entry, mapped
+ * all its items, or compared or decided its cluster. A failed clustering (no subject) stays.
+ */
+function settledBy(report: RadarReport): (row: RadarNeedsHuman) => boolean {
+  const summarized = new Set([...(report.summarized ?? []), ...report.items.map((i) => i.entryId)]);
+  const mapped = new Set(report.items.filter((i) => i.match).map((i) => i.id));
+  const compared = new Set(report.clusters.filter((c) => c.comparison).map((c) => c.key));
+  const decided = new Set(report.clusters.filter((c) => c.decision).map((c) => c.key));
+  return (row) => {
+    switch (row.stage) {
+      case 'summarize':
+        return summarized.has(row.subject);
+      case 'map':
+        return row.subject.split(',').every((id) => mapped.has(id));
+      case 'compare':
+        return compared.has(row.subject);
+      case 'decide':
+        return decided.has(row.subject);
+      default:
+        return false;
+    }
+  };
 }
 
 // ------------------------------------------------------------------ validation of a stored report
@@ -99,12 +134,17 @@ const httpsUrl = (value: unknown): value is string => {
   }
 };
 const SOURCE_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
+const ENTRY_ID = /^[0-9a-f]{64}$/;
 const ITEM_ID = /^[0-9a-f]{16}-\d{1,2}$/;
 const FEATURE_ID = /^[a-z0-9][a-z0-9.-]{1,63}$/;
 
 /**
  * Check a report read back from disk (or from anywhere else) field by field with the same
- * rules the pipeline applied; text is cleaned again. Errors are technical (for a log).
+ * rules the pipeline applied; text is cleaned again. A row that fails (a source, an item, a
+ * cluster, a needs-a-human row) is dropped, and so are the references to it; a comparison or
+ * decision that fails goes alone, leaving its cluster not compared or not decided. So one odd
+ * row does not cost the whole report. The report is refused as a whole when its frame is wrong
+ * or none of its items passes. Errors name what was refused or dropped (technical, for a log).
  */
 export function validateReport(value: unknown): { report?: RadarReport; errors: string[] } {
   const r = asObject(value);
@@ -115,51 +155,74 @@ export function validateReport(value: unknown): { report?: RadarReport; errors: 
   if (typeof r.generatedAt !== 'string' || !Number.isFinite(Date.parse(r.generatedAt))) errors.push('generatedAt');
   const provider = asObject(r.provider);
   if (!provider || !plain(provider.id, 60) || !plain(provider.model, 200)) errors.push('provider');
-  const sources = Array.isArray(r.sources) && r.sources.length <= 50 ? r.sources : (errors.push('sources'), []);
-  sources.forEach((raw, i) => {
+  const rows = (key: string, max: number): unknown[] => {
+    const list = r[key];
+    return Array.isArray(list) && list.length <= max ? list : (errors.push(key), []);
+  };
+  const rawSources = rows('sources', 50);
+  const rawItems = rows('items', 1_000);
+  const rawClusters = rows('clusters', 300);
+  const rawNeeds = rows('needsHuman', 500);
+  const stats = readStats(errors, r.stats);
+  if (errors.length) return { errors };
+
+  const sources: RadarReport['sources'] = [];
+  rawSources.forEach((raw, i) => {
     const s = asObject(raw);
     if (!s || typeof s.id !== 'string' || !SOURCE_ID.test(s.id) || !plain(s.vendor, 40) || !plain(s.product, 60) || !httpsUrl(s.url)) errors.push(`sources[${i}]`);
+    else sources.push({ id: s.id, vendor: s.vendor, product: s.product, url: s.url });
   });
   const items: RadarItem[] = [];
-  const rawItems = Array.isArray(r.items) && r.items.length <= 1_000 ? r.items : (errors.push('items'), []);
+  const itemIds = new Set<string>();
   rawItems.forEach((raw, i) => {
     const item = readItem(errors, raw, `items[${i}]`);
-    if (item) items.push(item);
+    if (item && itemIds.has(item.id)) errors.push(`items[${i}].id: used twice`);
+    else if (item) {
+      itemIds.add(item.id);
+      items.push(item);
+    }
   });
-  const itemIds = new Set(items.map((i) => i.id));
+  // A report none of whose items passes is no report to show: it is refused (and set aside).
+  if (rawItems.length > 0 && items.length === 0) return { errors: ['no item passes the checks', ...errors] };
   const clusters: RadarCluster[] = [];
-  const rawClusters = Array.isArray(r.clusters) && r.clusters.length <= 300 ? r.clusters : (errors.push('clusters'), []);
+  const placed = new Set<string>();
+  const keys = new Set<string>();
   rawClusters.forEach((raw, i) => {
-    const cluster = readCluster(errors, raw, `clusters[${i}]`, itemIds);
+    const cluster = readCluster(errors, raw, `clusters[${i}]`, itemIds, placed, keys);
     if (cluster) clusters.push(cluster);
   });
   const needsHuman: RadarNeedsHuman[] = [];
-  const rawNeeds = Array.isArray(r.needsHuman) && r.needsHuman.length <= 500 ? r.needsHuman : (errors.push('needsHuman'), []);
   rawNeeds.forEach((raw, i) => {
     const n = asObject(raw);
     const stage = n && RADAR_STAGES.find((s) => s === n.stage);
     if (!n || !stage || typeof n.subject !== 'string' || n.subject.length > 2_000 || typeof n.title !== 'string' || typeof n.reason !== 'string') errors.push(`needsHuman[${i}]`);
     else needsHuman.push({ stage, subject: n.subject, title: cleanModelText(n.title).slice(0, 200), reason: cleanModelText(n.reason).slice(0, 1_000) });
   });
-  const stats = readStats(errors, r.stats);
-  if (errors.length) return { errors };
+  let summarized: string[] | undefined;
+  if (r.summarized !== undefined) {
+    if (!Array.isArray(r.summarized) || r.summarized.length > 200) errors.push('summarized');
+    else summarized = r.summarized.filter((id): id is string => typeof id === 'string' && ENTRY_ID.test(id));
+  }
   return {
     report: {
       schema: RADAR_SCHEMA_VERSION,
       generatedAt: r.generatedAt as string,
       basis: RADAR_BASIS,
       provider: { id: provider!.id as string, model: provider!.model as string },
-      sources: sources.map((raw) => {
-        const s = raw as Obj;
-        return { id: s.id as string, vendor: s.vendor as string, product: s.product as string, url: s.url as string };
-      }),
+      sources,
       items,
       clusters,
       needsHuman,
       stats: stats!,
+      ...(summarized ? { summarized } : {}),
     },
     errors,
   };
+}
+
+/** One item as a stored report holds it, checked like validateReport checks it; undefined when it fails. */
+export function validateItem(value: unknown): RadarItem | undefined {
+  return readItem([], value, 'item');
 }
 
 function readItem(errors: string[], raw: unknown, at: string): RadarItem | undefined {
@@ -167,7 +230,7 @@ function readItem(errors: string[], raw: unknown, at: string): RadarItem | undef
   if (!i) return void errors.push(at);
   const before = errors.length;
   if (typeof i.id !== 'string' || !ITEM_ID.test(i.id)) errors.push(`${at}.id`);
-  if (typeof i.entryId !== 'string' || !/^[0-9a-f]{64}$/.test(i.entryId)) errors.push(`${at}.entryId`);
+  if (typeof i.entryId !== 'string' || !ENTRY_ID.test(i.entryId)) errors.push(`${at}.entryId`);
   if (typeof i.sourceId !== 'string' || !SOURCE_ID.test(i.sourceId) || !plain(i.vendor, 40) || !plain(i.product, 60)) errors.push(`${at}.source`);
   if (i.url !== undefined && !httpsUrl(i.url)) errors.push(`${at}.url`);
   if (i.published !== undefined && (typeof i.published !== 'string' || !Number.isFinite(Date.parse(i.published)))) errors.push(`${at}.published`);
@@ -204,20 +267,26 @@ function readTags(errors: string[], value: unknown, at: string, max: number): Ra
   return [...new Set(out as RadarTag[])];
 }
 
-function readCluster(errors: string[], raw: unknown, at: string, itemIds: Set<string>): RadarCluster | undefined {
+/**
+ * One stored cluster, or undefined when it fails. Its item ids are only those of items that passed
+ * and are not in an earlier cluster yet (`placed`); keys are unique (`keys`). Both sets are updated.
+ */
+function readCluster(errors: string[], raw: unknown, at: string, itemIds: ReadonlySet<string>, placed: Set<string>, keys: Set<string>): RadarCluster | undefined {
   const c = asObject(raw);
   if (!c) return void errors.push(at);
   const before = errors.length;
-  const key = typeof c.key === 'string' && isSlug(c.key) ? c.key : void errors.push(`${at}.key`);
+  const key = typeof c.key === 'string' && isSlug(c.key) && !keys.has(c.key) ? c.key : void errors.push(`${at}.key`);
   const title = text(errors, c.title, `${at}.title`, LIMITS.title);
   const tags = readTags(errors, c.tags, `${at}.tags`, 6);
-  const ids = Array.isArray(c.itemIds) && c.itemIds.length > 0 && c.itemIds.every((id) => typeof id === 'string' && itemIds.has(id)) ? (c.itemIds as string[]) : void errors.push(`${at}.itemIds`);
+  const ids = Array.isArray(c.itemIds) ? [...new Set(c.itemIds.filter((id): id is string => typeof id === 'string' && itemIds.has(id) && !placed.has(id)))] : [];
+  if (ids.length === 0) errors.push(`${at}.itemIds`);
   const vendors = Array.isArray(c.vendors) && c.vendors.length > 0 && c.vendors.length <= 50 && c.vendors.every((v) => plain(v, 40)) ? (c.vendors as string[]) : void errors.push(`${at}.vendors`);
   if (c.relevance !== 0 && c.relevance !== 1 && c.relevance !== 2 && c.relevance !== 3) errors.push(`${at}.relevance`);
+  if (errors.length > before) return undefined;
   let comparison: RadarCluster['comparison'];
-  if (c.comparison !== undefined && vendors) {
+  if (c.comparison !== undefined) {
     const raw = asObject(c.comparison);
-    const checked = raw ? checkComparison(raw, vendors, true, { requireAll: false }) : { errors: ['not an object'] };
+    const checked = raw ? checkComparison(raw, vendors!, true, { requireAll: false }) : { errors: ['not an object'] };
     if (!checked.value || raw!.basis !== RADAR_BASIS) errors.push(`${at}.comparison: ${checked.errors.slice(0, 3).join('; ')}`);
     else comparison = { ...checked.value, basis: RADAR_BASIS };
   }
@@ -228,12 +297,13 @@ function readCluster(errors: string[], raw: unknown, at: string, itemIds: Set<st
     if (!checked.value || raw!.clusterKey !== key || (raw!.decidedBy !== 'model' && raw!.decidedBy !== 'inventory')) errors.push(`${at}.decision: ${checked.errors.slice(0, 3).join('; ')}`);
     else decision = { clusterKey: key!, ...checked.value, decidedBy: raw!.decidedBy as RadarDecision['decidedBy'] };
   }
-  if (errors.length > before) return undefined;
+  keys.add(key!);
+  for (const id of ids) placed.add(id);
   return {
     key: key!,
     title: title!,
     tags: tags!,
-    itemIds: [...ids!],
+    itemIds: ids,
     vendors: [...vendors!],
     relevance: c.relevance as RadarCluster['relevance'],
     ...(comparison ? { comparison } : {}),

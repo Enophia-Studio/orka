@@ -5,8 +5,9 @@
   this file in a browser. Append ?light for the light theme, ?empty for the empty state, ?tr for Turkish,
   ?settings=skills (or agents/providers/control) to open a settings tab, ?ide for the desktop app's
   window (its IDE layout and its own theme), with ?collapsed for its sidebar closed. With ?ide,
-  ?radar=off, ?radar=pending or ?radar=report opens the Radar tab in that state (the panel's
-  buttons work: turn it on, Analyze, Stop, Start a session).
+  ?radar=off, ?radar=pending, ?radar=report or ?radar=elsewhere (another window runs it) opens the
+  Radar tab in that state, ?auto with radar.autoAnalyze on (the panel's buttons work: turn it on,
+  Analyze, Stop, Start a session).
 -->
 <html lang="en">
 <head>
@@ -182,6 +183,8 @@
       pending: radarMode === 'pending' ? 4 : 0, quarantined: radarMode === 'pending' ? 1 : 0,
       choice: { provider: '', model: '' },
       model: { provider: 'claude', model: 'claude-opus-5-5', label: 'Claude API · Opus 5.5', inherited: true },
+      ...(radarMode === 'elsewhere' ? { elsewhere: true, pending: 2 } : {}),
+      ...(params.has('auto') ? { autoAnalyze: true } : {}),
     };
     const item = (id, vendor, product, title, summary, match, tag, kind = 'feature') => ({ id, vendor, product, title, summary, kind, relevance: 3, match, url: `https://github.com/example/${product.toLowerCase().replace(/\W+/g, '-')}/releases/tag/${tag}`, published: ago(2 * 86400) });
     const radarReport = {
@@ -221,11 +224,12 @@
         { ...item('o2', 'Cline', 'Cline', L('Fixed a crash on Windows paths', 'Windows yollarında bir çökme düzeltildi'), L('Paths with spaces no longer break diffs.', 'Boşluk içeren yollar artık diffleri bozmuyor.'), undefined, 'v3.39.2', 'fix'), relevance: 1 },
       ],
     };
-    let radarShownReport = radarMode === 'report' ? radarReport : undefined;
+    let radarShownReport = radarMode === 'report' || radarMode === 'elsewhere' ? radarReport : undefined;
     let radarRun;
     const radarPost = () => deliver({ type: 'radar', radar: JSON.parse(JSON.stringify(radar)) });
     function radarMock(message) {
-      if (message.type === 'ready') setTimeout(() => { radarPost(); deliver({ type: 'radarReport', report: radarShownReport }); }, 10);
+      // The sample session has a plan, which shows first: ?radar opens Radar's tab the way a click does.
+      if (message.type === 'ready') setTimeout(() => { radarPost(); deliver({ type: 'radarReport', report: radarShownReport }); if (params.has('radar') && !params.has('settings')) document.getElementById('aside-tab-radar')?.click(); }, 10);
       if (message.type === 'setSetting' && message.key === 'radar.enabled') {
         radar.enabled = message.value === true;
         if (!radar.enabled) { clearInterval(radarRun); radarRun = undefined; delete radar.analysis; radar.polling = false; return radarPost(); }
@@ -255,7 +259,7 @@
           radarPost();
         }, 220);
       }
-      if (message.type === 'radarStartSession') setTimeout(() => deliver({ type: 'setInput', text: `Implement this feature in Orka: ${radarReport.clusters.find((c) => c.key === message.cluster)?.decision?.proposal?.title ?? '?'}\n\nPriority P1, effort M. Areas: agents, sessions.\n\nProblem:\n…` }), 0);
+      if (message.type === 'radarStartSession') setTimeout(() => deliver({ type: 'setInput', append: true, text:`Implement this feature in Orka: ${radarReport.clusters.find((c) => c.key === message.cluster)?.decision?.proposal?.title ?? '?'}\n\nPriority P1, effort M. Areas: agents, sessions.\n\nProblem:\n…` }), 0);
     }
 
     function makeConfig(empty) {

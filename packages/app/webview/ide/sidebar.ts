@@ -1,9 +1,10 @@
 // The desktop app's session list: the tasks of the recent project folders, newest first.
 import type { TaskSummary } from '@orka/core';
 import { t, tn } from '@orka/core/src/i18n';
-import type { SessionGroup, SessionOrganizerView } from '../../src/protocol';
+import type { RadarView, SessionGroup, SessionOrganizerView } from '../../src/protocol';
 import { attr, escapeHtml, icon } from '../core/dom';
 import { ago } from '../core/format';
+import { radarBadge, radarLabel } from '../features/radar';
 
 export interface SidebarView {
   /** The recent folders with their newest tasks. */
@@ -61,11 +62,13 @@ export function sidebarFrame(logo: string): string {
 }
 
 /** Radar in the session list's footer and in the rail, with the count of new entries (desktop, once Radar reported in). */
-export function radarEntryHtml(where: 'list' | 'rail', badge: string): string {
-  const label = t('Radar: what other AI coding tools shipped');
+export function radarEntryHtml(where: 'list' | 'rail', radar: RadarView | undefined): string {
+  // The badge is only seen; the button's name says the count.
+  const label = radarLabel(t('Radar: what other AI coding tools shipped'), radar);
+  const badge = radarBadge(radar);
   return where === 'rail'
     ? `<button class="icon-btn" data-action="open-radar" aria-label="${attr(label)}" title="${attr(label)}">${icon('radar')}${badge}</button>`
-    : `<button class="side-link" data-action="open-radar" title="${attr(label)}">${icon('radar')}<span>Radar</span>${badge}</button>`;
+    : `<button class="side-link" data-action="open-radar" aria-label="${attr(label)}" title="${attr(label)}">${icon('radar')}<span>Radar</span>${badge}</button>`;
 }
 
 export function themeSwitchHtml(theme: 'system' | 'light' | 'dark'): string {

@@ -1416,7 +1416,7 @@ export class AppController implements Disposable {
    * meant to run automated analysis), and never one the user did not set up.
    */
   private radarModel(): RadarModel {
-    const plain = (ref: string) => !isAgentRef(ref) && ref !== 'claude-code' && this.allProviderRefs().includes(ref as ProviderRef);
+    const plain = (ref: string) => this.radarCanUse(ref);
     const chosen = this.settings.radar.provider;
     const label = (ref: string, model: string) => `${this.providerLabel(ref)} · ${this.modelLabel(ref, model)}`;
     if (!chosen) {
@@ -1431,6 +1431,11 @@ export class AppController implements Disposable {
     return { provider: chosen, model, label: label(chosen, model), inherited: false };
   }
 
+  /** A model provider the user set up (never an agent CLI or Claude Code). */
+  private radarCanUse(ref: string): boolean {
+    return !isAgentRef(ref) && ref !== 'claude-code' && this.allProviderRefs().includes(ref as ProviderRef);
+  }
+
   /** A provider of its own for one analysis (disposed after it), on the user's own key. */
   private radarProvider(ref: string, model: string): AIProvider {
     if (isAgentRef(ref) || ref === 'claude-code') throw new Error(t('The radar needs an API provider; the Claude Code provider cannot run it.'));
@@ -1440,7 +1445,8 @@ export class AppController implements Disposable {
   /**
    * "Start a session" on a Radar proposal: a new task in the current folder with the proposal in the
    * message box. It is never sent: the user reads it, changes it and sends it under the usual
-   * permission rules. A running request is not stopped for it.
+   * permission rules. A running request is not stopped for it, and a draft the user had typed stays
+   * (the proposal goes after it).
    */
   private async startRadarSession(text: string): Promise<void> {
     if (!this.orchestrator) {
@@ -1452,7 +1458,7 @@ export class AppController implements Disposable {
       return;
     }
     await this.newTask();
-    this.shell.post({ type: 'setInput', text });
+    this.shell.post({ type: 'setInput', text, append: true });
   }
 
   private disposeProviders(): void {
@@ -1590,15 +1596,20 @@ export class AppController implements Disposable {
 
   private async promptCustomModel(agent: string): Promise<void> {
     if (agent === 'radar') {
+      if (!this.radar) return;
+      // Radar's own provider, else the main agent's: asked also when that provider has no model yet,
+      // which is when "Other…" is the only way to pick one.
       const current = this.radarModel();
-      if (!this.radar || 'problem' in current) return;
+      const chosen = this.settings.radar.provider;
+      const provider = 'problem' in current ? chosen || this.mainProvider() : current.provider;
+      if (!this.radarCanUse(provider)) return;
       const value = await this.shell.input({
-        title: t('Model for Radar ({provider})', { provider: this.providerLabel(current.provider) }),
-        value: current.model,
+        title: t('Model for Radar ({provider})', { provider: this.providerLabel(provider) }),
+        value: 'problem' in current ? '' : current.model,
         prompt: t('Any model id the provider accepts.'),
       });
       if (!value?.trim() || !isModelId(value.trim())) return;
-      if (current.inherited) await this.updateSetting('radar.provider', current.provider);
+      if (chosen !== provider) await this.updateSetting('radar.provider', provider);
       await this.updateSetting('radar.model', value.trim());
       return;
     }

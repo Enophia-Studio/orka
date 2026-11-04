@@ -252,6 +252,16 @@ globalThis.fetch = (input, init) => {
     );
     assert.equal(existsSync(path.join(home, 'radar')), false);
     assert.equal(JSON.parse(readFileSync(path.join(home, 'desktop', 'settings.json'), 'utf8'))['radar.enabled'], undefined);
+
+    // Radar was the tab open last; once the task changes a file, its changes show by themselves.
+    script = [() => toolUse('toolu_w', 'write_file', { path: 'notes/radar.txt', content: 'Plan\n' }), () => reply('Wrote notes/radar.txt.')];
+    await browser.clickSelector('#input');
+    await browser.type('Write a note');
+    await browser.clickSelector('#send');
+    await until(async () => (await text()).includes('Wrote notes/radar.txt.'), 'the reply');
+    await until(() => browser.evaluate('!document.querySelector("#aside-task").hidden'), 'the plan and changes');
+    assert.equal(await browser.evaluate('document.querySelector("#radar-panel").hidden'), true);
+    assert.equal(await browser.evaluate('document.querySelector("#aside-tab-task").getAttribute("aria-selected")'), 'true');
   });
 
   it('only lets its own window in', async () => {

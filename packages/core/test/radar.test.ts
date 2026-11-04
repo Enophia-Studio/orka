@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
@@ -295,14 +295,14 @@ describe('Radar state', () => {
   it('starts a source over when its URL changes', () => {
     const state = emptyRadarState();
     const s = sourceStateFor(state, 'agent-cli', source().url);
-    s.etag = '"x"';
+    s.bodyHash = 'a'.repeat(64);
     s.baselineAt = now.toISOString();
     const moved = sourceStateFor(state, 'agent-cli', 'https://github.com/example/other/releases.atom');
-    assert.equal(moved.etag, undefined);
+    assert.equal(moved.bodyHash, undefined);
     assert.equal(moved.baselineAt, undefined);
   });
 
-  it('saves atomically and reads a corrupt or hand-edited file safely', async () => {
+  it('saves atomically and reads a hand-edited file safely', async () => {
     const { root, cleanup } = tempWorkspace();
     try {
       const file = path.join(root, 'radar', 'state.json');
@@ -310,31 +310,79 @@ describe('Radar state', () => {
       const state = emptyRadarState();
       const s = sourceStateFor(state, 'agent-cli', source().url);
       recordEntries(state, s, parseFeed(source(), fixture('github-releases.atom')), now);
-      s.etag = '"v1"';
+      s.bodyHash = 'b'.repeat(64);
+      const pending = state.pending[0];
+      const item = {
+        id: `${pending.id.slice(0, 16)}-1`,
+        entryId: pending.id,
+        sourceId: 'agent-cli',
+        vendor: 'Example',
+        product: 'Agent CLI',
+        title: 'Background agents',
+        summary: 'Agents keep running while the user does something else.',
+        kind: 'feature' as const,
+        relevance: 3 as const,
+        tags: ['agents' as const],
+        match: 'gap' as const,
+        featureIds: [],
+      };
+      state.summarized[pending.id] = [item];
       await saveRadarState(file, state);
       assert.deepEqual(await loadRadarState(file), state);
       assert.deepEqual(readdirSync(path.dirname(file)), ['state.json'], 'no temporary file is left behind');
 
-      writeFileSync(file, '{"version":1,"sources":{');
-      assert.deepEqual(await loadRadarState(file), emptyRadarState());
-
-      const pending = state.pending[0];
       writeFileSync(
         file,
         JSON.stringify({
           version: 1,
-          sources: { 'agent-cli': { url: source().url, seen: ['not-a-hash', pending.id], etag: 42 }, ['__proto__']: { url: 'x', seen: [] }, 'Bad Id': { url: 'x', seen: [] } },
+          sources: {
+            'agent-cli': { url: source().url, seen: ['not-a-hash', pending.id], etag: '"u-7f3a9c"', lastModified: 'Wed, 28 Oct 2026 10:00:00 GMT', bodyHash: 'nope' },
+            ['__proto__']: { url: 'x', seen: [] },
+            'Bad Id': { url: 'x', seen: [] },
+          },
           pending: [pending, { ...pending, id: 'zz' }, { ...pending, url: 'javascript:alert(1)' }, 'junk'],
+          summarized: { [pending.id]: [item, { ...item, id: 'x', title: '<<NEW>>' }, { ...item, entryId: 'f'.repeat(64) }], ['e'.repeat(64)]: [{ ...item, entryId: 'e'.repeat(64) }] },
           quarantine: [{ entry: pending, stage: 'summarize', reason: 'r', at: now.toISOString() }, { entry: pending, stage: 'evil', reason: 'r', at: 'x' }],
         }),
       );
       const loaded = await loadRadarState(file);
       assert.deepEqual(Object.keys(loaded.sources), ['agent-cli']);
-      assert.deepEqual(loaded.sources['agent-cli'].seen, [pending.id]);
-      assert.equal(loaded.sources['agent-cli'].etag, undefined);
+      assert.deepEqual(loaded.sources['agent-cli'], { url: source().url, seen: [pending.id] }, 'validators an earlier version kept are dropped, a bad hash too');
       assert.equal(loaded.pending.length, 2);
       assert.equal(loaded.pending[1].url, undefined, 'a non-https link is dropped');
+      assert.deepEqual(loaded.summarized, { [pending.id]: [item] }, 'summaries only of waiting entries, and only valid items of their own');
       assert.equal(loaded.quarantine.length, 1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('starts over only when the file is missing; a corrupt one is set aside, a read error is thrown', async () => {
+    const { root, cleanup } = tempWorkspace();
+    try {
+      const dir = path.join(root, 'radar');
+      const file = path.join(dir, 'state.json');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, '{"version":1,"sources":{');
+      assert.deepEqual(await loadRadarState(file), emptyRadarState());
+      const aside = readdirSync(dir);
+      assert.equal(aside.length, 1);
+      assert.match(aside[0], /^state\.broken-\d+\.json$/);
+      assert.equal(readFileSync(path.join(dir, aside[0]), 'utf8'), '{"version":1,"sources":{', 'kept for a look');
+      for (const content of ['null', '[]']) {
+        writeFileSync(file, content);
+        assert.deepEqual(await loadRadarState(file), emptyRadarState(), content);
+        assert.ok(!existsSync(file), content);
+      }
+
+      // A file that cannot be read (here a folder in its place) is not a fresh state: polls and analyses fail and try again later.
+      const blocked = path.join(root, 'blocked.json');
+      mkdirSync(blocked);
+      await assert.rejects(loadRadarState(blocked), (error: NodeJS.ErrnoException) => error.code !== 'ENOENT');
+      const radar = new Radar({ statePath: blocked, sources: [source()], fetchImpl: (async () => new Response('', { status: 200 })) as typeof fetch, pacer: new HostPacer(0) });
+      await assert.rejects(radar.poll());
+      await assert.rejects(radar.retryQuarantined());
+      assert.ok(statSync(blocked).isDirectory(), 'nothing was saved over it or moved');
     } finally {
       cleanup();
     }
@@ -359,6 +407,10 @@ describe('Radar fetch', () => {
           }
           res.writeHead(200, { 'content-type': 'application/atom+xml', etag: '"v1"', 'last-modified': 'Wed, 28 Oct 2026 10:00:00 GMT' });
           res.end(fixture('github-releases.atom'));
+          return;
+        case '/not-modified':
+          res.writeHead(304);
+          res.end();
           return;
         case '/moved':
           res.writeHead(301, { location: 'https://mirror.example.org/feed.atom' });
@@ -419,38 +471,36 @@ describe('Radar fetch', () => {
   const feed = (pathname: string, over: Partial<RadarSource> = {}) =>
     source({ id: 'feed', url: `https://feeds.example.com${pathname}`, allowHosts: ['feeds.example.com', 'mirror.example.org'], maxBytes: 100_000, ...over });
 
-  it('sends a conditional GET with its User-Agent and sleeps on 304', async () => {
+  it('sends a plain GET with its User-Agent and nothing the server issued', async () => {
     requests.length = 0;
-    const first = await fetchSource(feed('/feed.atom'), {}, { fetchImpl: local });
+    const first = await fetchSource(feed('/feed.atom'), { fetchImpl: local });
     assert.equal(first.status, 'ok');
     if (first.status !== 'ok') return;
-    assert.equal(first.etag, '"v1"');
-    assert.equal(first.lastModified, 'Wed, 28 Oct 2026 10:00:00 GMT');
     assert.equal(first.truncated, false);
     assert.equal(parseFeed(feed('/feed.atom', { allowHosts: ['github.com'] }), first.body).length, 2);
-    assert.equal(requests[0].headers['user-agent'], RADAR_USER_AGENT);
     assert.ok(RADAR_USER_AGENT.startsWith(`OrkaRadar/${VERSION} `));
-    assert.equal(requests[0].headers['if-none-match'], undefined);
+    // The server sent an ETag and a Last-Modified date; asked again, it gets neither back (no 304).
+    const second = await fetchSource(feed('/feed.atom'), { fetchImpl: local });
+    assert.equal(second.status, 'ok');
+    assert.equal(requests.length, 2);
+    for (const { headers } of requests) {
+      assert.equal(headers['user-agent'], RADAR_USER_AGENT);
+      const sent = Object.keys(headers).filter((h) => !['host', 'connection', 'accept', 'accept-encoding', 'accept-language', 'sec-fetch-mode', 'user-agent', 'x-test-host'].includes(h));
+      assert.deepEqual(sent, [], 'no If-None-Match, If-Modified-Since, Cookie or anything else');
+    }
 
-    const second = await fetchSource(feed('/feed.atom'), { etag: first.etag, lastModified: first.lastModified }, { fetchImpl: local });
-    assert.deepEqual(second, { status: 'not_modified' });
-    assert.equal(requests[1].headers['if-none-match'], '"v1"');
-    assert.equal(requests[1].headers['if-modified-since'], 'Wed, 28 Oct 2026 10:00:00 GMT');
-
-    // Malformed validators (a hand-edited state file) are never sent.
-    await fetchSource(feed('/feed.atom'), { etag: 'x\r\nX-Evil: 1', lastModified: 'yesterday' }, { fetchImpl: local });
-    assert.equal(requests[2].headers['if-none-match'], undefined);
-    assert.equal(requests[2].headers['if-modified-since'], undefined);
+    // A 304 answers only a conditional request, which the radar never sends.
+    assert.deepEqual(await fetchSource(feed('/not-modified'), { fetchImpl: local }), { status: 'error', error: 'The server answered 304.' });
   });
 
   it('follows redirects only to the hosts allowed for the source, and only over HTTPS', async () => {
     requests.length = 0;
-    const moved = await fetchSource(feed('/moved'), {}, { fetchImpl: local });
+    const moved = await fetchSource(feed('/moved'), { fetchImpl: local });
     assert.equal(moved.status, 'ok');
     assert.equal(moved.status === 'ok' && moved.url, 'https://mirror.example.org/feed.atom');
 
     requests.length = 0;
-    const elsewhere = await fetchSource(feed('/elsewhere'), {}, { fetchImpl: local });
+    const elsewhere = await fetchSource(feed('/elsewhere'), { fetchImpl: local });
     assert.equal(elsewhere.status, 'error');
     assert.match(elsewhere.status === 'error' ? elsewhere.error : '', /evil\.example\.net/);
     assert.deepEqual(
@@ -459,30 +509,30 @@ describe('Radar fetch', () => {
       'the other host is never contacted',
     );
 
-    const downgrade = await fetchSource(feed('/downgrade'), {}, { fetchImpl: local });
+    const downgrade = await fetchSource(feed('/downgrade'), { fetchImpl: local });
     assert.match(downgrade.status === 'error' ? downgrade.error : '', /HTTPS/);
-    const port = await fetchSource(feed('/port'), {}, { fetchImpl: local });
+    const port = await fetchSource(feed('/port'), { fetchImpl: local });
     assert.match(port.status === 'error' ? port.error : '', /standard HTTPS port/);
-    assert.deepEqual(await fetchSource(feed('/loop'), {}, { fetchImpl: local }), { status: 'error', error: 'Too many redirects.' });
-    assert.deepEqual(await fetchSource(feed('/missing'), {}, { fetchImpl: local }), { status: 'error', error: 'The server answered 500.' });
+    assert.deepEqual(await fetchSource(feed('/loop'), { fetchImpl: local }), { status: 'error', error: 'Too many redirects.' });
+    assert.deepEqual(await fetchSource(feed('/missing'), { fetchImpl: local }), { status: 'error', error: 'The server answered 500.' });
     // A source URL that is not on its own allowed hosts is never fetched at all.
     requests.length = 0;
-    assert.equal((await fetchSource(feed('/feed.atom', { allowHosts: ['other.example.com'] }), {}, { fetchImpl: local })).status, 'error');
+    assert.equal((await fetchSource(feed('/feed.atom', { allowHosts: ['other.example.com'] }), { fetchImpl: local })).status, 'error');
     assert.equal(requests.length, 0);
   });
 
   it('gives up after the timeout and stops reading at maxBytes', async () => {
     const started = Date.now();
-    const hang = await fetchSource(feed('/hang'), {}, { fetchImpl: local, timeoutMs: 200 });
+    const hang = await fetchSource(feed('/hang'), { fetchImpl: local, timeoutMs: 200 });
     assert.deepEqual(hang, { status: 'error', error: 'Timed out after 0.2s.' });
     assert.ok(Date.now() - started < 5_000);
 
     const controller = new AbortController();
-    const pending = fetchSource(feed('/hang'), {}, { fetchImpl: local, signal: controller.signal });
+    const pending = fetchSource(feed('/hang'), { fetchImpl: local, signal: controller.signal });
     controller.abort();
     assert.deepEqual(await pending, { status: 'error', error: 'Cancelled.' });
 
-    const huge = await fetchSource(feed('/huge', { maxBytes: 100_000 }), {}, { fetchImpl: local });
+    const huge = await fetchSource(feed('/huge', { maxBytes: 100_000 }), { fetchImpl: local });
     assert.equal(huge.status, 'ok');
     assert.equal(huge.status === 'ok' && huge.truncated, true);
     assert.equal(huge.status === 'ok' && huge.body.length, 100_000);
@@ -505,21 +555,25 @@ describe('Radar fetch', () => {
 });
 
 describe('Radar poll', () => {
-  it('polls without a model, sleeps on 304, respects minIntervalHours and records errors', async () => {
+  it('polls without a model, skips an unchanged feed, respects minIntervalHours and records errors', async () => {
     const { root, cleanup } = tempWorkspace();
     try {
       let now = new Date('2026-10-30T00:00:00Z');
-      let served = { body: fixture('github-releases.atom'), etag: '"a"' };
+      // Every answer carries validators unique to this "install", as a tracking server would hand out.
+      let served = { body: fixture('github-releases.atom'), etag: '"u-7f3a9c-install-42"' };
       let fail = false;
       const calls: string[] = [];
+      const sent: Headers[] = [];
       const fetchImpl = (async (input: string | URL | Request, init: RequestInit = {}) => {
         calls.push(String(input));
+        sent.push(new Headers(init.headers));
         if (fail) throw new TypeError('fetch failed', { cause: { code: 'ENOTFOUND' } });
         if (new Headers(init.headers).get('if-none-match') === served.etag) return new Response(null, { status: 304 });
-        return new Response(served.body, { status: 200, headers: { etag: served.etag } });
+        return new Response(served.body, { status: 200, headers: { etag: served.etag, 'last-modified': 'Thu, 29 Oct 2026 07:42:13 GMT' } });
       }) as typeof fetch;
       const off = source({ id: 'off', url: 'https://github.com/example/off/releases.atom', enabled: false });
-      const radar = new Radar({ statePath: path.join(root, 'state.json'), sources: [source(), off], fetchImpl, now: () => now, pacer: new HostPacer(0) });
+      const statePath = path.join(root, 'state.json');
+      const radar = new Radar({ statePath, sources: [source(), off], fetchImpl, now: () => now, pacer: new HostPacer(0) });
 
       const first = await radar.poll();
       assert.deepEqual(
@@ -539,15 +593,23 @@ describe('Radar poll', () => {
       assert.equal(calls.length, 1);
 
       now = new Date(now.getTime() + 7 * 3_600_000);
-      assert.equal((await radar.poll()).sources[0].status, 'not_modified');
+      assert.equal((await radar.poll()).sources[0].status, 'not_modified', 'the same body again: not even parsed');
 
-      served = { body: fixture('github-releases.atom').replace('<entry>', atomEntry('v1.5.0', '2026-10-30T05:00:00Z') + '<entry>'), etag: '"b"' };
+      served = { body: fixture('github-releases.atom').replace('<entry>', atomEntry('v1.5.0', '2026-10-30T05:00:00Z') + '<entry>'), etag: '"u-8e4b0d-install-42"' };
       const forced = await radar.poll({ force: true });
       assert.deepEqual(
         forced.newEntries.map((e: RadarEntry) => e.tag),
         ['v1.5.0'],
       );
       assert.equal(forced.pending, 2);
+      // Nothing the server issued was kept or sent back: every request looked the same.
+      assert.equal(sent.length, 3);
+      for (const headers of sent) assert.deepEqual([...headers.keys()].sort(), ['accept', 'user-agent']);
+      assert.doesNotMatch(readFileSync(statePath, 'utf8'), /u-7f3a9c|u-8e4b0d|07:42:13|etag|lastModified/i);
+      // The same body read with another filter is read again.
+      const filtered = new Radar({ statePath, sources: [source({ titleFilter: 'background' })], fetchImpl, now: () => now, pacer: new HostPacer(0) });
+      assert.equal((await filtered.poll({ force: true })).sources[0].status, 'unchanged');
+      assert.equal((await filtered.poll({ force: true })).sources[0].status, 'not_modified');
 
       fail = true;
       const failed = await radar.poll({ force: true });

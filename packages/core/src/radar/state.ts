@@ -2,7 +2,9 @@ import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { ENTRY_TEXT_MAX } from './feeds';
-import { RADAR_STAGES, type RadarEntry, type RadarStage } from './types';
+import { validateItem } from './report';
+import { RADAR_STAGES, type RadarEntry, type RadarItem, type RadarStage } from './types';
+import { LIMITS } from './validate';
 
 /** Entry ids remembered per source. More than a feed lists (200), so a listed entry is never new twice. */
 export const SEEN_CAP = 300;
@@ -19,10 +21,10 @@ const BASELINE_UNDATED = 1;
 export type RadarPollStatus = 'baseline' | 'new' | 'unchanged' | 'not_modified' | 'error';
 
 export interface RadarSourceState {
-  /** The URL the validators below belong to; a changed URL starts the source over. */
+  /** The URL the state below belongs to; a changed URL starts the source over. */
   url: string;
-  etag?: string;
-  lastModified?: string;
+  /** sha256 of the last body read (and how it was read): the same body again is not parsed. Made here, sent nowhere. */
+  bodyHash?: string;
   lastPolledAt?: string;
   lastStatus?: RadarPollStatus;
   lastError?: string;
@@ -43,24 +45,51 @@ export interface RadarState {
   version: 1;
   sources: Record<string, RadarSourceState>;
   pending: RadarEntry[];
+  /**
+   * By entry id, for pending entries an analysis already summarized: their relevant items that
+   * have not reached a decision yet. The next analysis continues with them instead of paying for
+   * the summaries again.
+   */
+  summarized: Record<string, RadarItem[]>;
   /** Entries the model could not summarize validly twice (needs_human). */
   quarantine: RadarQuarantined[];
+  /** By entry id, the runs in which the provider failed on that pending entry alone (see RADAR_ENTRY_FAILURES). */
+  failures: Record<string, number>;
 }
+
+/** After this many runs in which the provider failed on an entry while answering others, the entry is quarantined. */
+export const RADAR_ENTRY_FAILURES = 2;
 
 export function emptyRadarState(): RadarState {
-  return { version: 1, sources: {}, pending: [], quarantine: [] };
+  return { version: 1, sources: {}, pending: [], summarized: {}, quarantine: [], failures: {} };
 }
 
-/** The state at `file`; a missing or unreadable file is a fresh state (the next poll is a baseline). */
+/**
+ * The state at `file`. Only a missing file is a fresh state (the next poll is a baseline). Any
+ * other read error is thrown, so the poll or analysis fails and is tried again later instead of
+ * saving a fresh state over a good one; a file that is not a JSON object is moved aside
+ * (state.broken-<time>.json) before starting over.
+ */
 export async function loadRadarState(file: string): Promise<RadarState> {
+  let content: string;
+  try {
+    content = await fs.readFile(file, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return emptyRadarState();
+    throw error;
+  }
   let raw: unknown;
   try {
-    raw = JSON.parse(await fs.readFile(file, 'utf8'));
+    raw = JSON.parse(content.replace(/^﻿/, ''));
   } catch {
-    return emptyRadarState();
+    raw = undefined;
   }
   const state = emptyRadarState();
-  if (!raw || typeof raw !== 'object') return state;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    // When it cannot be moved, this throws: nothing is saved over it either.
+    await fs.rename(file, path.join(path.dirname(file), `${path.basename(file, '.json')}.broken-${Date.now()}.json`));
+    return state;
+  }
   const r = raw as Record<string, unknown>;
   if (r.sources && typeof r.sources === 'object') {
     for (const [id, value] of Object.entries(r.sources as Record<string, unknown>)) {
@@ -69,6 +98,24 @@ export async function loadRadarState(file: string): Promise<RadarState> {
     }
   }
   if (Array.isArray(r.pending)) state.pending = r.pending.map(entry).filter((e): e is RadarEntry => !!e).slice(-PENDING_CAP);
+  if (r.summarized && typeof r.summarized === 'object') {
+    // Only for entries still waiting, and checked like the items of a stored report.
+    const waiting = new Set(state.pending.map((e) => e.id));
+    for (const [id, list] of Object.entries(r.summarized as Record<string, unknown>)) {
+      if (!waiting.has(id) || !Array.isArray(list)) continue;
+      const items = list
+        .slice(0, LIMITS.itemsPerEntry)
+        .map(validateItem)
+        .filter((i): i is RadarItem => i?.entryId === id);
+      if (items.length) state.summarized[id] = items;
+    }
+  }
+  if (r.failures && typeof r.failures === 'object') {
+    const waiting = new Set(state.pending.map((e) => e.id));
+    for (const [id, count] of Object.entries(r.failures as Record<string, unknown>)) {
+      if (waiting.has(id) && Number.isInteger(count) && (count as number) > 0 && (count as number) < RADAR_ENTRY_FAILURES) state.failures[id] = count as number;
+    }
+  }
   if (Array.isArray(r.quarantine)) {
     for (const q of r.quarantine.slice(-QUARANTINE_CAP)) {
       const item = q as Partial<RadarQuarantined> | null;
@@ -140,7 +187,10 @@ export function queue(state: RadarState, entries: RadarEntry[]): RadarEntry[] {
   const known = new Set([...state.pending.map((e) => e.id), ...state.quarantine.map((q) => q.entry.id)]);
   const added = entries.filter((e) => !known.has(e.id) && known.add(e.id));
   state.pending.push(...added);
-  if (state.pending.length > PENDING_CAP) state.pending.splice(0, state.pending.length - PENDING_CAP);
+  for (const dropped of state.pending.splice(0, Math.max(0, state.pending.length - PENDING_CAP))) {
+    delete state.summarized[dropped.id];
+    delete state.failures[dropped.id];
+  }
   return added;
 }
 
@@ -157,10 +207,10 @@ function sourceState(value: unknown): RadarSourceState | undefined {
   const v = value as Record<string, unknown>;
   if (!str(v.url, 500) || !Array.isArray(v.seen)) return undefined;
   const statuses: RadarPollStatus[] = ['baseline', 'new', 'unchanged', 'not_modified', 'error'];
+  // The ETag and Last-Modified values an earlier version kept here are not read: nothing a server issued is sent back to it.
   return {
     url: v.url,
-    ...(str(v.etag, 210) ? { etag: v.etag } : {}),
-    ...(str(v.lastModified, 40) ? { lastModified: v.lastModified } : {}),
+    ...(str(v.bodyHash, 64) && /^[0-9a-f]{64}$/.test(v.bodyHash) ? { bodyHash: v.bodyHash } : {}),
     ...(str(v.lastPolledAt, 40) ? { lastPolledAt: v.lastPolledAt } : {}),
     ...(statuses.includes(v.lastStatus as RadarPollStatus) ? { lastStatus: v.lastStatus as RadarPollStatus } : {}),
     ...(str(v.lastError, 500) ? { lastError: v.lastError } : {}),

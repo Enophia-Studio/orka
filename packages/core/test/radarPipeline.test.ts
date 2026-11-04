@@ -10,9 +10,21 @@ import { parseFeed } from '../src/radar/feeds';
 import { BUILTIN_INVENTORY, loadFeatureInventory, validateInventory } from '../src/radar/inventory';
 import { analyzeEntries } from '../src/radar/pipeline';
 import { Radar } from '../src/radar/Radar';
-import { mergeReports, proposalSpec, renderReportMarkdown, validateReport } from '../src/radar/report';
-import type { RadarEntry, RadarReport, RadarSource, RadarStage } from '../src/radar/types';
-import { checkClusters, checkComparison, checkDecision, checkMappings, checkProposal, checkSummaries, cleanModelText, parseJsonReply, sharesVerbatim } from '../src/radar/validate';
+import { buildReport, mergeReports, proposalSpec, renderReportMarkdown, validateReport } from '../src/radar/report';
+import { emptyRadarState, loadRadarState, saveRadarState } from '../src/radar/state';
+import type { RadarEntry, RadarNeedsHuman, RadarReport, RadarSource, RadarStage } from '../src/radar/types';
+import {
+  checkClusters,
+  checkComparison,
+  checkDecision,
+  checkMappings,
+  checkProposal,
+  checkSummaries,
+  cleanModelText,
+  normalizeSlug,
+  parseJsonReply,
+  sharesVerbatim,
+} from '../src/radar/validate';
 import type { ChatMessage } from '../src/types';
 import { tempWorkspace } from './helpers';
 
@@ -99,6 +111,23 @@ function validReply(stage: RadarStage, request: ChatRequest): string {
 }
 
 type Responder = (stage: RadarStage, request: ChatRequest, n: number) => string | Error;
+
+/** A model that reads three relevant changes in every entry and puts them in `groups` clusters, round robin. */
+function manyChanges(groups: number): Responder {
+  return (stage, request) => {
+    const text = prompt(request);
+    if (stage === 'summarize') {
+      const n = /RAWNOTE(\d+)/.exec(text)![1];
+      return JSON.stringify({ items: ['A', 'B', 'C'].map((part) => ({ title: `Change ${part}${n}`, summary: `Part ${part} of release ${n}, in other words.`, kind: 'feature', relevance: 3, tags: ['agents'] })) });
+    }
+    if (stage === 'cluster') {
+      const ids = changeIds(text);
+      const count = Math.min(groups, ids.length);
+      return JSON.stringify({ clusters: Array.from({ length: count }, (_, k) => ({ key: `new:group-${k + 1}`, title: `Group ${k + 1}`, itemIds: ids.filter((_, i) => i % count === k) })) });
+    }
+    return validReply(stage, request);
+  };
+}
 
 /** A provider that answers each radar stage with scripted JSON and records every request. */
 class FakeRadarProvider implements AIProvider {
@@ -294,6 +323,28 @@ describe('Radar analysis', () => {
     assert.equal(sharesVerbatim('The Agent, can NOW pause a running task and resume it!', notes), true, 'case and punctuation do not hide a copy');
   });
 
+  it('sees a copy through the links and URLs in the notes', () => {
+    // An HTML release note with a link in the middle of the sentence, read the way the feed reader reads it.
+    const html = 'You can now connect <a href="https://example.com/docs/42">remote MCP servers</a> directly from the settings page without restarting the editor.';
+    const atom = `<feed><entry><id>tag:github.com,2008:Repository/1/v1.9.0</id><updated>2026-10-29T00:00:00Z</updated><title>v1.9.0</title><content type="html">${html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</content></entry></feed>`;
+    const [parsed] = parseFeed(source, atom);
+    assert.match(parsed.text, /connect \[remote MCP servers\]\(https:\/\/example\.com\/docs\/42\) directly/);
+    const copy = 'You can now connect remote MCP servers directly from the settings page without restarting the editor.';
+    const item = (summary: string) => ({ items: [{ title: 'Remote MCP servers', summary, kind: 'feature', relevance: 2, tags: ['mcp'] }] });
+    for (const notes of [
+      `${parsed.title}\n${parsed.text}`,
+      'You can now connect [remote MCP servers](/docs/42) directly from the settings page without restarting the editor.',
+      'You can now connect remote ![MCP](https://x.example/i.png) servers (https://example.com/docs/42) directly from the settings page without restarting the editor.',
+      'You can now connect <b>remote MCP servers</b> directly from www.example.com/settings the settings page without restarting the editor.',
+      // A stray "<" in plain text, closed by a ">" later on: the sentence between them is still compared.
+      'Requires version < 2. You can now connect remote MCP servers directly from the settings page without restarting the editor. Use -> to go.',
+    ]) {
+      for (const summary of [copy, 'You can now connect [remote MCP servers](https://example.com/docs/42) directly from the settings page without restarting the editor.'])
+        assert.match(checkSummaries(item(summary), notes).errors.join(), /copies 10 or more consecutive words/, `${notes.slice(0, 60)} / ${summary.slice(0, 40)}`);
+    }
+    assert.deepEqual(checkSummaries(item('Remote MCP servers can be connected from the settings page, no restart needed.'), `${parsed.title}\n${parsed.text}`).errors, [], 'a paraphrase is fine');
+  });
+
   it('asks for the text a person reads in the UI language, keeps the rest English, and still rejects copies', async () => {
     const notes = 'The agent can now pause a running task and resume it later from the history panel without losing context.';
     const turkish = 'Agent, kullanıcı başka bir şey yaparken arka planda çalışmaya devam edebiliyor.';
@@ -333,25 +384,40 @@ describe('Radar analysis', () => {
     // Of 4 calls, summaries may use 2; the rest is kept for the later stages.
     const provider = new FakeRadarProvider();
     const budget = await analyzeEntries(entries, provider, BUILTIN_INVENTORY, { maxCalls: 4, concurrency: 1 });
-    assert.deepEqual(
-      budget.processed,
-      [entries[0].id, entries[1].id],
-    );
     assert.equal(provider.calls(), 4);
     assert.equal(budget.report.stats.calls, 4);
     assert.equal(budget.report.stats.stopped, 'budget');
-    assert.equal(budget.report.stats.left, 3);
     assert.equal(budget.report.clusters.length, 1);
     assert.equal(budget.report.clusters[0].comparison, undefined, 'no call was left for the comparison');
+    assert.equal(budget.report.clusters[0].decision, undefined, 'nor for the decision');
+    // So the two summarized entries are not done: they stay queued with their items, the others untouched.
+    assert.deepEqual(budget.processed, []);
+    assert.deepEqual(Object.keys(budget.unfinished).sort(), [entries[0].id, entries[1].id].sort());
+    assert.deepEqual(budget.unfinished[entries[0].id], [budget.report.items[0]]);
+    assert.equal(budget.report.stats.left, 5);
+    assert.equal(budget.report.stats.entries, 2);
+
+    // The next run goes on from there: no summary or mapping is paid for twice.
+    const next = new FakeRadarProvider();
+    const continued = await analyzeEntries(entries.slice(0, 2), next, BUILTIN_INVENTORY, { summarized: budget.unfinished, concurrency: 1 });
+    assert.deepEqual(
+      next.requests.map((r) => r.stage),
+      ['cluster', 'compare', 'decide'],
+    );
+    assert.deepEqual(continued.processed.sort(), [entries[0].id, entries[1].id].sort());
+    assert.deepEqual(continued.unfinished, {});
+    assert.equal(continued.report.clusters[0].decision?.decision, 'gap');
+    assert.deepEqual(continued.report.summarized, [], 'summarized earlier, not in this run');
   });
 
   it('stops on a provider error or a cancel and keeps unfinished entries', async () => {
     const provider = new FakeRadarProvider((stage, request, n) => (stage === 'summarize' && n === 1 ? new ProviderError('Rate limited', 'rate_limit', 429) : validReply(stage, request)));
     const failed = await analyzeEntries([entry(1), entry(2), entry(3)], provider, BUILTIN_INVENTORY, { concurrency: 1 });
-    assert.deepEqual(failed.processed, [entry(1).id]);
+    assert.deepEqual(failed.processed, [], 'the summarized entry never reached a decision');
+    assert.deepEqual(Object.keys(failed.unfinished), [entry(1).id]);
     assert.equal(failed.report.stats.stopped, 'error');
     assert.equal(failed.report.stats.error, 'Rate limited');
-    assert.equal(failed.report.stats.left, 2);
+    assert.equal(failed.report.stats.left, 3);
     assert.equal(provider.calls(), 2, 'nothing more is asked after the error');
 
     const idle = new FakeRadarProvider();
@@ -359,6 +425,186 @@ describe('Radar analysis', () => {
     assert.equal(idle.calls(), 0);
     assert.equal(cancelled.report.stats.stopped, 'aborted');
     assert.deepEqual(cancelled.processed, []);
+  });
+
+  it('goes past a request the provider rejects, sets that entry aside after two runs, and blames no entry when every request is rejected', async () => {
+    const { radar, statePath, entries, cleanup } = await queued(3);
+    try {
+      const poison = entries[0];
+      const rejects = (stage: RadarStage, request: ChatRequest) =>
+        stage === 'summarize' && JSON.stringify(request.messages).includes('RAWNOTE1:') ? new ProviderError('Content filtered', 'bad_request', 400) : validReply(stage, request);
+      const first = await radar.analyze(new FakeRadarProvider(rejects));
+      assert.ok(first && allDecided(first), 'the other entries are decided in the same run');
+      assert.equal(first?.stats.stopped, undefined);
+      let state = await loadRadarState(statePath);
+      assert.deepEqual(state.pending.map((e) => e.id), [poison.id], 'only the rejected entry waits');
+      assert.deepEqual(state.failures, { [poison.id]: 1 });
+
+      // With nothing else to answer, the provider is not shown to work: the entry is not blamed again.
+      await radar.analyze(new FakeRadarProvider(rejects));
+      state = await loadRadarState(statePath);
+      assert.deepEqual(state.failures, { [poison.id]: 1 });
+      assert.equal(state.quarantine.length, 0);
+
+      // A second run in which it is rejected while others are answered: set aside for a retry by hand.
+      state.pending.push(entry(4), entry(5));
+      await saveRadarState(statePath, state);
+      await radar.analyze(new FakeRadarProvider(rejects));
+      state = await loadRadarState(statePath);
+      assert.deepEqual(state.pending, []);
+      assert.deepEqual(state.failures, {});
+      assert.deepEqual(state.quarantine.map((q) => q.entry.id), [poison.id]);
+      assert.match(state.quarantine[0].reason, /failed on this entry in 2 runs: Content filtered/);
+    } finally {
+      cleanup();
+    }
+
+    // A wrong model name: every request is rejected, the run stops after three and no entry is blamed.
+    const wrong = new FakeRadarProvider(() => new ProviderError('No such model', 'bad_request', 404));
+    const result = await analyzeEntries([entry(1), entry(2), entry(3), entry(4), entry(5)], wrong, BUILTIN_INVENTORY, { concurrency: 1 });
+    assert.equal(wrong.calls(), 3);
+    assert.equal(result.report.stats.stopped, 'error');
+    assert.deepEqual(result.failed, []);
+  });
+
+  /** A radar whose queue holds `count` entries (entry(1) to entry(count)), and its state file. */
+  async function queued(count: number): Promise<{ radar: Radar; statePath: string; entries: RadarEntry[]; cleanup: () => void }> {
+    const { root, cleanup } = tempWorkspace();
+    const statePath = path.join(root, 'state.json');
+    const entries = Array.from({ length: count }, (_, i) => entry(i + 1));
+    await saveRadarState(statePath, { ...emptyRadarState(), pending: entries });
+    return { radar: new Radar({ statePath, sources: [source], now: NOW }), statePath, entries, cleanup };
+  }
+
+  /** Every relevant item of `report` sits in a decided cluster. */
+  function allDecided(report: RadarReport): boolean {
+    const decided = new Set(report.clusters.filter((c) => c.decision).flatMap((c) => c.itemIds));
+    return report.items.every((i) => i.relevance < 2 || decided.has(i.id));
+  }
+
+  it('keeps entries queued until a decision when the user stops, and goes on without summarizing them again', async () => {
+    const { radar, statePath, cleanup } = await queued(40);
+    try {
+      const controller = new AbortController();
+      const stopping = new FakeRadarProvider((stage, request, n) => {
+        if (stage === 'summarize' && n === 25) {
+          controller.abort(); // Stop, while the 26th summary is asked for
+          return new DOMException('The operation was aborted.', 'AbortError');
+        }
+        return manyChanges(25)(stage, request, n);
+      });
+      const stopped = (await radar.analyze(stopping, { signal: controller.signal, concurrency: 1 }))!;
+      assert.equal(stopped.stats.stopped, 'aborted');
+      assert.equal(stopped.items.length, 75);
+      assert.deepEqual(stopped.clusters, [], 'nothing was grouped or decided');
+      assert.equal(stopped.stats.left, 40);
+      const state = await loadRadarState(statePath);
+      assert.equal(state.pending.length, 40, 'every entry is still queued');
+      assert.equal(Object.keys(state.summarized).length, 25, 'with the 25 summaries already paid for');
+
+      const provider = new FakeRadarProvider(manyChanges(25));
+      const report = (await radar.analyze(provider, { concurrency: 1 }))!;
+      const asked = provider.requests.filter((r) => r.stage === 'summarize').map((r) => Number(/RAWNOTE(\d+)/.exec(prompt(r))![1]));
+      assert.deepEqual(
+        asked,
+        Array.from({ length: 15 }, (_, i) => 26 + i),
+        'only the 15 entries the first run did not get to',
+      );
+      assert.equal(report.items.length, 120);
+      assert.equal(report.clusters.length, 25);
+      assert.ok(allDecided(report), 'the first 25 entries were grouped and decided too');
+      assert.ok(allDecided(mergeReports(stopped, report)));
+      assert.deepEqual([report.stats.stopped, report.stats.left], [undefined, 0]);
+      assert.deepEqual(await loadRadarState(statePath).then((s) => [s.pending.length, s.summarized]), [0, {}]);
+      assert.equal(await radar.analyze(new FakeRadarProvider()), undefined, 'nothing is left');
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('holds calls back for the decisions, and keeps what the call limit left undecided queued', async () => {
+    // 40 entries with 3 relevant changes each, in 25 groups: 40 summaries, 10 mappings, 1 clustering,
+    // and 49 calls left for 25 comparisons and 25 decisions. Comparisons give way.
+    const full = await queued(40);
+    try {
+      const provider = new FakeRadarProvider(manyChanges(25));
+      const report = (await full.radar.analyze(provider, { concurrency: 1 }))!;
+      assert.deepEqual(
+        ['summarize', 'map', 'cluster', 'compare', 'decide'].map((s) => provider.calls(s as RadarStage)),
+        [40, 10, 1, 24, 25],
+      );
+      assert.equal(report.stats.calls, 100);
+      assert.ok(allDecided(report), 'every group was decided, one without a comparison');
+      assert.deepEqual([report.stats.stopped, report.stats.left], [undefined, 0]);
+      assert.equal((await loadRadarState(full.statePath)).pending.length, 0);
+    } finally {
+      full.cleanup();
+    }
+
+    // With 60 calls: 36 summaries, 9 mappings, 1 clustering and 14 decisions; 11 groups wait.
+    const short = await queued(40);
+    try {
+      const first = (await short.radar.analyze(new FakeRadarProvider(manyChanges(25)), { maxCalls: 60, concurrency: 1 }))!;
+      assert.equal(first.stats.stopped, 'budget');
+      assert.equal(first.clusters.filter((c) => c.decision).length, 14);
+      assert.ok(!allDecided(first));
+      const state = await loadRadarState(short.statePath);
+      assert.ok(state.pending.length > 4, 'the entries of the undecided groups are still queued');
+      assert.equal(state.pending.length, first.stats.left);
+      assert.equal(Object.keys(state.summarized).length, state.pending.length - 4, 'all but the 4 never summarized carry their items');
+
+      const provider = new FakeRadarProvider(manyChanges(25));
+      const second = (await short.radar.analyze(provider, { maxCalls: 60, concurrency: 1, previous: first }))!;
+      assert.equal(provider.calls('summarize'), 4, 'nothing is summarized twice');
+      assert.equal(provider.calls('map'), 1, 'nor mapped twice');
+      assert.ok(allDecided(second));
+      assert.ok(allDecided(mergeReports(first, second)), 'the panel shows every group decided');
+      assert.equal((await loadRadarState(short.statePath)).pending.length, 0);
+    } finally {
+      short.cleanup();
+    }
+  });
+
+  it('keeps the report before any entry leaves the queue, and the queue when that fails', async () => {
+    const { radar, statePath, cleanup } = await queued(2);
+    try {
+      await assert.rejects(
+        radar.analyze(new FakeRadarProvider(), {
+          save: async () => {
+            throw new Error('ENOSPC: no space left on device');
+          },
+        }),
+        /ENOSPC/,
+      );
+      assert.equal((await loadRadarState(statePath)).pending.length, 2, 'nothing left the queue');
+
+      const saved: Array<{ report: RadarReport; pending: number }> = [];
+      const report = await radar.analyze(new FakeRadarProvider(), { save: async (r) => void saved.push({ report: r, pending: (await loadRadarState(statePath)).pending.length }) });
+      assert.deepEqual(saved, [{ report, pending: 2 }], 'kept once, while both entries were still queued');
+      assert.equal((await loadRadarState(statePath)).pending.length, 0);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('takes a cluster slug the model wrote in Turkish in its ASCII form', async () => {
+    const provider = new FakeRadarProvider((stage, request) =>
+      stage === 'cluster' ? JSON.stringify({ clusters: [{ key: 'new:Arka-Plan-Ajanları-Şöyle-Çğü', title: 'Arka plan agentları', itemIds: changeIds(prompt(request)) }] }) : validReply(stage, request),
+    );
+    const { report } = await analyzeEntries([entry(1), other(2)], provider, BUILTIN_INVENTORY, { language: 'tr' });
+    assert.equal(provider.calls('cluster'), 1, 'no repair needed');
+    assert.deepEqual(
+      report.clusters.map((c) => [c.key, c.title]),
+      [['arka-plan-ajanlari-soyle-cgu', 'Arka plan agentları']],
+    );
+    assert.deepEqual(report.needsHuman, []);
+    assert.match(provider.requests.find((r) => r.stage === 'cluster')!.system, /"new:<slug>" with a short slug of lowercase ASCII letters \(a-z\), digits and dashes/);
+
+    assert.equal(normalizeSlug('İzin-Ağacı-ÖZEL-çğışöü'), 'izin-agaci-ozel-cgisou');
+    const ids = ['aaaaaaaaaaaaaaaa-1'];
+    assert.deepEqual(checkClusters({ clusters: [{ key: 'new:ızgara-görünümü', title: 'Izgara', itemIds: ids }] }, ids, new Set()).value?.[0].key, 'izgara-gorunumu');
+    const refused = checkClusters({ clusters: [{ key: 'new:エージェント', title: 'x', itemIds: ids }] }, ids, new Set());
+    assert.match(refused.errors.join(), /2-48 ASCII characters: lowercase letters a-z, digits and single dashes/, 'the repair says what is allowed');
   });
 
   it('lets the inventory decide when every item matches it the same way', async () => {
@@ -444,6 +690,7 @@ describe('Radar analysis', () => {
         await radar.status().then((s) => [s.pending, s.quarantined]),
         [0, 0],
       );
+      assert.deepEqual(mergeReports(failed, report!).needsHuman, [], 'read on the retry: no longer a part that needs a human');
       await assert.rejects(radar.analyze(new FakeRadarProvider(validReply, 'claude-code')), /Claude Code/);
     } finally {
       cleanup();
@@ -536,6 +783,40 @@ describe('Radar validators', () => {
     assert.match(parseJsonReply('{"a":}').error ?? '', /not valid JSON/);
     assert.match(parseJsonReply('x'.repeat(200_001)).error ?? '', /too long/);
   });
+
+  it('clean text the same way twice: what passed once passes when read back', () => {
+    for (const [raw, clean] of [
+      ['<<NEW>>', ''],
+      ['<a <b> c> plan mode', 'a c plan mode'],
+      ['Plan <a <b> mode> agents', 'Plan a mode agents'],
+      ['Node >= 22 and a < b', 'Node = 22 and a b'],
+      ['[a[b](https://x.example)](https://y.example) docs', '[ab] ( docs'],
+      ['z[a][](c)(d)', 'z[a] (d)'],
+      ['ja<b>vascript:alert(1)', 'ja vascript:alert(1)'],
+      ['<https://evil.example> ok', 'ok'],
+    ])
+      assert.equal(cleanModelText(raw), clean, raw);
+    // Every string of markup characters, words and spaces: cleaning clean text changes nothing.
+    const pieces = ['<', '>', '[', ']', '(', ')', '!', ':', ' ', '​', '\u0007', 'a', 'b', 'http', 'https:', 'javascript:', 'www.', '.', '/', 'x'];
+    let seed = 7;
+    const random = () => (seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648) / 2_147_483_648;
+    for (let n = 0; n < 5_000; n++) {
+      const raw = Array.from({ length: 1 + Math.floor(random() * 24) }, () => pieces[Math.floor(random() * pieces.length)]).join('');
+      const once = cleanModelText(raw);
+      assert.equal(cleanModelText(once), once, JSON.stringify(raw));
+    }
+    // Still linear on hostile input.
+    const started = Date.now();
+    for (const hostile of ['<'.repeat(20_000), '['.repeat(10_000) + '](x)'.repeat(2_500), '<'.repeat(10_000) + '>'.repeat(10_000), 'https:'.repeat(4_000)]) cleanModelText(hostile);
+    assert.ok(Date.now() - started < 2_000);
+
+    // So an item the pipeline accepted is the same item when its report is read back.
+    assert.match(checkSummaries({ items: [{ title: '<<NEW>>', summary: 'S', kind: 'fix', relevance: 1, tags: ['git'] }] }, '').errors.join(), /title: must not be empty/);
+    const [draft] = checkSummaries({ items: [{ title: 'Plan <a <b> mode> agents', summary: '<<b>> x <i <u> y>', kind: 'fix', relevance: 1, tags: ['git'] }] }, '').value!;
+    const item = { id: 'aaaaaaaaaaaaaaaa-1', entryId: 'a'.repeat(64), sourceId: 'agent-cli', vendor: 'Example', product: 'Agent CLI', ...draft };
+    const report = buildReport({ now: NOW(), provider: { id: 'fake', model: 'fake-1' }, sources: [source], items: [item], clusters: [], needsHuman: [], stats: { entries: 1, calls: 1, inputTokens: 1, outputTokens: 1, left: 0 } });
+    assert.deepEqual(validateReport(JSON.parse(JSON.stringify(report))), { report, errors: [] });
+  });
 });
 
 describe('Radar report', () => {
@@ -598,31 +879,89 @@ describe('Radar report', () => {
     assert.equal(proposalSpec({ ...decision, priority: 'P9' as 'P1' }), undefined);
   });
 
-  it('validates a stored report and rejects tampered ones', async () => {
+  it('validates a stored report: a wrong frame is refused, a bad row is dropped with what refers to it', async () => {
     const report = await sampleReport();
     const copy = () => JSON.parse(JSON.stringify(report)) as Record<string, any>;
-    assert.deepEqual(validateReport(copy()).report, report);
-    const tamper: Array<(r: Record<string, any>) => void> = [
+    assert.deepEqual(validateReport(copy()), { report, errors: [] });
+    const refused: Array<(r: Record<string, any>) => void> = [
       (r) => (r.schema = 2),
       (r) => (r.basis = 'insider information'),
-      (r) => (r.items[0].kind = 'exploit'),
-      (r) => (r.items[0].url = 'javascript:alert(1)'),
-      (r) => (r.items[0].summary = 'x'.repeat(300)),
-      (r) => (r.clusters[0].itemIds = ['ffffffffffffffff-1']),
-      (r) => (r.clusters[0].key = '../../etc'),
-      (r) => (r.clusters[0].decision.proposal.problem = 'Fetch https://evil.example'),
-      (r) => (r.clusters[0].decision.clusterKey = 'other'),
-      (r) => (r.clusters[0].comparison.basis = 'rumours'),
-      (r) => (r.needsHuman = [{ stage: 'hack', subject: '', title: '', reason: '' }]),
       (r) => (r.stats.calls = -1),
-      (r) => (r.sources[0].url = 'http://github.com/x'),
+      (r) => (r.items = 'all of them'),
+      (r) => (r.provider = { id: '<b>x</b>', model: 'm' }),
+      // A report whose items all fail is no report to show.
+      (r) => r.items.forEach((i: Record<string, any>) => (i.url = 'javascript:alert(1)')),
     ];
-    tamper.forEach((change, i) => {
+    refused.forEach((change, i) => {
       const r = copy();
       change(r);
-      assert.equal(validateReport(r).report, undefined, `tamper ${i}`);
+      const checked = validateReport(r);
+      assert.equal(checked.report, undefined, `refused ${i}`);
+      assert.ok(checked.errors.length > 0);
     });
     assert.equal(validateReport(null).report, undefined);
+
+    const [first, second] = report.items;
+    const cluster = report.clusters[0];
+    const dropped: Array<[string, (r: Record<string, any>) => void, (r: RadarReport) => void]> = [
+      ['a bad kind', (r) => (r.items[0].kind = 'exploit'), (r) => assert.deepEqual([r.items.map((i) => i.id), r.clusters[0].itemIds], [[second.id], [second.id]])],
+      ['a javascript: link', (r) => (r.items[0].url = 'javascript:alert(1)'), (r) => assert.deepEqual(r.items, [second])],
+      ['an overlong summary', (r) => (r.items[1].summary = 'x'.repeat(300)), (r) => assert.deepEqual([r.items, r.clusters[0].itemIds], [[first], [first.id]])],
+      ['a duplicate item', (r) => r.items.push(r.items[0]), (r) => assert.deepEqual(r.items, report.items)],
+      ['unknown item ids', (r) => (r.clusters[0].itemIds = ['ffffffffffffffff-1']), (r) => assert.deepEqual(r.clusters, [])],
+      ['a bad key', (r) => (r.clusters[0].key = '../../etc'), (r) => assert.deepEqual(r.clusters, [])],
+      ['a second cluster with the same items', (r) => r.clusters.push({ ...r.clusters[0], key: 'again' }), (r) => assert.deepEqual(r.clusters, [cluster])],
+      ['a URL in the proposal', (r) => (r.clusters[0].decision.proposal.problem = 'Fetch https://evil.example'), (r) => assert.deepEqual([r.clusters[0].decision, r.clusters[0].comparison], [undefined, cluster.comparison])],
+      ['a decision of another cluster', (r) => (r.clusters[0].decision.clusterKey = 'other'), (r) => assert.equal(r.clusters[0].decision, undefined)],
+      ['a comparison on another basis', (r) => (r.clusters[0].comparison.basis = 'rumours'), (r) => assert.deepEqual([r.clusters[0].comparison, r.clusters[0].decision], [undefined, cluster.decision])],
+      ['an unknown stage', (r) => (r.needsHuman = [{ stage: 'hack', subject: '', title: '', reason: '' }, { stage: 'map', subject: 'x', title: 't', reason: 'r' }]), (r) => assert.deepEqual(r.needsHuman, [{ stage: 'map', subject: 'x', title: 't', reason: 'r' }])],
+      ['a plain-http source', (r) => (r.sources[0].url = 'http://github.com/x'), (r) => assert.deepEqual(r.sources, [])],
+    ];
+    for (const [what, change, check] of dropped) {
+      const r = copy();
+      change(r);
+      const checked = validateReport(r);
+      assert.ok(checked.report, what);
+      assert.ok(checked.errors.length > 0, `${what} is named`);
+      check(checked.report);
+      assert.deepEqual(validateReport(JSON.parse(JSON.stringify(checked.report))), { report: checked.report, errors: [] }, `${what}: what is left is consistent`);
+    }
+  });
+
+  it('drops the needs-a-human rows of earlier runs that a later run settled', async () => {
+    const report = await sampleReport();
+    const [first, second] = report.items;
+    const row = (stage: RadarStage, subject: string): RadarNeedsHuman => ({ stage, subject, title: 't', reason: 'r' });
+    const earlier: RadarNeedsHuman[] = [
+      row('summarize', entry(1).id), // summarized now, with an item
+      row('summarize', entry(3).id), // summarized now, nothing notable in it
+      row('summarize', entry(4).id),
+      row('map', `${first.id},${second.id}`),
+      row('map', `${first.id},ffffffffffffffff-1`),
+      row('compare', 'background-agents'),
+      row('decide', 'background-agents'),
+      row('decide', 'other-cluster'),
+      row('cluster', ''),
+    ];
+    const next: RadarReport = { ...report, summarized: [entry(1).id, entry(2).id, entry(3).id], needsHuman: [row('decide', 'newer')] };
+    assert.deepEqual(
+      mergeReports({ ...report, needsHuman: earlier }, next).needsHuman,
+      [row('decide', 'newer'), row('summarize', entry(4).id), row('map', `${first.id},ffffffffffffffff-1`), row('decide', 'other-cluster'), row('cluster', '')],
+    );
+  });
+
+  it('moves an item a later run grouped again into its newer cluster', async () => {
+    const report = await sampleReport();
+    const regrouped: RadarReport = { ...report, clusters: [{ ...report.clusters[0], key: 'background-work', itemIds: [report.items[0].id], decision: undefined }] };
+    const merged = mergeReports(report, regrouped);
+    assert.deepEqual(
+      merged.clusters.map((c) => [c.key, c.itemIds]),
+      [
+        ['background-work', [report.items[0].id]],
+        ['background-agents', [report.items[1].id]],
+      ],
+    );
+    assert.deepEqual(validateReport(JSON.parse(JSON.stringify(merged))).errors, []);
   });
 });
 

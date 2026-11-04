@@ -14,15 +14,18 @@ import {
   t,
   validateReport,
 } from '@orka/core';
-import { promises as fs } from 'node:fs';
+import { promises as fs, type Stats } from 'node:fs';
 import * as path from 'node:path';
 import type { RadarClusterView, RadarItemView, RadarReportView, RadarView, ToWebview } from './protocol';
+import { RadarLock } from './radarLock';
 import type { AppSettings } from './settings';
 
 /** The first poll after the app starts waits this long, so the window opens first. */
 const START_DELAY_MS = 30_000;
 /** Then Radar looks every hour; each source is fetched only as often as its own interval allows. */
 const POLL_INTERVAL_MS = 60 * 60 * 1000;
+/** While another window runs Radar, this one looks this often for a new report (and whether that window quit). */
+const FOLLOW_INTERVAL_MS = 60_000;
 /** One analysis reads at most this many entries with at most this many model calls (the core's caps, shown in the panel). */
 const MAX_ENTRIES = 40;
 const MAX_CALLS = 100;
@@ -80,12 +83,14 @@ interface Analysis {
  * The desktop app's Radar. While the user has it on, it polls the public release notes of other AI
  * coding tools (never a model call); when they click Analyze (or with radar.autoAnalyze, after a
  * poll found something), it analyzes the new entries with the user's own provider and keeps one
- * merged report. Its files live in <orka home>/radar: the engine's state.json and report.json.
+ * merged report. Its files live in <orka home>/radar: the engine's state.json and report.json, and
+ * the lock that lets one Orka window at a time poll and analyze while the others only read.
  */
 export class RadarController {
   private readonly radar: Radar;
   private readonly timers: RadarTimers;
   private readonly reportFile: string;
+  private readonly lock: RadarLock;
   private timer?: unknown;
   private poller?: AbortController;
   private analysis?: Analysis;
@@ -93,6 +98,10 @@ export class RadarController {
   private status: RadarStatus = { pending: 0, quarantined: 0, sources: [] };
   /** A problem to show in the panel until the next poll or analysis. */
   private error?: string;
+  /** Another Orka window holds Radar's lock: it polls and analyzes, this one shows what it writes. */
+  private elsewhere = false;
+  /** report.json's time and size when this window last read or wrote it, to notice another window's report. */
+  private reportStamp?: string;
   private disposed = false;
 
   constructor(
@@ -104,22 +113,25 @@ export class RadarController {
     // Nothing is read or fetched here: the engine reads its state file when it is used.
     this.radar = new Radar({ statePath: path.join(dir, 'state.json'), sources: hooks.sources, fetchImpl: hooks.fetchImpl, now: hooks.now, pacer: hooks.pacer });
     this.reportFile = path.join(dir, 'report.json');
+    this.lock = new RadarLock(path.join(dir, 'lock'));
     this.timers = hooks.timers ?? NODE_TIMERS;
   }
 
-  /** Read the saved report and state (local files only), and plan the first poll when Radar is on. */
+  /** Read the saved report and state (local files only), and plan the first poll when Radar is on (and this window owns it). */
   async initialize(): Promise<void> {
+    if (this.settings.enabled) await this.claim();
     this.report = await this.readReport();
     this.status = await this.radar.status().catch(() => this.status);
-    this.postAll();
-    if (this.settings.enabled) this.schedule(START_DELAY_MS);
+    this.postState();
+    this.postReport();
+    if (this.settings.enabled) this.schedule(this.elsewhere ? FOLLOW_INTERVAL_MS : START_DELAY_MS);
   }
 
   /** The settings were read again: turning Radar on checks the feeds right away, turning it off stops everything. */
   apply(settings: AppSettings['radar']): void {
     const was = this.settings.enabled;
     this.settings = settings;
-    if (settings.enabled && !was) this.schedule(0);
+    if (settings.enabled && !was) void this.follow();
     else if (!settings.enabled && was) this.stop();
     this.postState();
   }
@@ -127,6 +139,8 @@ export class RadarController {
   postAll(): void {
     this.postState();
     this.postReport();
+    // The panel opened: what the window that runs Radar wrote meanwhile shows without waiting for the next look.
+    if (this.elsewhere) void this.follow();
   }
 
   postState(): void {
@@ -144,7 +158,7 @@ export class RadarController {
     if (!this.settings.enabled || this.disposed) return;
     this.timer = this.timers.set(() => {
       this.timer = undefined;
-      void this.poll();
+      void (this.elsewhere ? this.follow() : this.poll());
     }, ms);
   }
 
@@ -159,7 +173,16 @@ export class RadarController {
     const abort = new AbortController();
     this.poller = abort;
     this.error = undefined;
+    // Only the window that holds Radar's lock polls; any other one shows what that one finds.
+    if (!(await this.claim())) {
+      this.poller = undefined;
+      this.releaseWhenIdle();
+      await this.follow();
+      return;
+    }
     this.postState();
+    // The saved report could not be read at start (busy for a moment): it is tried again with each check.
+    if (!this.report) await this.reloadReport();
     let found = 0;
     try {
       found = (await this.radar.poll({ signal: abort.signal })).newEntries.length;
@@ -175,22 +198,73 @@ export class RadarController {
     if (found > 0 && this.settings.autoAnalyze && !('problem' in this.host.model())) void this.analyze();
   }
 
-  /** Turned off: no timer, and whatever runs is stopped. */
+  /** Turned off: no timer, and whatever runs is stopped; the lock goes once it has (see refresh). */
   private stop(): void {
     this.clearTimer();
     this.poller?.abort();
     this.analysis?.abort.abort();
+    this.elsewhere = false;
+    this.releaseWhenIdle();
   }
 
   private async refresh(): Promise<void> {
+    this.releaseWhenIdle();
     this.status = await this.radar.status().catch(() => this.status);
     this.postState();
+  }
+
+  // ---------------------------------------------------------------- one window at a time
+
+  /** Whether this window may poll and analyze: it holds Radar's lock, taking it when it is free or left over. */
+  private async claim(): Promise<boolean> {
+    if (!this.settings.enabled || this.disposed) return false;
+    let held: boolean;
+    try {
+      held = await this.lock.acquire();
+    } catch {
+      // The folder cannot be written (read-only, full): no lock, and the poll will say what is wrong.
+      held = true;
+    }
+    // Turned off (or closed) while it looked.
+    if (!this.settings.enabled || this.disposed) {
+      this.releaseWhenIdle();
+      return false;
+    }
+    if (this.elsewhere === held) {
+      this.elsewhere = !held;
+      this.postState();
+    }
+    return held;
+  }
+
+  /**
+   * Radar is on and another window may run it: take over when its lock is free (that window quit or
+   * turned it off) and poll now, otherwise show what that window wrote and look again in a minute.
+   */
+  private async follow(): Promise<void> {
+    const owner = await this.claim();
+    if (!this.settings.enabled || this.disposed) return;
+    await this.reloadReport();
+    if (owner) {
+      this.schedule(0);
+      return;
+    }
+    await this.refresh();
+    this.schedule(FOLLOW_INTERVAL_MS);
+  }
+
+  /** Off and idle: the lock goes, so another window can run Radar. An aborted analysis still writes its results first. */
+  private releaseWhenIdle(): void {
+    if ((!this.settings.enabled || this.disposed) && !this.poller && !this.analysis) this.lock.release();
   }
 
   // ---------------------------------------------------------------- analysis (model calls, on request)
 
   /** Analyze what is waiting with the model the panel shows; one analysis at a time. */
   async analyze(): Promise<void> {
+    if (!this.settings.enabled || this.analysis || this.disposed) return;
+    // Only the window that holds Radar's lock analyzes: another one would pay for the same entries again.
+    if (!(await this.claim())) return this.follow();
     if (!this.settings.enabled || this.analysis || this.disposed) return;
     const choice = this.host.model();
     if ('problem' in choice) {
@@ -232,10 +306,10 @@ export class RadarController {
           Object.assign(run, { stage: p.stage, done: p.done, total: p.total });
           this.postState();
         },
+        // Saved before the engine takes the entries off its queue: a failed save loses nothing.
+        save: (next) => this.saveReport(next),
       });
       if (report) {
-        this.report = mergeReports(this.report, report);
-        await this.saveReport();
         if (report.stats.stopped === 'error') this.error = t('The analysis stopped: {error}', { error: report.stats.error ?? '?' });
         this.postReport();
       }
@@ -254,6 +328,8 @@ export class RadarController {
 
   /** Put the entries the model could not read back in the queue (after a provider or model change). */
   async retry(): Promise<void> {
+    // The queue belongs to the window that runs Radar.
+    if (!(await this.claim())) return this.follow();
     await this.radar.retryQuarantined();
     await this.refresh();
   }
@@ -275,22 +351,31 @@ export class RadarController {
     await this.host.openExternal(target);
   }
 
+  /** The app quits: everything stops and the lock goes now (the process exits right after). */
   dispose(): void {
     this.stop();
     this.disposed = true;
+    this.lock.release();
   }
 
   // ---------------------------------------------------------------- the report file
 
   /** The saved report, checked field by field; a file that fails the checks is moved aside and never used. */
   private async readReport(): Promise<RadarReport | undefined> {
-    let raw: string;
+    let raw = '';
+    let stamp: string | undefined;
     try {
-      if ((await fs.stat(this.reportFile)).size > MAX_REPORT_BYTES) throw new Error('too large');
-      raw = await fs.readFile(this.reportFile, 'utf8');
+      const stat = await fs.stat(this.reportFile);
+      // A file too large to be a report is set aside like a broken one.
+      if (stat.size <= MAX_REPORT_BYTES) {
+        raw = await fs.readFile(this.reportFile, 'utf8');
+        stamp = stampOf(stat);
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-      raw = '';
+      // Busy or locked for a moment (a scanner, a backup): the file stays where it is and is read again later.
+      this.error = t('The saved Radar report could not be read right now: {error}', { error: messageOf(error) });
+      return undefined;
     }
     let value: unknown;
     try {
@@ -299,29 +384,75 @@ export class RadarController {
       value = undefined;
     }
     const { report } = validateReport(value);
-    if (report) return report;
+    if (report) {
+      this.reportStamp = stamp;
+      return report;
+    }
     const aside = path.join(this.dir, `report.broken-${Date.now()}.json`);
     await fs.rename(this.reportFile, aside).catch(() => undefined);
     this.error = t('The saved Radar report could not be read and was set aside ({file}).', { file: path.basename(aside) });
     return undefined;
   }
 
-  private async saveReport(): Promise<void> {
-    if (!this.report) return;
+  /**
+   * The report file now: unchanged since this window last read or wrote it, missing, or a report
+   * another window wrote. Throws when it cannot be read or fails its checks.
+   */
+  private async diskReport(): Promise<{ report: RadarReport; stamp: string } | 'unchanged' | 'missing'> {
+    let stat: Stats;
+    try {
+      stat = await fs.stat(this.reportFile);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
+      throw error;
+    }
+    const stamp = stampOf(stat);
+    if (stamp === this.reportStamp) return 'unchanged';
+    const { report } = stat.size > MAX_REPORT_BYTES ? {} : validateReport(JSON.parse(await fs.readFile(this.reportFile, 'utf8')));
+    if (!report) throw new Error(t('The saved Radar report does not pass its checks.'));
+    return { report, stamp };
+  }
+
+  /** Show the report the window that runs Radar wrote, once the file changed (a file that does not read well is tried again later). */
+  private async reloadReport(): Promise<void> {
+    const changed = await this.diskReport().catch(() => undefined);
+    if (typeof changed !== 'object' || this.disposed) return;
+    this.report = changed.report;
+    this.reportStamp = changed.stamp;
+    this.postReport();
+  }
+
+  /**
+   * Add a run's report to the saved one and make the result this window's. When that fails, nothing
+   * changes (and no temp file stays), and the engine keeps the entries queued.
+   */
+  private async saveReport(report: RadarReport): Promise<void> {
+    // Another window wrote the file since this one read it (it ran Radar until it quit, or took over a
+    // lock that looked left over): the run goes on top of that report. A file that cannot be read is
+    // never written over: the save fails and is tried again with the next analysis.
+    const onDisk = await this.diskReport();
+    const next = mergeReports(typeof onDisk === 'object' ? onDisk.report : this.report, report);
     await fs.mkdir(this.dir, { recursive: true });
     const tmp = `${this.reportFile}.${process.pid}.tmp`;
-    await fs.writeFile(tmp, `${JSON.stringify(this.report)}\n`, 'utf8');
-    // Windows refuses to replace a file a scanner has open for a moment: try a few times.
-    for (let attempt = 1; ; attempt++) {
-      try {
-        await fs.rename(tmp, this.reportFile);
-        return;
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (attempt >= 8 || (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')) throw error;
-        await new Promise((resolve) => setTimeout(resolve, 20 * attempt));
+    try {
+      await fs.writeFile(tmp, `${JSON.stringify(next)}\n`, 'utf8');
+      // Windows refuses to replace a file a scanner has open for a moment: try a few times.
+      for (let attempt = 1; ; attempt++) {
+        try {
+          await fs.rename(tmp, this.reportFile);
+          break;
+        } catch (error) {
+          const code = (error as NodeJS.ErrnoException).code;
+          if (attempt >= 8 || (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 20 * attempt));
+        }
       }
+    } catch (error) {
+      await fs.rm(tmp, { force: true }).catch(() => undefined);
+      throw error;
     }
+    this.report = next;
+    this.reportStamp = await fs.stat(this.reportFile).then(stampOf, () => undefined);
   }
 
   // ---------------------------------------------------------------- views
@@ -362,6 +493,7 @@ export class RadarController {
       ...('problem' in model ? { modelProblem: model.problem } : { model }),
       ...(run ? { analysis: { stage: run.stage, done: run.done, total: run.total, calls: run.calls, maxCalls: MAX_CALLS } } : {}),
       ...(this.error ? { error: this.error } : {}),
+      ...(this.elsewhere && this.settings.enabled ? { elsewhere: true } : {}),
     };
   }
 
@@ -417,4 +549,9 @@ function itemView(item: RadarItem): RadarItemView {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A file's time and size: another value means another write. */
+function stampOf(stat: { mtimeMs: number; size: number }): string {
+  return `${stat.mtimeMs}:${stat.size}`;
 }

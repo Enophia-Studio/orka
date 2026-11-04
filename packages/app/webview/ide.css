@@ -750,6 +750,11 @@
   font-size: var(--fs-13);
 }
 
+/* Focus rests on the panel itself only when the control that had it is gone; Tab goes on from there. */
+.radar-panel:focus {
+  outline: none;
+}
+
 .radar-panel p {
   margin: 0;
   line-height: 1.55;

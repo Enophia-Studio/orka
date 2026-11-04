@@ -8,20 +8,8 @@ const TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 5;
 /** Requests to one host are at least this far apart (GitHub serves most of the feeds). */
 const HOST_SPACING_MS = 1_000;
-/** A strong or weak ETag as servers send it; anything else is neither stored nor sent back. */
-const ETAG = /^(?:W\/)?"[\x21\x23-\x7e]{1,200}"$/;
-/** An HTTP date ("Wed, 21 Oct 2015 07:28:00 GMT"). */
-const HTTP_DATE = /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
 
-export interface RadarValidators {
-  etag?: string;
-  lastModified?: string;
-}
-
-export type RadarFetchResult =
-  | { status: 'not_modified' }
-  | { status: 'ok'; body: string; truncated: boolean; etag?: string; lastModified?: string; url: string }
-  | { status: 'error'; error: string };
+export type RadarFetchResult = { status: 'ok'; body: string; truncated: boolean; url: string } | { status: 'error'; error: string };
 
 export interface RadarFetchOptions {
   fetchImpl?: typeof fetch;
@@ -66,10 +54,13 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Fetch one source with a conditional GET. HTTPS only; redirects are followed by hand and only
- * to the source's own hosts; the body is cut at `maxBytes`. Never throws.
+ * Fetch one source with a plain GET. No conditional request: an ETag or date the server chose and
+ * the radar sent back on every poll could tell one install's requests apart, so the only header
+ * that varies is the User-Agent (the poll skips an unchanged body by its hash instead). HTTPS
+ * only; redirects are followed by hand and only to the source's own hosts; the body is cut at
+ * `maxBytes`. Never throws.
  */
-export async function fetchSource(source: RadarSource, validators: RadarValidators, opts: RadarFetchOptions = {}): Promise<RadarFetchResult> {
+export async function fetchSource(source: RadarSource, opts: RadarFetchOptions = {}): Promise<RadarFetchResult> {
   const fetchImpl = opts.fetchImpl ?? fetch;
   const timeoutMs = opts.timeoutMs ?? TIMEOUT_MS;
   const timeout = AbortSignal.timeout(timeoutMs);
@@ -78,10 +69,6 @@ export async function fetchSource(source: RadarSource, validators: RadarValidato
     'User-Agent': RADAR_USER_AGENT,
     Accept: 'application/atom+xml, application/rss+xml, application/xml;q=0.9, text/markdown, text/plain;q=0.8, */*;q=0.5',
   };
-  const etag = validators.etag && ETAG.test(validators.etag) ? validators.etag : undefined;
-  const lastModified = validators.lastModified && HTTP_DATE.test(validators.lastModified) ? validators.lastModified : undefined;
-  if (etag) headers['If-None-Match'] = etag;
-  if (lastModified) headers['If-Modified-Since'] = lastModified;
   let url: URL;
   try {
     url = new URL(source.url);
@@ -105,26 +92,13 @@ export async function fetchSource(source: RadarSource, validators: RadarValidato
         }
         continue;
       }
-      if (response.status === 304) {
-        await response.body?.cancel().catch(() => {});
-        // A 304 answers only a conditional request; without one there is nothing it could mean.
-        return etag || lastModified ? { status: 'not_modified' } : { status: 'error', error: t('The server answered {status}.', { status: 304 }) };
-      }
+      // A 304 too: it answers only a conditional request, and the radar sends none.
       if (response.status !== 200) {
         await response.body?.cancel().catch(() => {});
         return { status: 'error', error: t('The server answered {status}.', { status: response.status }) };
       }
-      const receivedEtag = response.headers.get('etag') ?? undefined;
-      const receivedDate = response.headers.get('last-modified') ?? undefined;
       const { text, truncated } = await readCapped(response, source.maxBytes);
-      return {
-        status: 'ok',
-        body: text,
-        truncated,
-        url: url.href,
-        ...(receivedEtag && ETAG.test(receivedEtag) ? { etag: receivedEtag } : {}),
-        ...(receivedDate && HTTP_DATE.test(receivedDate) ? { lastModified: receivedDate } : {}),
-      };
+      return { status: 'ok', body: text, truncated, url: url.href };
     }
   } catch (error) {
     if (opts.signal?.aborted) return { status: 'error', error: t('Cancelled.') };

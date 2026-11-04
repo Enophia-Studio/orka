@@ -4,11 +4,11 @@ import { HostPacer } from './fetch';
 import { BUILTIN_INVENTORY, type FeatureInventory } from './inventory';
 import { analyzeEntries, pollSources, RADAR_REFUSED_PROVIDERS, type RadarAnalyzeOptions, type RadarPollResult } from './pipeline';
 import { defaultSources, validateSources } from './sources';
-import { loadRadarState, pruneSources, QUARANTINE_CAP, queue, type RadarPollStatus, saveRadarState } from './state';
+import { loadRadarState, pruneSources, QUARANTINE_CAP, queue, RADAR_ENTRY_FAILURES, type RadarPollStatus, saveRadarState } from './state';
 import type { RadarReport, RadarSource } from './types';
 
 export interface RadarOptions {
-  /** The JSON state file (validators, seen ids, pending entries). Created on first use. */
+  /** The JSON state file (seen ids, body hashes, pending entries and what was summarized of them). Created on first use. */
   statePath: string;
   /** Default: the "AI coding tools" preset. Checked with validateSources; invalid ones are left out (see `sourceErrors`). */
   sources?: readonly unknown[];
@@ -18,6 +18,16 @@ export interface RadarOptions {
   pacer?: HostPacer;
   /** Per request, default 30 s. */
   timeoutMs?: number;
+}
+
+export interface RadarRunOptions extends RadarAnalyzeOptions {
+  inventory?: FeatureInventory;
+  /**
+   * Keeps the run's report (the desktop app merges it into its report file). Awaited before any
+   * entry leaves the queue: when it throws, the queue stays as it was and analyze() rethrows, so a
+   * report that could not be kept is never lost with its entries.
+   */
+  save?: (report: RadarReport) => Promise<void>;
 }
 
 export interface RadarSourceStatus {
@@ -85,24 +95,49 @@ export class Radar {
 
   /**
    * Analyze queued entries with `provider` (the user's own API provider; never the Claude Code
-   * provider). Returns undefined without any model call when nothing is queued. Entries the run
-   * did not get to stay queued; entries the model failed on twice are quarantined.
+   * provider). Returns undefined without any model call when nothing is queued. An entry leaves
+   * the queue once its relevant items reached a decision; the rest stay queued (with what was
+   * already summarized of them, so the next run goes on from there), and entries the model failed
+   * on twice are quarantined.
    */
-  async analyze(provider: AIProvider, opts: RadarAnalyzeOptions & { inventory?: FeatureInventory } = {}): Promise<RadarReport | undefined> {
+  async analyze(provider: AIProvider, opts: RadarRunOptions = {}): Promise<RadarReport | undefined> {
     if (RADAR_REFUSED_PROVIDERS.includes(provider.id)) throw new Error(t('The radar needs an API provider; the Claude Code provider cannot run it.'));
     if (this.analyzing) throw new Error(t('The radar is already analyzing new entries.'));
     this.analyzing = true;
     try {
-      const { pending } = await this.exclusive(() => loadRadarState(this.options.statePath));
+      const { pending, summarized } = await this.exclusive(() => loadRadarState(this.options.statePath));
       if (pending.length === 0) return undefined;
-      const result = await analyzeEntries(pending, provider, opts.inventory ?? BUILTIN_INVENTORY, { ...opts, sources: this.sources, now: opts.now ?? this.options.now });
+      const { inventory, save, ...rest } = opts;
+      const result = await analyzeEntries(pending, provider, inventory ?? BUILTIN_INVENTORY, { ...rest, sources: this.sources, now: opts.now ?? this.options.now, summarized });
+      // The report is kept first: if that fails, nothing leaves the queue.
+      await save?.(result.report);
       await this.exclusive(async () => {
         // Read again: a poll may have queued more entries meanwhile.
         const state = await loadRadarState(this.options.statePath);
         const done = new Set(result.processed);
         state.pending = state.pending.filter((e) => !done.has(e.id));
+        const waiting = new Set(state.pending.map((e) => e.id));
+        for (const id of Object.keys(state.summarized)) if (!waiting.has(id)) delete state.summarized[id];
+        for (const [id, items] of Object.entries(result.unfinished)) if (waiting.has(id)) state.summarized[id] = items;
         const at = this.now().toISOString();
         state.quarantine.push(...result.quarantined.map((q) => ({ ...q, at })));
+        // An entry the provider keeps failing on (while it answers others) must not hold up the queue:
+        // it goes to the back, and after RADAR_ENTRY_FAILURES runs it is set aside for a retry by hand.
+        for (const id of Object.keys(state.failures)) if (!waiting.has(id)) delete state.failures[id];
+        for (const id of result.failed) {
+          const index = state.pending.findIndex((e) => e.id === id);
+          if (index < 0) continue;
+          const [entry] = state.pending.splice(index, 1);
+          const count = (state.failures[id] ?? 0) + 1;
+          if (count >= RADAR_ENTRY_FAILURES) {
+            delete state.failures[id];
+            delete state.summarized[id];
+            state.quarantine.push({ entry, stage: 'summarize', reason: `The provider failed on this entry in ${count} runs: ${result.report.stats.error ?? '?'}`.slice(0, 1_000), at });
+          } else {
+            state.failures[id] = count;
+            state.pending.push(entry);
+          }
+        }
         if (state.quarantine.length > QUARANTINE_CAP) state.quarantine.splice(0, state.quarantine.length - QUARANTINE_CAP);
         await saveRadarState(this.options.statePath, state);
       });
