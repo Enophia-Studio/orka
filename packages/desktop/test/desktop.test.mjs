@@ -440,6 +440,57 @@ globalThis.fetch = (input, init) => {
     assert.equal(readFileSync(path.join(work, 'src', 'calc.ts'), 'utf8'), after);
   });
 
+  it('keeps a file the user edited after the agent: Revert all, Go back, then undoes only the agent part', async () => {
+    const notes = path.join(work, 'notes', 'hello.txt');
+    mkdirSync(path.join(work, 'notes'));
+    writeFileSync(notes, 'one\ntwo\nthree\nfour\nfive\nsix\n');
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    script = [() => toolUse('toolu_w', 'write_file', { path: 'notes/hello.txt', content: 'ONE\ntwo\nthree\nfour\nfive\nsix\n' }), () => reply('Shouted the first line.')];
+    await ask('Shout the first line', 'Shouted the first line.');
+
+    // The user opens the file and changes its last line.
+    await browser.clickSelector('#side-files [data-action="open-files"]');
+    await until(() => browser.evaluate('!!document.querySelector("#files-panel:not([hidden]) [data-path=notes]")'), 'the Files tree');
+    await browser.clickSelector('#files-panel [data-path="notes"]');
+    await until(() => browser.evaluate('!!document.querySelector("#files-panel [data-path=\'notes/hello.txt\']")'), 'the notes folder');
+    await browser.clickSelector('#files-panel [data-path="notes/hello.txt"]');
+    await until(() => browser.evaluate('!!document.querySelector("#editor-pane:not([hidden]) .cm-editor")'), 'the editor with the file');
+    await cursorAtLine(6);
+    await browser.type('mine ');
+    await until(() => browser.evaluate('!!document.querySelector("#editor-head .dirty-dot")'), 'the unsaved mark');
+    await ctrlS();
+    const mine = 'ONE\ntwo\nthree\nfour\nfive\nmine six\n';
+    await until(() => readFileSync(notes, 'utf8') === mine, 'the save');
+    await browser.clickSelector('[data-action="show-chat"]');
+    await showChanges();
+    await until(() => browser.evaluate('document.querySelector(".changes .change-mark")?.getAttribute("aria-label") === "Edited by you"'), 'the Edited by you mark');
+
+    // Revert all leaves it alone (no question: nothing else to revert) and says so.
+    await browser.clickSelector('[data-action="revert-all"]');
+    await until(async () => (await text()).includes('Kept 1 file(s) you edited: notes/hello.txt.'), 'the notice');
+    assert.equal(readFileSync(notes, 'utf8'), mine);
+
+    // Going back to before the request keeps it too, and the question names it first.
+    await browser.clickSelector('[data-action="rewind"]');
+    await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog")'), 'the confirmation dialog');
+    assert.match(await text(), /Files you edited yourself are kept: notes\/hello\.txt\./);
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-action"][data-value="Go back"]');
+    await until(async () => /Went back\..*Kept 1 file\(s\) you edited: notes\/hello\.txt\./.test(await text()), 'the notice');
+    assert.equal(readFileSync(notes, 'utf8'), mine);
+
+    // Revert offers only to undo the agent's part, which needs Git.
+    if (spawnSync('git', ['--version']).status !== 0) return;
+    await showChanges();
+    await browser.clickSelector('.changes [data-action="revert"]');
+    await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog")'), 'the Revert dialog');
+    assert.match(await text(), /You edited notes\/hello\.txt after the agent\./);
+    assert.deepEqual(await browser.evaluate('[...document.querySelectorAll(".modal-backdrop [data-action=dialog-action]")].map((b) => b.dataset.value)'), ["Undo only the agent's part"]);
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-action"]');
+    await until(() => readFileSync(notes, 'utf8') === 'one\ntwo\nthree\nfour\nfive\nmine six\n', "only the agent's part undone");
+  });
+
   it('only lets its own window in', async () => {
     const url = await launch();
     const { port } = new URL(url);

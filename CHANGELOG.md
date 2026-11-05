@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.5.0
+
+The desktop app gets Files: browse the open folder, edit files and send them to the agent. See [Files (desktop)](README.md#files-desktop).
+
+**Files (desktop app)**
+
+- **A Files tab** next to the plan and changes and Radar, also opened from the session list, its rail or **Ctrl+Shift+E**. The tree lists a folder when you open it, marks the open file, unsaved changes, the agent's changes and the files you edited, and dims dependency and build folders. `.git` is not listed.
+- **An editor (CodeMirror 6)** for UTF-8 text files up to 2 MB. It opens in place of the conversation, with the message box kept below it and a **Chat | file** switch in the title bar. Syntax colours for JavaScript/TypeScript, JSON, CSS and Unity's USS, HTML, Markdown, Python, YAML (and Unity's text assets) and C# and other C-like languages; other files open as plain text. Search with Ctrl+F, save with **Ctrl+S**, **Esc** goes back to the message box. A file's line endings and UTF-8 BOM are kept as they were; a file with mixed line endings opens read-only, and binary, non-UTF-8 and larger files are not opened.
+- **A save never overwrites a newer file.** When the file changed on disk since you opened it, the save is refused and a banner offers **Reload**, **Compare** (the disk against your text) or **Keep mine**, which asks before it overwrites. A file that changes on disk while you have no unsaved changes simply follows. **Open in system app** opens a file in its own program, never a program or a script.
+- **No save while an agent works** or a Freebuff hand-off is open, so a save is never taken for the agent's change. You can keep typing; save when it stops.
+- **Links that leave the folder are neither listed nor opened**, and every read and write checks the real path of the file it opens.
+
+**Send to the agent**
+
+- **The selected lines** (Send selection, **Ctrl+L** or the **+** menu) or **the whole file** (Attach file) go along with the next message; the agent sees the file, the line numbers and the text. A secret-looking file (`.env`, keys) is added only after you confirm, and web access and MCP tools then ask for approval for the rest of the task.
+
+**Your edits are protected**
+
+- A file you saved yourself after the agent changed it gets a pencil mark, **Edited by you**, in Changes and in the Files tree. **Revert all** and **Go back** keep such files as you saved them and name them (Go back already in its question), and **Revert part** leaves alone a part that touches lines you edited. **Revert** on such a file offers only **Undo only the agent's part** (with Git, when your lines and the agent's are apart), and never a revert that would throw your edits away.
+
+**Changes**
+
+- In the desktop app, the changed parts of a file are syntax-highlighted. Keep and Revert part check that the part is still the one you saw.
+
+**Core**
+
+- `safeFs`: reads and writes inside the workspace that follow no link out of it and check the real path and identity of the file they open; a replace checks the file's hash under the same open file.
+- `ChangeTracker` records files the user edited; `revert`, `revertAll`, `revertHunk` and `rewindTo` respect them, `revertAgentPart` undoes only the agent's part, and `rewind` returns the files it `kept`. The CLI prints them.
+
+**Security**
+
+- The desktop window's CSP allows its per-page nonce for style elements (the editor's), and nothing else changes. No new network access and no telemetry: files are read and written on your machine only. The VS Code extension and the CLI are unchanged.
+
+**Third-party**
+
+- CodeMirror and Lezer (MIT) are in the desktop app, listed in its `THIRD_PARTY_NOTICES.txt`.
+
 ## 0.4.0
 
 The desktop app gets Radar: it watches what other AI coding tools ship and, when you ask, proposes what Orka could add. See [Radar (desktop)](README.md#radar-desktop).

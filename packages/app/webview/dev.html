@@ -9,7 +9,8 @@
   Radar tab in that state, ?auto with radar.autoAnalyze on (the panel's buttons work: turn it on,
   Analyze, Stop, Start a session). With ?ide, ?files opens the Files tab on a small in-memory
   folder, ?editor also opens LobbyManager.cs in the editor, ?idle ends the sample run (so Save
-  works), and ?conflict makes the first save find the file changed on disk.
+  works), ?conflict makes the first save find the file changed on disk, and ?edited marks
+  LobbyManager.cs as edited by the user in Changes (whose hunks ?ide highlights).
 -->
 <html lang="en">
 <head>
@@ -337,7 +338,7 @@
         folders: [{ name: 'LobbyDemo', path: root }, { name: 'SharedLib', path: 'D:/game/SharedLib' }],
         folder: root,
         canOpenFolder: ide,
-        app: { version: '0.4.0', checkUpdates: true, checkedAt: Date.now() - 3600e3 },
+        app: { version: '0.5.0', checkUpdates: true, checkedAt: Date.now() - 3600e3 },
         agentClis: [
           { id: 'gemini', label: 'Gemini CLI', vendor: 'Google', custom: false, enabled: true, status: { state: 'ready', version: '0.66.0', executable: 'C:/Users/you/AppData/Roaming/npm/gemini.cmd' }, path: '', note: "Runs your installed Gemini CLI in its ACP mode. Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it. Google moved unpaid and Google One accounts from Gemini CLI to Antigravity.", termsUrl: 'https://geminicli.com/docs/resources/tos-privacy/', docsUrl: 'https://geminicli.com/docs/cli/acp-mode/', installHint: 'npm install -g @google/gemini-cli', loginCommand: 'gemini', preview: false },
           { id: 'codex', label: 'Codex (codex-acp)', vendor: 'OpenAI', custom: false, enabled: true, status: { state: 'not_found' }, path: '', note: 'Runs the codex-acp adapter (Apache-2.0) you installed. Sign in with Codex itself, with a ChatGPT plan or an API key.', termsUrl: 'https://openai.com/policies/terms-of-use/', docsUrl: 'https://github.com/agentclientprotocol/codex-acp', installHint: 'npm install -g @agentclientprotocol/codex-acp', loginCommand: 'codex login', preview: false },
@@ -443,7 +444,7 @@
       ev({ type: 'tool_call', call: { id: 't4', name: 'edit_file', title: 'Edit Assets/Scripts/Net/LobbyManager.cs', category: 'edit', risk: 'normal', status: 'done', output: 'Edited Assets/Scripts/Net/LobbyManager.cs: replaced 1 occurrence.', path: root + '/Assets/Scripts/Net/LobbyManager.cs' } });
       ev({ type: 'tool_call', call: { id: 't5', name: 'write_file', title: 'Create Assets/Scripts/Net/ReadyState.cs', category: 'edit', risk: 'normal', status: 'done', output: 'Created Assets/Scripts/Net/ReadyState.cs (42 lines).', path: root + '/Assets/Scripts/Net/ReadyState.cs' } });
       ev({ type: 'changes', changes: [
-        { absPath: root + '/Assets/Scripts/Net/LobbyManager.cs', relPath: 'Assets/Scripts/Net/LobbyManager.cs', status: 'modified', added: 38, removed: 6 },
+        { absPath: root + '/Assets/Scripts/Net/LobbyManager.cs', relPath: 'Assets/Scripts/Net/LobbyManager.cs', status: 'modified', added: 38, removed: 6, ...(params.has('edited') ? { userEdited: true } : {}) },
         { absPath: root + '/Assets/Scripts/Net/ReadyState.cs', relPath: 'Assets/Scripts/Net/ReadyState.cs', status: 'added', added: 42, removed: 0 },
         { absPath: root + '/Assets/Scripts/Legacy/OldLobby.cs', relPath: 'Assets/Scripts/Legacy/OldLobby.cs', status: 'deleted', added: 0, removed: 57 },
       ] });
