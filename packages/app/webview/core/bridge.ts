@@ -15,8 +15,13 @@ export interface UiState {
   asideClosed?: boolean;
   /** Folded sections of the session list ("group:<id>", "folder:<path>"). */
   collapsedSections?: string[];
-  /** The tab of the side panel: the task's plan and changes, or Radar. */
-  asideTab?: 'task' | 'radar';
+  /** The tab of the side panel: the task's plan and changes, Files (desktop), or Radar. */
+  asideTab?: 'task' | 'radar' | 'files';
+  /**
+   * The desktop editor in this folder: the file open (and whether it showed in place of the
+   * conversation) and the folders open in the Files tree. Paths only, never a file's contents.
+   */
+  editor?: { folder: string; path?: string; shown?: boolean; expanded: string[] };
 }
 
 const initial = vscode.getState();

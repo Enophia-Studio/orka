@@ -4,7 +4,7 @@
 // in-app dialogs, file writes, task history and (on Windows) DPAPI-protected API keys.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -262,6 +262,78 @@ globalThis.fetch = (input, init) => {
     await until(() => browser.evaluate('!document.querySelector("#aside-task").hidden'), 'the plan and changes');
     assert.equal(await browser.evaluate('document.querySelector("#radar-panel").hidden'), true);
     assert.equal(await browser.evaluate('document.querySelector("#aside-tab-task").getAttribute("aria-selected")'), 'true');
+  });
+
+  /** A TypeScript file with Windows line endings, and a junction that leads out of the folder. */
+  function filesFixture() {
+    const outside = mkdtempSync(path.join(tmpdir(), 'orka-desktop-outside-'));
+    writeFileSync(path.join(outside, 'secret.txt'), 'outside\n');
+    mkdirSync(path.join(work, 'src'));
+    const hello = "export const greeting = 'hello';\r\nexport function greet(name: string): string {\r\n  return `${greeting}, ${name}`;\r\n}\r\n";
+    writeFileSync(path.join(work, 'src', 'hello.ts'), hello);
+    symlinkSync(outside, path.join(work, 'out'), process.platform === 'win32' ? 'junction' : 'dir');
+    return { hello, outside };
+  }
+
+  /** Put the editor's cursor at the start of a line (1-based), as a click there would. */
+  const cursorAtLine = (line) =>
+    browser.evaluate(`(() => {
+      document.querySelector('.cm-content').focus();
+      const at = document.querySelectorAll('.cm-line')[${line - 1}];
+      const range = document.createRange();
+      range.setStart(at, 0);
+      range.collapse(true);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    })()`);
+  const ctrlS = () =>
+    browser.evaluate(`document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown', { key: 's', code: 'KeyS', ctrlKey: true, bubbles: true, cancelable: true }))`);
+
+  it('opens a file from the Files tab in the editor and saves it with its own line endings', async () => {
+    const { hello, outside } = filesFixture();
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      // CodeMirror's styles must pass the page's CSP (they carry its nonce).
+      await browser.evaluate(`window.cspViolations = []; document.addEventListener('securitypolicyviolation', (e) => window.cspViolations.push(e.violatedDirective + ' ' + e.blockedURI))`);
+      assert.equal(await browser.evaluate('document.querySelector("#aside").hidden'), true, 'the side panel is closed');
+
+      await browser.clickSelector('#side-files [data-action="open-files"]');
+      await until(() => browser.evaluate('!!document.querySelector("#files-panel:not([hidden]) [data-path=src]")'), 'the Files tree');
+      assert.equal(await browser.evaluate('document.querySelector("#aside-tab-files").getAttribute("aria-selected")'), 'true');
+      assert.equal(await browser.evaluate('!!document.querySelector("#files-panel [data-path=out]")'), false, 'a junction out of the folder is not listed');
+
+      await browser.clickSelector('#files-panel [data-path="src"]');
+      await until(() => browser.evaluate('!!document.querySelector("#files-panel [data-path=\'src/hello.ts\']")'), 'the src folder');
+      await browser.clickSelector('#files-panel [data-path="src/hello.ts"]');
+      await until(() => browser.evaluate('!!document.querySelector("#editor-pane:not([hidden]) .cm-editor .tok-keyword")'), 'the editor with the file');
+      assert.equal(await browser.evaluate('getComputedStyle(document.querySelector(".cm-editor")).display'), 'flex', "CodeMirror's base styles apply");
+      assert.equal(await browser.evaluate('document.querySelector("#transcript").hidden'), true, 'the file shows in place of the conversation');
+      assert.match(await browser.evaluate('document.querySelector("#editor-status").textContent'), /CRLF/);
+      assert.deepEqual(await browser.evaluate('window.cspViolations'), []);
+
+      await cursorAtLine(1);
+      await browser.type('// typed ');
+      await until(() => browser.evaluate('!!document.querySelector("#editor-head .dirty-dot")'), 'the unsaved mark');
+      await ctrlS();
+      const saved = `// typed ${hello}`;
+      await until(() => readFileSync(path.join(work, 'src', 'hello.ts'), 'utf8') === saved, 'the save, with CRLF kept');
+      await until(() => browser.evaluate('!document.querySelector("#editor-head .dirty-dot")'), 'a clean buffer');
+
+      // Another program writes the file meanwhile: the next save is refused and the disk keeps its text.
+      const external = hello.replace('hello', 'hi there');
+      writeFileSync(path.join(work, 'src', 'hello.ts'), external);
+      await cursorAtLine(2);
+      await browser.type('// mine ');
+      await until(() => browser.evaluate('!!document.querySelector("#editor-head .dirty-dot")'), 'the unsaved mark');
+      await ctrlS();
+      await until(async () => /Changed on disk/.test(await browser.evaluate('document.querySelector("#editor-banner").textContent')), 'the conflict banner');
+      assert.equal(readFileSync(path.join(work, 'src', 'hello.ts'), 'utf8'), external);
+      assert.deepEqual(await browser.evaluate('window.cspViolations'), []);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('only lets its own window in', async () => {

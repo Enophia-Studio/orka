@@ -1,7 +1,8 @@
 // Two layouts for one chat UI. "panel": a single column (VS Code's side bar, the desktop app's
 // classic window). "ide": the desktop app's window with the sessions on the left, the conversation
-// in the middle and, on the right, the task's plan and changes with Radar in a tab next to them.
-// The desktop page sets it on <html>.
+// in the middle and, on the right, the task's plan and changes with Files and Radar in tabs next to
+// them. A file opened from Files shows in the middle in place of the conversation, with the
+// message box below it. The desktop page sets it on <html>.
 
 export type Layout = 'panel' | 'ide';
 
@@ -35,7 +36,13 @@ export function appSkeleton(): string {
     <aside class="sidebar" id="sidebar"></aside>
     <div class="main-col" id="main-col">
       <header class="topbar" id="topbar"></header>
-      <main class="transcript" id="transcript"></main>${views}
+      <main class="transcript" id="transcript"></main>
+      <section class="editor-pane" id="editor-pane" hidden>
+        <div class="editor-head" id="editor-head"></div>
+        <div class="editor-banner" id="editor-banner" hidden></div>
+        <div class="editor-host" id="editor-host"></div>
+        <div class="editor-status" id="editor-status"></div>
+      </section>${views}
       <footer class="composer" id="composer">
         <button class="to-bottom" id="to-bottom" data-action="to-bottom" hidden></button>
         <div class="suggest" id="suggest" role="listbox" hidden></div>
@@ -58,6 +65,7 @@ export function appSkeleton(): string {
     <aside class="aside" id="aside" hidden>
       <div class="aside-tabs" id="aside-tabs" role="tablist" hidden></div>
       <div class="aside-task" id="aside-task" role="tabpanel">${plan}${changes}</div>
+      <section class="panel files-panel" id="files-panel" role="tabpanel" hidden></section>
       <section class="panel radar-panel" id="radar-panel" role="tabpanel" tabindex="-1" hidden></section>
     </aside>`;
 }

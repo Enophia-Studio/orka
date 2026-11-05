@@ -398,8 +398,7 @@ export type ToWebview =
    */
   | { type: 'dirEntries'; path: string; entries: DirEntry[]; truncated?: true }
   | { type: 'dirEntries'; path: string; error: 'outside' | 'notFound' }
-  /** The text has 
- line breaks and no BOM; hash is the sha256 of the bytes on disk. */
+  /** The text has \n line breaks and no BOM; hash is the sha256 of the bytes on disk. */
   | { type: 'fileContent'; path: string; ok: true; text: string; hash: string; size: number; eol: Eol; bom: boolean; readOnly?: true }
   /** The file still has the hash the page already knows. */
   | { type: 'fileContent'; path: string; ok: true; unchanged: true; hash: string }

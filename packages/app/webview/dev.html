@@ -7,7 +7,9 @@
   window (its IDE layout and its own theme), with ?collapsed for its sidebar closed. With ?ide,
   ?radar=off, ?radar=pending, ?radar=report or ?radar=elsewhere (another window runs it) opens the
   Radar tab in that state, ?auto with radar.autoAnalyze on (the panel's buttons work: turn it on,
-  Analyze, Stop, Start a session).
+  Analyze, Stop, Start a session). With ?ide, ?files opens the Files tab on a small in-memory
+  folder, ?editor also opens LobbyManager.cs in the editor, ?idle ends the sample run (so Save
+  works), and ?conflict makes the first save find the file changed on disk.
 -->
 <html lang="en">
 <head>
@@ -20,7 +22,8 @@
     if (new URLSearchParams(location.search).has('ide')) {
       document.documentElement.dataset.layout = 'ide';
       document.documentElement.dataset.theme = new URLSearchParams(location.search).has('light') ? 'light' : 'dark';
-      document.write('<link rel="stylesheet" href="../dist/ide.css"><link rel="stylesheet" href="desktop-theme.css">');
+      // The editor's bundle comes before webview.js, as on the desktop page.
+      document.write('<link rel="stylesheet" href="../dist/ide.css"><link rel="stylesheet" href="../dist/editor.css"><link rel="stylesheet" href="desktop-theme.css"><script src="../dist/editor.js"><\/script>');
     }
   </script>
   <style>
@@ -144,8 +147,14 @@
         ] }), 0);
         if (message.type === 'searchFiles') setTimeout(() => deliver({ type: 'fileMatches', query: message.query, files: ['Assets/Scripts/Net/LobbyManager.cs', 'Assets/Scripts/UI/LobbyView.cs'].filter((f) => f.toLowerCase().includes(message.query.toLowerCase())) }), 0);
         if (ide) radarMock(message);
+        if (ide) filesMock(message);
       },
-      getState: () => ({ ...(params.has('collapsed') ? { sidebarClosed: true } : {}), ...(params.has('radar') ? { asideTab: 'radar' } : {}) }),
+      getState: () => ({
+        ...(params.has('collapsed') ? { sidebarClosed: true } : {}),
+        ...(params.has('radar') ? { asideTab: 'radar' } : {}),
+        ...(params.has('files') || params.has('editor') ? { asideTab: 'files' } : {}),
+        ...(params.has('editor') ? { editor: { folder: root, path: 'Assets/Scripts/Net/LobbyManager.cs', shown: true, expanded: ['Assets', 'Assets/Scripts', 'Assets/Scripts/Net'] } } : {}),
+      }),
       setState: () => {},
     });
 
@@ -260,6 +269,51 @@
         }, 220);
       }
       if (message.type === 'radarStartSession') setTimeout(() => deliver({ type: 'setInput', append: true, text:`Implement this feature in Orka: ${radarReport.clusters.find((c) => c.key === message.cluster)?.decision?.proposal?.title ?? '?'}\n\nPriority P1, effort M. Areas: agents, sessions.\n\nProblem:\n…` }), 0);
+    }
+
+    // ---- Files (desktop app only): an in-memory folder behind the tree and the editor.
+    const disk = {
+      'Assets/Scripts/Net/LobbyManager.cs': ['using Fusion;', 'using UnityEngine;', '', '// Keeps the players of the lobby and their ready state.', 'public class LobbyManager : NetworkBehaviour', '{', '    public const int MaxPlayers = 4;', '', '    [Networked, Capacity(MaxPlayers)]', '    public NetworkDictionary<PlayerRef, NetworkBool> Ready => default;', '', '    public bool IsReady(PlayerRef player) => Ready.TryGet(player, out var ready) && ready;', '', '    public void OnPlayerJoined(NetworkRunner runner, PlayerRef player)', '    {', '        if (Ready.Count >= MaxPlayers) { runner.Disconnect(player); return; }', '        Ready.Set(player, false);', '    }', '}', ''].join('\n'),
+      'Assets/Scripts/Net/ReadyState.cs': 'public enum ReadyState { Waiting, Ready }\n',
+      'Assets/Scripts/UI/LobbyView.cs': 'using UnityEngine;\n\npublic class LobbyView : MonoBehaviour\n{\n    [SerializeField] LobbyManager lobby;\n}\n',
+      'Assets/Data/Lobby.asset': '%YAML 1.1\n%TAG !u! tag:unity3d.com,2011:\n--- !u!114 &11400000\nMonoBehaviour:\n  m_Name: Lobby\n  maxPlayers: 4\n',
+      'Packages/manifest.json': '{\n  "dependencies": {\n    "com.unity.textmeshpro": "3.0.6"\n  }\n}\n',
+      'README.md': '# LobbyDemo\n\nA *small* Photon Fusion lobby.\n',
+      '.env': 'PHOTON_APP_ID=example\n',
+      'Logo.png': null,
+    };
+    const dirs = { '': ['Assets', 'Library', 'Packages'], Assets: ['Data', 'Scripts'], 'Assets/Scripts': ['Net', 'UI'], 'Assets/Scripts/Net': [], 'Assets/Scripts/UI': [], 'Assets/Data': [], Library: [], Packages: [] };
+    const fakeHash = (text) => { let h = 2166136261; for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619) >>> 0; return h.toString(16).padStart(8, '0').repeat(8); };
+    let conflictOnce = params.has('conflict');
+    function filesMock(message) {
+      const reply = (m) => setTimeout(() => deliver(m), 30);
+      if (message.type === 'listDir') {
+        if (!(message.path in dirs)) return reply({ type: 'dirEntries', path: message.path, error: 'notFound' });
+        const prefix = message.path ? message.path + '/' : '';
+        const files = Object.keys(disk).filter((p) => p.startsWith(prefix) && !p.slice(prefix.length).includes('/')).map((p) => p.slice(prefix.length));
+        const entries = [...dirs[message.path].map((name) => ({ name, kind: 'dir', ...(name === 'Library' ? { ignored: true } : {}) })), ...files.sort().map((name) => ({ name, kind: 'file' }))];
+        reply({ type: 'dirEntries', path: message.path, entries });
+      }
+      if (message.type === 'readFile') {
+        const text = disk[message.path];
+        if (text === undefined) return reply({ type: 'fileContent', path: message.path, ok: false, reason: 'notFound' });
+        if (text === null) return reply({ type: 'fileContent', path: message.path, ok: false, reason: 'binary' });
+        const hash = fakeHash(text);
+        if (message.knownHash === hash) return reply({ type: 'fileContent', path: message.path, ok: true, unchanged: true, hash });
+        reply({ type: 'fileContent', path: message.path, ok: true, text, hash, size: text.length, eol: message.path.endsWith('.cs') ? 'crlf' : 'lf', bom: false });
+      }
+      if (message.type === 'saveFile') {
+        const current = disk[message.path];
+        if (typeof current !== 'string') return reply({ type: 'saveRefused', path: message.path, reason: 'gone' });
+        if (conflictOnce) {
+          // Someone else (Unity, git) wrote the file meanwhile.
+          conflictOnce = false;
+          disk[message.path] = current.replace('using UnityEngine;', 'using UnityEngine;\nusing System.Linq;');
+        }
+        if (fakeHash(disk[message.path]) !== message.baseHash) return reply({ type: 'saveRefused', path: message.path, reason: 'conflict', hash: fakeHash(disk[message.path]) });
+        disk[message.path] = message.text;
+        reply({ type: 'fileSaved', path: message.path, hash: fakeHash(message.text) });
+      }
     }
 
     function makeConfig(empty) {
@@ -414,6 +468,7 @@
         { agent: 'supervisor', provider: 'claude', model: 'claude-opus-5-5', calls: 4, usage: { inputTokens: 800, outputTokens: 460, cacheReadTokens: 13100, cacheWriteTokens: 900 } },
         { agent: 'explore', provider: 'gemini', model: 'gemini-3.8-flash', calls: 3, usage: { inputTokens: 900, outputTokens: 120, cacheReadTokens: 0, cacheWriteTokens: 0 } },
       ] });
+      if (params.has('idle')) ev({ type: 'run_finished', reason: 'completed' });
     }
   </script>
   <script src="../dist/webview.js"></script>
