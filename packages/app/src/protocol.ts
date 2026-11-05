@@ -370,9 +370,17 @@ export interface RadarReportView {
   stats: RadarRunStats;
 }
 
+/**
+ * A message about one session. The app always names the session it comes from; the page names
+ * the session it shows, and without a name a message is for the session shown now. A message for
+ * a session that is gone is dropped on either side (never taken for another session).
+ */
+export type Scoped<T> = T & { sessionId?: string };
+
 export type ToWebview =
-  | { type: 'init'; session: SessionView; config: ConfigView; taskId?: string }
-  | { type: 'event'; event: AgentEvent }
+  /** sessionId: the session the page shows from now on (none while no folder is open). */
+  | { type: 'init'; session: SessionView; config: ConfigView; taskId?: string; sessionId?: string }
+  | Scoped<{ type: 'event'; event: AgentEvent }>
   | { type: 'config'; config: ConfigView }
   | { type: 'showAgents' }
   | { type: 'showSettings'; tab?: SettingsTab }
@@ -380,15 +388,15 @@ export type ToWebview =
   | { type: 'history'; tasks: TaskSummary[]; currentId?: string }
   /** Desktop: the tasks of the recent folders, for the session list; taskId: the task open now (saved or not). */
   | { type: 'sessions'; groups: SessionGroup[]; taskId?: string; organizer: SessionOrganizerView }
-  | { type: 'fileMatches'; query: string; files: string[] }
-  | { type: 'hunks'; path: string; hunks: HunkView[] }
+  | Scoped<{ type: 'fileMatches'; query: string; files: string[] }>
+  | Scoped<{ type: 'hunks'; path: string; hunks: HunkView[] }>
   | { type: 'dialog'; id: string; dialog: DialogView }
   | { type: 'closeDialog'; id: string }
   /**
    * Put text into the message box (e.g. a message the user went back to, to edit and resend).
    * append: keep what the user typed and add the text after it (Radar's "Start a session").
    */
-  | { type: 'setInput'; text: string; append?: boolean }
+  | Scoped<{ type: 'setInput'; text: string; append?: boolean }>
   /** Desktop only: Radar's state, and its report when that changed (undefined: none yet). */
   | { type: 'radar'; radar: RadarView }
   | { type: 'radarReport'; report?: RadarReportView }
@@ -396,29 +404,68 @@ export type ToWebview =
    * Desktop Files and editor: replies to listDir, readFile and saveFile, by the workspace-relative
    * path asked for. A reply is only sent while the page is connected (never kept for a reload).
    */
-  | { type: 'dirEntries'; path: string; entries: DirEntry[]; truncated?: true }
-  | { type: 'dirEntries'; path: string; error: 'outside' | 'notFound' }
+  | Scoped<{ type: 'dirEntries'; path: string; entries: DirEntry[]; truncated?: true }>
+  | Scoped<{ type: 'dirEntries'; path: string; error: 'outside' | 'notFound' }>
   /** The text has \n line breaks and no BOM; hash is the sha256 of the bytes on disk. */
-  | { type: 'fileContent'; path: string; ok: true; text: string; hash: string; size: number; eol: Eol; bom: boolean; readOnly?: true }
+  | Scoped<{ type: 'fileContent'; path: string; ok: true; text: string; hash: string; size: number; eol: Eol; bom: boolean; readOnly?: true }>
   /** The file still has the hash the page already knows. */
-  | { type: 'fileContent'; path: string; ok: true; unchanged: true; hash: string }
-  | { type: 'fileContent'; path: string; ok: false; reason: FileReason }
-  | { type: 'fileSaved'; path: string; hash: string }
+  | Scoped<{ type: 'fileContent'; path: string; ok: true; unchanged: true; hash: string }>
+  | Scoped<{ type: 'fileContent'; path: string; ok: false; reason: FileReason }>
+  | Scoped<{ type: 'fileSaved'; path: string; hash: string }>
   /** running: an agent works or a hand-off is open. hash: what is on disk now, after a conflict. */
-  | { type: 'saveRefused'; path: string; reason: SaveRefusal | 'running'; hash?: string };
+  | Scoped<{ type: 'saveRefused'; path: string; reason: SaveRefusal | 'running'; hash?: string }>;
+
+/** What one session sends to the page (always with its sessionId). */
+export type SessionPost = Extract<
+  ToWebview,
+  { type: 'init' | 'event' | 'fileMatches' | 'hunks' | 'setInput' | 'dirEntries' | 'fileContent' | 'fileSaved' | 'saveRefused' }
+>;
+
+/** The page's messages that act on one session: its task, its changes, its folder's files. */
+const SESSION_MESSAGE_TYPES = [
+  'send',
+  'stop',
+  'rewind',
+  'compact',
+  'approve',
+  'previewApproval',
+  'openDiff',
+  'acceptChange',
+  'revertChange',
+  'getHunks',
+  'revertHunk',
+  'keepHunk',
+  'acceptAll',
+  'revertAll',
+  'handoff',
+  'searchFiles',
+  'listDir',
+  'readFile',
+  'saveFile',
+  'openExternalFile',
+  'initMemory',
+] as const;
+
+export const SESSION_MESSAGES: ReadonlySet<string> = new Set<string>(SESSION_MESSAGE_TYPES);
+
+export type SessionMessage = Extract<FromWebview, { type: (typeof SESSION_MESSAGE_TYPES)[number] }>;
+
+export function isSessionMessage(message: FromWebview): message is SessionMessage {
+  return SESSION_MESSAGES.has(message.type);
+}
 
 export type FromWebview =
   | { type: 'ready' }
   /** editor: the desktop editor's file and selection (ignored elsewhere). */
-  | { type: 'send'; text: string; files?: string[]; skills?: string[]; images?: ImageAttachment[]; editor?: EditorSelection }
-  | { type: 'stop' }
+  | Scoped<{ type: 'send'; text: string; files?: string[]; skills?: string[]; images?: ImageAttachment[]; editor?: EditorSelection }>
+  | Scoped<{ type: 'stop' }>
   /** Go back to just before this user message (conversation and files). */
-  | { type: 'rewind'; id: string }
+  | Scoped<{ type: 'rewind'; id: string }>
   /** A new task; with a folder (desktop), in that recent folder. */
   | { type: 'newTask'; folder?: string }
-  | { type: 'compact' }
-  | { type: 'approve'; id: string; approved: boolean; feedback?: string; always?: boolean }
-  | { type: 'previewApproval'; id: string }
+  | Scoped<{ type: 'compact' }>
+  | Scoped<{ type: 'approve'; id: string; approved: boolean; feedback?: string; always?: boolean }>
+  | Scoped<{ type: 'previewApproval'; id: string }>
   | { type: 'setMode'; mode: PermissionMode }
   | { type: 'setAgent'; agent: string; provider: string; model: string }
   | { type: 'customModel'; agent: string }
@@ -441,7 +488,7 @@ export type FromWebview =
   /** Open an agent's documentation or terms (the URLs come from Orka's catalog, never from the page). */
   | { type: 'openAgentLink'; id: string; link: 'docs' | 'terms' }
   /** Continue the task in an external agent; text: what the user typed but did not send. */
-  | { type: 'handoff'; agent: string; text?: string }
+  | Scoped<{ type: 'handoff'; agent: string; text?: string }>
   | { type: 'checkForUpdates' }
   /** Look for a newer Orka release now. */
   | { type: 'checkAppUpdate' }
@@ -449,7 +496,7 @@ export type FromWebview =
   | { type: 'openRelease' }
   | { type: 'pickClaudeExecutable' }
   | { type: 'resetClaudeExecutable' }
-  | { type: 'initMemory' }
+  | Scoped<{ type: 'initMemory' }>
   | { type: 'openSettings' }
   | { type: 'listTasks' }
   | { type: 'listSessions' }
@@ -458,17 +505,17 @@ export type FromWebview =
   /** folder: a recent folder the task belongs to (desktop session list); default the current one. */
   | { type: 'openTask'; id: string; folder?: string }
   | { type: 'deleteTask'; id: string; folder?: string }
-  | { type: 'searchFiles'; query: string }
-  | { type: 'openDiff'; path: string }
+  | Scoped<{ type: 'searchFiles'; query: string }>
+  | Scoped<{ type: 'openDiff'; path: string }>
   | { type: 'openFile'; path: string }
-  | { type: 'acceptChange'; path: string }
-  | { type: 'revertChange'; path: string }
-  | { type: 'getHunks'; path: string }
+  | Scoped<{ type: 'acceptChange'; path: string }>
+  | Scoped<{ type: 'revertChange'; path: string }>
+  | Scoped<{ type: 'getHunks'; path: string }>
   /** header: the hunk's header as shown; a hunk that no longer has it is left alone. */
-  | { type: 'revertHunk'; path: string; index: number; header?: string }
-  | { type: 'keepHunk'; path: string; index: number; header?: string }
-  | { type: 'acceptAll' }
-  | { type: 'revertAll' }
+  | Scoped<{ type: 'revertHunk'; path: string; index: number; header?: string }>
+  | Scoped<{ type: 'keepHunk'; path: string; index: number; header?: string }>
+  | Scoped<{ type: 'acceptAll' }>
+  | Scoped<{ type: 'revertAll' }>
   | { type: 'toggleSkill'; name: string; enabled: boolean }
   | { type: 'openSkill'; name: string }
   | { type: 'customizeSkill'; name: string }
@@ -491,10 +538,10 @@ export type FromWebview =
   /** Open a release note the report links to (only a link that is in the report). */
   | { type: 'radarOpenLink'; url: string }
   /** Desktop Files and editor: paths are workspace-relative with forward slashes ('' = the folder itself). */
-  | { type: 'listDir'; path: string }
+  | Scoped<{ type: 'listDir'; path: string }>
   /** knownHash: the hash the page has; an unchanged file comes back without its text. */
-  | { type: 'readFile'; path: string; knownHash?: string }
+  | Scoped<{ type: 'readFile'; path: string; knownHash?: string }>
   /** baseHash: the hash of the file as it was read; the save is refused when the disk differs. */
-  | { type: 'saveFile'; path: string; text: string; baseHash: string }
+  | Scoped<{ type: 'saveFile'; path: string; text: string; baseHash: string }>
   /** Open a file of the folder in the program the system uses for it. */
-  | { type: 'openExternalFile'; path: string };
+  | Scoped<{ type: 'openExternalFile'; path: string }>;

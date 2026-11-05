@@ -23,7 +23,7 @@ import type {
   SkillView,
   ToWebview,
 } from '../src/protocol';
-import { post, saveUiState, uiState } from './core/bridge';
+import { forShownSession, post, saveUiState, setSessionId, uiState } from './core/bridge';
 import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
 import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
@@ -3687,6 +3687,8 @@ function fromApp(e: MessageEvent): boolean {
 window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
   if (!fromApp(e)) return;
   const message = e.data;
+  // A late reply or event of a session the page no longer shows (init names the new one).
+  if (message.type !== 'init' && !forShownSession(message)) return;
   switch (message.type) {
     case 'dialog':
       showDialog(message.id, message.dialog);
@@ -3702,6 +3704,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       el.input.focus();
       break;
     case 'init':
+      setSessionId(message.sessionId);
       session = message.session;
       document.body.classList.toggle('busy', session.running);
       config = message.config;

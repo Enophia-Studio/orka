@@ -439,23 +439,23 @@ describe('desktop Files and editor', () => {
     mkdirSync(path.join(folderA, 'src'));
     writeFileSync(path.join(folderA, 'src', 'hello.ts'), 'one\r\ntwo\r\n');
     await controller.handleMessage({ type: 'listDir', path: '' });
-    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '', entries: [{ name: 'src', kind: 'dir' }] });
+    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '', entries: [{ name: 'src', kind: 'dir' }], sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'listDir', path: '../beta' });
-    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '../beta', error: 'outside' });
+    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '../beta', error: 'outside', sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'readFile', path: 'src/hello.ts' });
     const hash = sha('one\r\ntwo\r\n');
-    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, text: 'one\ntwo\n', hash, size: 10, eol: 'crlf', bom: false });
+    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, text: 'one\ntwo\n', hash, size: 10, eol: 'crlf', bom: false, sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'readFile', path: 'src/hello.ts', knownHash: hash });
-    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, unchanged: true, hash });
+    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, unchanged: true, hash, sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'readFile', path: 'src/missing.ts' });
-    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/missing.ts', ok: false, reason: 'notFound' });
+    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/missing.ts', ok: false, reason: 'notFound', sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'saveFile', path: 'src/hello.ts', text: 'one\ntwo\nthree\n', baseHash: hash });
     assert.equal(readFileSync(path.join(folderA, 'src', 'hello.ts'), 'utf8'), 'one\r\ntwo\r\nthree\r\n');
-    assert.deepEqual(shell.last('fileSaved'), { type: 'fileSaved', path: 'src/hello.ts', hash: sha('one\r\ntwo\r\nthree\r\n') });
+    assert.deepEqual(shell.last('fileSaved'), { type: 'fileSaved', path: 'src/hello.ts', hash: sha('one\r\ntwo\r\nthree\r\n'), sessionId: sessionOf(controller).id });
     assert.ok(notesOf(controller).some((n) => n.includes('The user edited src/hello.ts by hand')));
     // The page's old hash no longer matches what is on disk.
     await controller.handleMessage({ type: 'saveFile', path: 'src/hello.ts', text: 'other\n', baseHash: hash });
-    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'src/hello.ts', reason: 'conflict', hash: sha('one\r\ntwo\r\nthree\r\n') });
+    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'src/hello.ts', reason: 'conflict', hash: sha('one\r\ntwo\r\nthree\r\n'), sessionId: sessionOf(controller).id });
   });
 
   it('refuses to save while the agent works or a hand-off is open', async () => {
@@ -465,7 +465,7 @@ describe('desktop Files and editor', () => {
     const sent = controller.send('Do something');
     await until(() => orchestratorOf(controller).isRunning && shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to work');
     await save(controller, 'a.txt', 'mine\n');
-    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'a.txt', reason: 'running' });
+    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'a.txt', reason: 'running', sessionId: sessionOf(controller).id });
     controller.stop();
     await sent;
     (sessionOf(controller) as unknown as { handoff?: unknown }).handoff = { session: {}, terminal: { show: () => undefined } };

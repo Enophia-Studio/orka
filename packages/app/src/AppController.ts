@@ -74,9 +74,11 @@ import type {
   SessionGroup,
   SessionOrganizeOp,
   SessionOrganizerView,
+  SessionMessage,
   SettingsTab,
   SkillView,
 } from './protocol';
+import { isSessionMessage } from './protocol';
 import { RadarController, type RadarHooks, type RadarModel } from './radar';
 import {
   type AgentChoice,
@@ -93,7 +95,7 @@ import {
   SHELL_CHOICES,
   WEBVIEW_SETTINGS,
 } from './settings';
-import { dropNotices, samePath, type SessionContext, SessionController, type SessionMessage } from './SessionController';
+import { dropNotices, samePath, type SessionContext, SessionController } from './SessionController';
 import type { AppShell, PickItem } from './shell';
 
 const isModelId = (value: unknown): value is string => typeof value === 'string' && /^[\w.:/@-]{1,160}$/.test(value);
@@ -249,37 +251,24 @@ export class AppController implements Disposable {
   // ---------------------------------------------------------------- chat UI messages
 
   async handleMessage(message: FromWebview): Promise<void> {
+    if (isSessionMessage(message)) {
+      // The session the page named; none: the one shown. A session that is gone gets nothing,
+      // so a message sent before a switch never acts on another session.
+      const id: unknown = message.sessionId;
+      if (id === undefined) {
+        const session = this.activeSession;
+        if (session) await session.handle(message);
+        else await this.withoutSession(message);
+      } else if (typeof id === 'string') {
+        await this.sessions.get(id)?.handle(message);
+      }
+      return;
+    }
     switch (message.type) {
       case 'ready':
         this.postInit();
         this.radar?.postAll();
         break;
-      case 'send':
-      case 'stop':
-      case 'rewind':
-      case 'compact':
-      case 'approve':
-      case 'previewApproval':
-      case 'openDiff':
-      case 'acceptChange':
-      case 'revertChange':
-      case 'getHunks':
-      case 'revertHunk':
-      case 'keepHunk':
-      case 'acceptAll':
-      case 'revertAll':
-      case 'handoff':
-      case 'searchFiles':
-      case 'listDir':
-      case 'readFile':
-      case 'saveFile':
-      case 'openExternalFile':
-      case 'initMemory': {
-        const session = this.activeSession;
-        if (session) await session.handle(message);
-        else await this.withoutSession(message);
-        break;
-      }
       case 'newTask':
         await this.newTask(message.folder);
         break;
@@ -497,6 +486,7 @@ export class AppController implements Disposable {
       shell: this.shell,
       permissions: this.permissions,
       settings: () => this.settings,
+      isActive: (session) => session.id === this.activeId,
       providerFor: (name) => this.providerFor(name),
       externalAgent: (root) => this.externalAgent(root),
       mcpTools: (session) => this.mcpTools(session),

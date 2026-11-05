@@ -40,7 +40,7 @@ import {
 import { createHash } from 'node:crypto';
 import { promises as fs, realpathSync, statSync } from 'node:fs';
 import * as path from 'node:path';
-import type { ConfigView, EditorSelection, FromWebview, HunkView, ImageAttachment, ToWebview } from './protocol';
+import type { ConfigView, EditorSelection, HunkView, ImageAttachment, SessionMessage, SessionPost, ToWebview } from './protocol';
 import { type AppSettings, readMcpServers } from './settings';
 import type { AppShell, TerminalHandle } from './shell';
 import { WorkspaceFiles } from './workspaceFiles';
@@ -63,40 +63,13 @@ const MAX_HUNK_LINES = 80;
 /** How long a new task waits for a stopped request to end (an agent CLI is stopped after 5 s). */
 const STOP_WAIT_MS = 8_000;
 
-/** The messages of the chat UI that act on one session (its task, its changes, its folder's files). */
-export type SessionMessage = Extract<
-  FromWebview,
-  {
-    type:
-      | 'send'
-      | 'stop'
-      | 'rewind'
-      | 'compact'
-      | 'approve'
-      | 'previewApproval'
-      | 'openDiff'
-      | 'acceptChange'
-      | 'revertChange'
-      | 'getHunks'
-      | 'revertHunk'
-      | 'keepHunk'
-      | 'acceptAll'
-      | 'revertAll'
-      | 'handoff'
-      | 'searchFiles'
-      | 'listDir'
-      | 'readFile'
-      | 'saveFile'
-      | 'openExternalFile'
-      | 'initMemory';
-  }
->;
-
 /** What a session needs from the app around it: settings, providers, skills, and the app-wide views it updates. */
 export interface SessionContext {
   readonly shell: AppShell;
   readonly permissions: PermissionManager;
   settings(): AppSettings;
+  /** The page shows this session (only that one may post to it). */
+  isActive(session: SessionController): boolean;
   providerFor(name: string): AIProvider;
   /** The agent CLI that runs the main agent's turns in this folder, when the main agent is one. */
   externalAgent(root: string): ExternalAgentRuntime | undefined;
@@ -225,8 +198,10 @@ export class SessionController {
     return this.workspaceMcpCache;
   }
 
-  post(message: ToWebview): void {
-    this.ctx.shell.post(message);
+  /** To the page, named as this session's; nothing while the page shows another session. */
+  post(message: SessionPost): void {
+    if (!this.ctx.isActive(this)) return;
+    this.ctx.shell.post({ ...message, sessionId: this.id } as ToWebview);
   }
 
   /** The page shows this session's task from scratch. */
