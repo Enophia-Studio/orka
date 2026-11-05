@@ -251,6 +251,95 @@ describe('agent CLIs', () => {
     assert.equal(terminal.shown, true);
   });
 
+  /** Runs `body` with an empty PATH, so no catalog agent is found. */
+  async function withoutPath(body: () => Promise<void>): Promise<void> {
+    const saved = { PATH: process.env.PATH, Path: process.env.Path };
+    process.env.PATH = path.join(home, 'empty-bin');
+    if (process.platform === 'win32') process.env.Path = process.env.PATH;
+    try {
+      await body();
+    } finally {
+      process.env.PATH = saved.PATH;
+      if (process.platform === 'win32') process.env.Path = saved.Path;
+    }
+  }
+  const notices = (shell: FakeShell) => shell.posted.flatMap((m) => (m.type === 'event' && m.event.type === 'notice' ? [m.event] : []));
+
+  it('lists every catalog agent for the main agent picker, checked, also those that are off', async () => {
+    await withoutPath(async () => {
+      const { shell } = await start('desktop');
+      await until(() => shell.last('config')?.config.agentClis.every((a) => a.status.state === 'not_found') === true, 'the checks');
+      const agents = shell.last('config')!.config.agentClis;
+      assert.deepEqual(
+        agents.map((a) => [a.id, a.enabled]),
+        [
+          ['antigravity', false],
+          ['codex', false],
+          ['copilot', false],
+          ['cursor', false],
+          ['gemini', false],
+        ],
+      );
+    });
+  });
+
+  it('picking an agent CLI that is off for the main agent turns it on and saves it, and says how to install it', async () => {
+    await withoutPath(async () => {
+      const { shell, controller } = await start('desktop', { 'supervisor.enabled': false });
+      await controller.handleMessage({ type: 'setAgent', agent: 'supervisor', provider: 'agent:codex', model: '' });
+      assert.equal(shell.settings.isSet('supervisor.provider'), false, 'still the main agent only');
+      await controller.handleMessage({ type: 'setAgent', agent: 'main', provider: 'agent:codex', model: '' });
+      assert.deepEqual(shell.settings.get('agentClis.enabled', []), ['codex']);
+      assert.equal(shell.settings.get('provider', ''), 'agent:codex');
+      await tick();
+      assert.equal(shell.last('config')!.config.main.effective.provider, 'agent:codex');
+      const notice = notices(shell).at(-1);
+      assert.match(notice?.message ?? '', /^Codex \(codex-acp\) is not installed\. Install it \(npm install -g @agentclientprotocol\/codex-acp @openai\/codex\)/);
+      assert.equal(notice?.action, 'agentClis');
+      // Not installed, nothing is sent: the send check names it again.
+      await controller.send('hello');
+      assert.match(notices(shell).at(-1)?.message ?? '', /Codex \(codex-acp\) is not installed/);
+    });
+  });
+
+  it('says once that the main agent names an agent CLI that is turned off', async () => {
+    const { shell } = await start('desktop', { provider: 'agent:codex', 'agentClis.enabled': [] });
+    await shell.settings.update('mode', 'ask');
+    await tick();
+    const dropped = notices(shell).filter((n) => n.message.startsWith('Main agent Codex (codex-acp) is turned off; using '));
+    assert.equal(dropped.length, 1);
+    assert.notEqual(shell.last('config')!.config.main.effective.provider, 'agent:codex');
+  });
+
+  it('asks before turning off the agent CLI that is the main agent', async () => {
+    const { shell, controller } = await start('desktop', agentSettings);
+    await controller.handleMessage({ type: 'toggleAgentCli', id: 'custom:fake', enabled: false });
+    assert.match(shell.asked.at(-1)?.text ?? '', /^Fake is the main agent\. Turn it off\?/);
+    assert.deepEqual(shell.settings.get('agentClis.enabled', []), ['custom:fake'], 'kept on when not confirmed');
+    shell.answer = 'Turn off';
+    await controller.handleMessage({ type: 'toggleAgentCli', id: 'custom:fake', enabled: false });
+    assert.deepEqual(shell.settings.get('agentClis.enabled', []), []);
+    await tick();
+    assert.ok(!notices(shell).some((n) => n.message.startsWith('Main agent Fake is turned off')), 'the user chose it: no notice');
+  });
+
+  it('CLI-first: until the user picks one, a ready CLI is the main agent before an API provider with a key', async () => {
+    const saved = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    try {
+      const { shell } = await start('desktop', { ...agentSettings, provider: undefined });
+      await until(() => shell.last('config')?.config.agentClis.find((a) => a.id === 'custom:fake')?.status.state === 'ready', 'the agent check');
+      assert.equal(shell.last('config')!.config.main.effective.provider, 'agent:custom:fake');
+      // A choice the user made is kept.
+      await shell.settings.update('provider', 'claude');
+      await tick();
+      assert.equal(shell.last('config')!.config.main.effective.provider, 'claude');
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved;
+    }
+  });
+
   it("lists Antigravity CLI with its ACP docs, terms and Google's FAQ, and opens only those links", async () => {
     const { shell, controller } = await start('desktop');
     const agy = shell.last('init')!.config.agentClis.find((a) => a.id === 'antigravity');

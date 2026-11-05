@@ -5,7 +5,12 @@
 **Agent CLIs**
 
 - **Antigravity CLI** (`agent:antigravity`) joins the catalog: Orka runs Google's `agy acp` (agy 1.5.0 or newer), which Google documents for any ACP client. You sign in by running `agy` in a terminal; Orka never touches that sign-in. The agent's card (and `orka agents`) links Google's ACP page, its terms and its FAQ, which calls wrapping agy in third-party apps unsupported on consumer plans: the choice of sign-in is yours. An older agy shows its version and `agy update` on **Check**.
+- **The main agent's picker (Settings → Agents) lists every agent CLI**, also those that are off or not installed, marked as such. Picking one turns it on; when it is not installed, a notice says how to install it. With no agent CLI installed, the main agent card says so. Turning off the agent CLI that is the main agent asks first, and a main agent setting that names an agent that is off is reported once instead of switching silently.
 - **Gemini CLI** is now labelled **legacy** (Gemini API key or Code Assist Standard/Enterprise only; personal Google accounts moved to Antigravity CLI). Its id stays `gemini`, so existing settings keep working.
+
+**CLI-first**
+
+- Until you pick a main provider, a ready CLI comes first: Claude Code (turned on and logged in), else an agent CLI you turned on whose check passed; API providers follow as a fallback. The provider pickers list a model API only once it has a key.
 
 ## 0.6.0
 

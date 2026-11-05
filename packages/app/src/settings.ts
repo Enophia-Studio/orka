@@ -81,6 +81,11 @@ export interface AppSettings {
   provider: ProviderRef;
   /** The user chose the main provider (in the settings or the UI), rather than relying on the default. */
   providerExplicit: boolean;
+  /**
+   * The agent CLI id the "provider" setting names while it is not turned on, so the main agent
+   * runs on the default instead; the app says so once.
+   */
+  droppedMainAgent?: string;
   models: Record<ProviderKind, string>;
   customProviders: CustomProviderDef[];
   claude: { effort: ClaudeEffort; refusalFallback: boolean };
@@ -172,10 +177,13 @@ export function readSettings(c: SettingsStore): AppSettings {
   // Only the main agent can be an agent CLI, and only one the user turned on.
   const mainRef = c.get<string>('provider', 'claude');
   const agentMain = typeof mainRef === 'string' && isAgentRef(mainRef) && agentClis.enabled.includes(mainRef.slice('agent:'.length)) ? (mainRef as ProviderRef) : undefined;
+  const droppedMainAgent = !agentMain && typeof mainRef === 'string' && isAgentRef(mainRef) ? mainRef.slice('agent:'.length) : undefined;
 
   return {
     provider: agentMain ?? valid(mainRef) ?? 'claude',
-    providerExplicit: c.isSet('provider'),
+    // An agent that is turned off is no choice: the main agent falls back to the default.
+    providerExplicit: c.isSet('provider') && !droppedMainAgent,
+    droppedMainAgent,
     models,
     customProviders,
     claude: { effort: c.get<ClaudeEffort>('claude.effort', 'medium'), refusalFallback: c.get<boolean>('claude.refusalFallback', true) },

@@ -2485,18 +2485,33 @@ function renderUsage(): void {
 
 // ------------------------------------------------------------------ agents (panel + settings tab)
 
-/** Provider choices; agent CLIs only for the main agent, in a group of their own. */
+/**
+ * Provider choices, CLI-first: local providers (Claude Code, local endpoints) first, then the
+ * model APIs the user set up with a key (one without a key only while it is the one chosen; keys
+ * are added in Settings > Providers). For the main agent, every agent CLI in a group of its own,
+ * also those that are off or not installed: picking one turns it on.
+ */
 function providerOptions(selected: string, allowInherit: boolean, inheritLabel = t('Same as main'), withAgents = false): string {
   const option = (p: ProviderView) =>
     `<option value="${attr(p.kind)}"${p.kind === selected ? ' selected' : ''}>${escapeHtml(p.label)}${
       p.ready ? '' : ` – ${escapeHtml(p.agent ? t('not ready') : t('no key'))}`
     }</option>`;
-  const all = config?.providers ?? [];
-  const options = all.filter((p) => !p.agent).map(option);
-  const agents = withAgents ? all.filter((p) => p.agent) : [];
-  if (agents.length) options.push(`<optgroup label="${attr(t('Agent CLIs'))}">${agents.map(option).join('')}</optgroup>`);
+  const all = (config?.providers ?? []).filter((p) => !p.agent && (p.local || p.ready || p.kind === selected));
+  const options = [...all.filter((p) => p.local), ...all.filter((p) => !p.local)].map(option);
+  if (withAgents) {
+    const agents = (config?.agentClis ?? []).map((a) => agentOption(a, selected)).join('');
+    if (agents) options.push(`<optgroup label="${attr(t('Agent CLIs'))}">${agents}</optgroup>`);
+  }
   if (allowInherit) options.unshift(`<option value="inherit"${selected === 'inherit' ? ' selected' : ''}>${escapeHtml(inheritLabel)}</option>`);
   return options.join('');
+}
+
+/** An agent CLI in the main agent picker, with what keeps it from running now. */
+function agentOption(a: AgentCliView, selected: string): string {
+  const kind = `agent:${a.id}`;
+  const problem =
+    a.status.state === 'not_found' ? t('not installed') : !a.enabled ? t('off') : a.status.state === 'error' || providerView(kind)?.ready === false ? t('not ready') : '';
+  return `<option value="${attr(kind)}"${kind === selected ? ' selected' : ''}>${escapeHtml(a.label)}${problem ? ` (${escapeHtml(problem)})` : ''}</option>`;
 }
 
 /** Model picker grouped by family ("Claude Opus": Opus 5.5, Opus 5, ...), with the selected model always present. */
@@ -2558,9 +2573,16 @@ function mainCard(): string {
       : p?.ready
         ? `<div class="hint ok">${icon('check')}<span>${escapeHtml(p.key?.source === 'env' ? t('Key from {name}', { name: p.key.hint }) : t('API key stored'))}</span></div>`
         : '';
+  // Not one catalog agent CLI was found: say so once, where the main agent is picked.
+  const catalog = (config.agentClis ?? []).filter((a) => !a.custom);
+  const noCli =
+    catalog.length && catalog.every((a) => a.status.state === 'not_found')
+      ? `<div class="hint">${icon('info')}<span>${escapeHtml(t('No agent CLI installed yet.'))}</span><button class="link" data-action="open-settings" data-tab="providers">${escapeHtml(t('Set up'))}</button></div>`
+      : '';
   return `<div class="card">
     <div class="card-head"><strong>${escapeHtml(t('Main agent'))}</strong><span class="muted">${escapeHtml(t('plans, edits, runs'))}</span></div>
     ${pickers(main, false)}
+    ${noCli}
     <div class="field fallback-field"><span class="field-label">${escapeHtml(t('Answer simple questions with'))}</span>${pickers(config.light, true, t('Off'))}</div>
     <div class="field fallback-field"><span class="field-label">${escapeHtml(t('If its limit is reached, continue with'))}</span>${pickers(config.fallback, true, t('Off'))}</div>
     ${status}

@@ -184,6 +184,8 @@ export class AppController implements Disposable {
   private readonly agentStatus = new Map<string, AgentCliView['status']>();
   /** "No Supervisor next to this agent" was said once already. */
   private supervisorSkipNoted = false;
+  /** Agent CLIs the "provider" setting named while turned off, already said once. */
+  private readonly droppedMainNoted = new Set<string>();
   /** The desktop app's Radar (VS Code and the CLI have none). */
   private readonly radar?: RadarController;
 
@@ -231,8 +233,20 @@ export class AppController implements Disposable {
     void this.checkAppUpdate();
     this.appUpdateTimer = setInterval(() => void this.checkAppUpdate(), APP_UPDATE_POLL_MS);
     this.appUpdateTimer.unref?.();
-    for (const id of this.settings.agentClis.enabled) void this.checkAgent(id);
+    // Every catalog agent too, so the main agent picker can say which are installed (a version
+    // flag only, and only for a program found on PATH or at the user's path).
+    for (const entry of this.agentEntries()) if (entry.kind === 'builtin' || this.settings.agentClis.enabled.includes(entry.id)) void this.checkAgent(entry.id);
+    this.noteDroppedMainAgent();
     await this.radar?.initialize();
+  }
+
+  /** Says once that the "provider" setting names an agent CLI that is turned off, and what runs instead. */
+  private noteDroppedMainAgent(): void {
+    const id = this.settings.droppedMainAgent;
+    if (!id || this.droppedMainNoted.has(id)) return;
+    this.droppedMainNoted.add(id);
+    const label = this.agentEntry(id)?.label ?? id;
+    this.publishNotice('warning', t('Main agent {agent} is turned off; using {fallback}.', { agent: label, fallback: this.providerLabel(this.mainProvider()) }), 'agentClis');
   }
 
   private updateSetting(key: string, value: unknown, options?: { preferGlobal?: boolean }): Promise<void> {
@@ -1342,15 +1356,25 @@ export class AppController implements Disposable {
   }
 
   /**
-   * The main agent's provider. One the user picked is always used. Until they pick one, a
-   * provider that works right now is preferred over the default Claude API without a key: the
-   * logged-in Claude Code CLI (when turned on), else the first provider that has a key.
+   * The main agent's provider. One the user picked is always used. Until they pick one, a CLI
+   * that is ready comes first (CLI-first): the logged-in Claude Code CLI (when turned on), else
+   * an agent CLI the user turned on whose check passed. API providers come after, as a fallback:
+   * the default one when it has a key, else the first provider that has a key.
    */
   private mainProvider(): ProviderRef {
     const s = this.settings;
-    if (s.providerExplicit || this.isReady(s.provider)) return s.provider;
-    if (s.claudeCode.enabled && this.claudeCodeStatus.state === 'ready') return 'claude-code';
+    if (s.providerExplicit) return s.provider;
+    const cli = this.readyCli();
+    if (cli) return cli;
+    if (this.isReady(s.provider)) return s.provider;
     return this.allProviderRefs().find((ref) => ref !== 'claude-code' && this.isReady(ref)) ?? s.provider;
+  }
+
+  /** The first CLI that is ready right now: Claude Code when turned on, else an agent CLI the user turned on. */
+  private readyCli(): ProviderRef | undefined {
+    if (this.settings.claudeCode.enabled && this.claudeCodeStatus.state === 'ready') return 'claude-code';
+    const id = this.settings.agentClis.enabled.find((a) => this.agentStatus.get(a)?.state === 'ready' && this.agentEntry(a));
+    return id ? (`agent:${id}` as ProviderRef) : undefined;
   }
 
   /**
@@ -1585,14 +1609,19 @@ export class AppController implements Disposable {
   }
 
   private async setAgent(agent: string, provider: string, model: string): Promise<void> {
-    // An agent CLI the user turned on can be the main agent, never another role.
-    const asAgent = agent === 'main' && !!this.agentFor(provider);
-    const valid = provider === 'inherit' || asAgent || this.allProviderRefs().includes(provider as ProviderRef);
+    // An agent CLI can be the main agent, never another role. Picking one for the main agent
+    // turns it on (the picker lists every agent, also those that are off).
+    const agentEntry = agent === 'main' && isAgentRef(provider) ? this.agentEntry(provider.slice('agent:'.length)) : undefined;
+    const valid = provider === 'inherit' || !!agentEntry || this.allProviderRefs().includes(provider as ProviderRef);
     if (!valid || (model && !isModelId(model))) return;
     if (agent === 'main') {
       if (provider === 'inherit') return;
+      if (agentEntry && !this.settings.agentClis.enabled.includes(agentEntry.id)) {
+        await this.updateSetting('agentClis.enabled', [...this.settings.agentClis.enabled, agentEntry.id], { preferGlobal: true });
+      }
       if (provider !== this.settings.provider || !this.settings.providerExplicit) await this.updateSetting('provider', provider);
-      if (!asAgent && model && model !== this.defaultModel(provider)) await this.setDefaultModel(provider, model);
+      if (!agentEntry && model && model !== this.defaultModel(provider)) await this.setDefaultModel(provider, model);
+      if (agentEntry) await this.noteAgentNotInstalled(agentEntry);
       return;
     }
     if (agent === 'light') {
@@ -1934,11 +1963,42 @@ export class AppController implements Disposable {
   // ---------------------------------------------------------------- agent CLIs (ACP)
 
   private async toggleAgentCli(id: string, enabled: boolean): Promise<void> {
-    if (!this.agentEntry(id)) return;
+    const entry = this.agentEntry(id);
+    if (!entry) return;
+    if (!enabled && this.settings.provider === `agent:${id}` && this.settings.agentClis.enabled.includes(id)) {
+      // It is the main agent: turning it off moves the main agent elsewhere, so ask first.
+      const turnOff = t('Turn off');
+      const choice = await this.shell.message(
+        'warning',
+        t('{agent} is the main agent. Turn it off? The main agent then runs on the default provider.', { agent: entry.label }),
+        { modal: true },
+        turnOff,
+      );
+      if (choice !== turnOff) {
+        this.postConfig(); // the checkbox shows it on again
+        return;
+      }
+      this.droppedMainNoted.add(id); // the user just chose this; no notice about it
+    }
     const list = this.settings.agentClis.enabled.filter((x) => x !== id);
     if (enabled) list.push(id);
     await this.updateSetting('agentClis.enabled', list, { preferGlobal: true });
     if (enabled) await this.checkAgent(id);
+  }
+
+  /** After the agent was picked as the main agent: when it is not installed, say how to install it. */
+  private async noteAgentNotInstalled(entry: AgentCliEntry): Promise<void> {
+    const state = this.agentStatus.get(entry.id)?.state;
+    if (!state || state === 'unknown' || state === 'checking') await this.checkAgent(entry.id);
+    if (this.agentStatus.get(entry.id)?.state !== 'not_found') return;
+    const hint = installHint(entry);
+    this.publishNotice(
+      'warning',
+      hint
+        ? t('{agent} is not installed. Install it ({hint}), then check it again in Settings > Providers.', { agent: entry.label, hint })
+        : t('{agent} was not found at "{path}".', { agent: entry.label, path: this.settings.agentClis.paths[entry.id] || entry.bin }),
+      'agentClis',
+    );
   }
 
   /** Is the agent's program there, and which version? (`--version` only; a sign-in problem shows on the first request.) */
@@ -2209,6 +2269,7 @@ export class AppController implements Disposable {
     this.radar?.apply(this.settings.radar);
     this.updateStatus();
     this.postConfig();
+    this.noteDroppedMainAgent();
   }
 
   private reportError(error: unknown): void {

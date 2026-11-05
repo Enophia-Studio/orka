@@ -180,7 +180,7 @@ Other modes: *On changes* (every file, command or plan step), *Every step* and *
 
 Model pickers group versions by family (e.g. **Opus** 5.5, 5, 4.8 · **GPT-6** Astra, Sol, Luna · **Gemini Flash** 3.8, 3.7, ...). **Load list** fetches the provider's own model list; models Orka does not know yet are added to the right family and marked "new". Lists are refreshed once a day in the background, and **Other…** lets you type any model id. The built-in catalog lives in `packages/core/src/providers/catalog.ts`.
 
-**Default provider:** until you pick one, Orka uses a provider that works right now rather than the Claude API without a key: the first provider that has a key (or Claude Code, if you turned it on).
+**Default provider (CLI-first):** until you pick one, Orka uses a CLI that is ready: Claude Code, if you turned it on and it is logged in, else an agent CLI you turned on whose check passed. API providers come after, as a fallback: the default one when it has a key, else the first provider that has a key. The provider pickers list a model API only once it has a key (add keys in **Settings → Providers**); the main agent's picker lists every agent CLI, also those that are off or not installed, and picking one turns it on.
 
 **Fallback:** Agents panel → main agent → *If its limit is reached, continue with*. When the main provider hits a usage or rate limit, is unreachable or returns a server error, the request continues on the fallback provider with the same conversation (`orka.fallback.provider`, `orka.fallback.model`).
 

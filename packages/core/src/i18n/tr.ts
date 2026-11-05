@@ -917,6 +917,11 @@ export const TR: Record<string, string> = {
   Docs: 'Belgeler',
   Terms: 'Şartlar',
   FAQ: 'SSS',
+  'No agent CLI installed yet.': 'Henüz kurulu bir agent CLI yok.',
+  'Main agent {agent} is turned off; using {fallback}.': 'Ana agent {agent} kapalı; yerine {fallback} kullanılıyor.',
+  'Turn off': 'Kapat',
+  '{agent} is the main agent. Turn it off? The main agent then runs on the default provider.':
+    "{agent} ana agent. Kapatılsın mı? Ana agent bundan sonra varsayılan provider'da çalışır.",
   preview: 'önizleme',
   'Offer it as the main agent': 'Ana agent olarak sun',
   'Coding agents you installed and signed in to yourself. As the main agent they run their own tools; Orka answers their permission requests, keeps their file changes reviewable and revertible, and its Supervisor reviews the result. Orka never reads or stores their sign-in.':
