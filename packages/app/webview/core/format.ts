@@ -14,6 +14,14 @@ export function ago(iso: string): string {
   return t('{n} d ago', { n: Math.floor(s / 86400) });
 }
 
+/** Text that goes into the message box after what the user typed there (which stays), and only once. */
+export function appendToDraft(draft: string, text: string): string {
+  const kept = draft.trimEnd();
+  if (!kept) return text;
+  if (kept.includes(text.trim())) return draft;
+  return `${kept}\n\n${text}`;
+}
+
 /**
  * Bar widths: the UI's Content Security Policy blocks inline style attributes, so bars carry their
  * width in data-width and get it through the CSSOM after rendering.

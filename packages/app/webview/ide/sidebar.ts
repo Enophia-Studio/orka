@@ -1,9 +1,10 @@
 // The desktop app's session list: the tasks of the recent project folders, newest first.
 import type { TaskSummary } from '@orka/core';
 import { t, tn } from '@orka/core/src/i18n';
-import type { SessionGroup, SessionOrganizerView } from '../../src/protocol';
+import type { RadarView, SessionGroup, SessionOrganizerView } from '../../src/protocol';
 import { attr, escapeHtml, icon } from '../core/dom';
 import { ago } from '../core/format';
+import { radarBadge, radarLabel } from '../features/radar';
 
 export interface SidebarView {
   /** The recent folders with their newest tasks. */
@@ -41,6 +42,7 @@ export function sidebarFrame(logo: string): string {
     </div>
     <nav class="side-list" id="side-list" aria-label="${attr(t('Sessions'))}"></nav>
     <div class="side-foot">
+      <div class="side-radar" id="side-radar"></div>
       <button class="side-link" data-action="open-folder">${icon('folder')}<span>${escapeHtml(t('Open folder…'))}</span></button>
       <div class="side-foot-row">
         <button class="side-link" data-action="open-settings">${icon('gear')}<span>${escapeHtml(t('Settings'))}</span></button>
@@ -53,9 +55,20 @@ export function sidebarFrame(logo: string): string {
       <span class="rail-new">${railButton('new-session', 'plus', t('New session'), 'Ctrl+Alt+N')}</span>
       ${railButton('search-sessions', 'search', t('Search sessions'), 'Ctrl+K')}
       <span class="spacer"></span>
+      <span class="rail-radar" id="rail-radar"></span>
       ${railButton('open-folder', 'folder', t('Open folder…'))}
       ${railButton('open-settings', 'gear', t('Settings'))}
     </div>`;
+}
+
+/** Radar in the session list's footer and in the rail, with the count of new entries (desktop, once Radar reported in). */
+export function radarEntryHtml(where: 'list' | 'rail', radar: RadarView | undefined): string {
+  // The badge is only seen; the button's name says the count.
+  const label = radarLabel(t('Radar: what other AI coding tools shipped'), radar);
+  const badge = radarBadge(radar);
+  return where === 'rail'
+    ? `<button class="icon-btn" data-action="open-radar" aria-label="${attr(label)}" title="${attr(label)}">${icon('radar')}${badge}</button>`
+    : `<button class="side-link" data-action="open-radar" aria-label="${attr(label)}" title="${attr(label)}">${icon('radar')}<span>Radar</span>${badge}</button>`;
 }
 
 export function themeSwitchHtml(theme: 'system' | 'light' | 'dark'): string {

@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import type { ToWebview } from '../src/protocol';
 import type { Disposable, SettingsStore } from '../src/settings';
-import type { AppShell, Folder, SecretStore, StateStore, TerminalHandle } from '../src/shell';
+import type { AppShell, Folder, InputOptions, SecretStore, StateStore, TerminalHandle } from '../src/shell';
 import type { TerminalProgram } from '../src/terminal';
 
 export class MemorySettings implements SettingsStore {
@@ -66,6 +66,8 @@ export class FakeShell implements AppShell {
   readonly globalState = new MemoryState();
   readonly workspaceState = new MemoryState();
   readonly builtinSkillsDir: string;
+  /** The test's home folder stands in for ~/.orka (Radar keeps its files in radar/ there). */
+  readonly orkaHome: string;
   readonly canOpenFolder: boolean;
   readonly visible = true;
   readonly posted: ToWebview[] = [];
@@ -74,6 +76,9 @@ export class FakeShell implements AppShell {
   readonly terminals: Array<{ name: string; cwd: string; command: string | TerminalProgram; shown: boolean }> = [];
   /** The action message() answers with, when it offers it. */
   answer?: string;
+  /** What input() was asked, and what it answers. */
+  readonly inputs: InputOptions[] = [];
+  inputAnswer?: string;
   private folder?: string;
   private readonly folderListeners = new Set<() => void>();
 
@@ -86,6 +91,7 @@ export class FakeShell implements AppShell {
   ) {
     this.settings = new MemorySettings({ language: 'en', ...settings });
     this.builtinSkillsDir = path.join(home, 'builtin-skills');
+    this.orkaHome = home;
     this.canOpenFolder = kind === 'desktop';
     this.folder = recent[0];
   }
@@ -133,8 +139,9 @@ export class FakeShell implements AppShell {
     return this.answer !== undefined && actions.includes(this.answer) ? this.answer : undefined;
   }
 
-  async input(): Promise<string | undefined> {
-    return undefined;
+  async input(options: InputOptions): Promise<string | undefined> {
+    this.inputs.push(options);
+    return this.inputAnswer;
   }
 
   async pick(): Promise<number | undefined> {
