@@ -17,7 +17,7 @@ export { applyEdit } from './FileTools';
 export { runGit } from './GitTools';
 export { stripAnsi } from './TerminalTools';
 export { insideWorkspace, type ReadInsideResult, readInsideWorkspace, replaceInsideWorkspace, type ReplaceInsideResult, writeInsideWorkspace } from './safeFs';
-export { globToRegExp, IGNORED_DIRS, resolveInWorkspace, toRelative, walkFiles } from './workspace';
+export { globToRegExp, IGNORED_DIRS, isProbablyBinaryPath, resolveInWorkspace, toRelative, walkFiles } from './workspace';
 
 /**
  * The default tool set, in a fixed order. The tool list must stay identical for the whole

@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 
 /** Folders never worth searching for "@file" completions. */
-const SKIP = new Set(['node_modules', '.git', 'Library', 'obj', 'bin', 'dist', 'out', 'build', 'Temp', '.vs', '.idea', '.next', 'coverage', '__pycache__', '.venv', 'venv']);
+export const SKIP_DIRS: ReadonlySet<string> = new Set(['node_modules', '.git', 'Library', 'obj', 'bin', 'dist', 'out', 'build', 'Temp', '.vs', '.idea', '.next', 'coverage', '__pycache__', '.venv', 'venv']);
 const MAX_ENTRIES = 50_000;
 
 /**
@@ -26,7 +26,7 @@ export async function findFilesByName(root: string, query: string, limit: number
       seen++;
       const child = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
-        if (!SKIP.has(entry.name) && !entry.name.startsWith('.')) queue.push(child);
+        if (!SKIP_DIRS.has(entry.name) && !entry.name.startsWith('.')) queue.push(child);
       } else if (entry.isFile() && entry.name.toLowerCase().includes(needle)) {
         found.push(child);
         if (found.length >= limit) break;
