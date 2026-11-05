@@ -72,8 +72,14 @@ export class RadarLock {
   /** The lock file now: its holder (when it reads well) and its age; undefined when there is none. */
   private async inspect(): Promise<{ holder?: Holder; modifiedMs: number } | undefined> {
     try {
-      const [stat, raw] = await Promise.all([fs.stat(this.file), fs.readFile(this.file, 'utf8')]);
-      return { holder: holderOf(raw), modifiedMs: stat.mtimeMs };
+      // One open handle: the age and the holder belong to the same file.
+      const handle = await fs.open(this.file, 'r');
+      try {
+        const stat = await handle.stat();
+        return { holder: holderOf(await handle.readFile('utf8')), modifiedMs: stat.mtimeMs };
+      } finally {
+        await handle.close();
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
       // Being replaced right now: someone holds it.

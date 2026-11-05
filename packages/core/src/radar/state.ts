@@ -150,6 +150,8 @@ export async function saveRadarState(file: string, state: RadarState): Promise<v
 
 /** The state of one source, started over when its URL changed. */
 export function sourceStateFor(state: RadarState, sourceId: string, url: string): RadarSourceState {
+  // Source ids are checked when the list is loaded; this keeps a bad one off Object.prototype regardless.
+  if (sourceId === '__proto__' || sourceId === 'constructor' || sourceId === 'prototype') throw new Error(`Invalid source id: ${sourceId}`);
   const current = state.sources[sourceId];
   if (current && current.url === url) return current;
   return (state.sources[sourceId] = { url, seen: [] });

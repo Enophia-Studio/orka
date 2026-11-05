@@ -365,10 +365,10 @@ export class RadarController {
     let raw = '';
     let stamp: string | undefined;
     try {
-      const stat = await fs.stat(this.reportFile);
+      const { stat, text } = await readCapped(this.reportFile, MAX_REPORT_BYTES);
       // A file too large to be a report is set aside like a broken one.
-      if (stat.size <= MAX_REPORT_BYTES) {
-        raw = await fs.readFile(this.reportFile, 'utf8');
+      if (text !== undefined) {
+        raw = text;
         stamp = stampOf(stat);
       }
     } catch (error) {
@@ -399,16 +399,16 @@ export class RadarController {
    * another window wrote. Throws when it cannot be read or fails its checks.
    */
   private async diskReport(): Promise<{ report: RadarReport; stamp: string } | 'unchanged' | 'missing'> {
-    let stat: Stats;
+    let read: { stat: Stats; text?: string };
     try {
-      stat = await fs.stat(this.reportFile);
+      read = await readCapped(this.reportFile, MAX_REPORT_BYTES, this.reportStamp);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'missing';
       throw error;
     }
-    const stamp = stampOf(stat);
+    const stamp = stampOf(read.stat);
     if (stamp === this.reportStamp) return 'unchanged';
-    const { report } = stat.size > MAX_REPORT_BYTES ? {} : validateReport(JSON.parse(await fs.readFile(this.reportFile, 'utf8')));
+    const { report } = read.text === undefined ? {} : validateReport(JSON.parse(read.text));
     if (!report) throw new Error(t('The saved Radar report does not pass its checks.'));
     return { report, stamp };
   }
@@ -554,4 +554,19 @@ function messageOf(error: unknown): string {
 /** A file's time and size: another value means another write. */
 function stampOf(stat: { mtimeMs: number; size: number }): string {
   return `${stat.mtimeMs}:${stat.size}`;
+}
+
+/**
+ * A file's stat and, when it is at most `max` bytes (and its stamp is not `unchanged`), its text:
+ * both from one open handle, so they belong to the same file.
+ */
+async function readCapped(file: string, max: number, unchanged?: string): Promise<{ stat: Stats; text?: string }> {
+  const handle = await fs.open(file, 'r');
+  try {
+    const stat = await handle.stat();
+    if (stat.size > max || stampOf(stat) === unchanged) return { stat };
+    return { stat, text: await handle.readFile('utf8') };
+  } finally {
+    await handle.close();
+  }
 }

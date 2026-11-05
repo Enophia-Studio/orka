@@ -101,9 +101,14 @@ export function validateInventory(value: unknown): InventoryValidation {
 export async function loadFeatureInventory(file: string): Promise<FeatureInventory> {
   let text: string;
   try {
-    const stat = await fs.stat(file);
-    if (stat.size > MAX_FILE_BYTES) throw new Error(t('{file} is larger than 1 MB.', { file }));
-    text = await fs.readFile(file, 'utf8');
+    // One open handle: the size checked is the size of the file read.
+    const handle = await fs.open(file, 'r');
+    try {
+      if ((await handle.stat()).size > MAX_FILE_BYTES) throw new Error(t('{file} is larger than 1 MB.', { file }));
+      text = await handle.readFile('utf8');
+    } finally {
+      await handle.close();
+    }
   } catch (error) {
     throw new Error(t('Could not read {file}: {error}', { file, error: error instanceof Error ? error.message : String(error) }));
   }

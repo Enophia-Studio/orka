@@ -623,7 +623,7 @@ describe('Radar panel', () => {
     assert.match(off, /data-action="radar-switch" data-on="true"/);
     assert.match(off, /<code>github\.com<\/code>/);
     assert.doesNotMatch(off, /radar-analyze/);
-    assert.match(radarSettingsCard(view({ enabled: false }), true), /github\.com/, 'the settings card names them too');
+    assert.ok(radarSettingsCard(view({ enabled: false }), true).includes('github.com'), 'the settings card names them too');
 
     const on = radarPanelHtml(view({ model: { provider: 'claude', model: 'claude-opus-5-5', label: 'Claude API', inherited: true } }), undefined, deps);
     const options = [...on.matchAll(/<option value="([^"]*)"/g)].map((m) => m[1]);
