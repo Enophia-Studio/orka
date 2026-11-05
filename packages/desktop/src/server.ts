@@ -10,9 +10,10 @@ const MAX_BODY = 25 * 1024 * 1024; // pasted images
 const LAUNCH_CODE_TTL_MS = 3 * 60_000;
 /**
  * Replies with file contents and listings (the editor's). A page that reloads asks for them again,
- * so they are never kept for it: up to 2 MB each would sit in the backlog.
+ * so they are never kept for it: up to 2 MB each would sit in the backlog. A request to show a
+ * session answers a click in the page; a page that loads later must not switch on its own.
  */
-const NOT_KEPT = new Set<ToWebview['type']>(['dirEntries', 'fileContent', 'fileSaved', 'saveRefused']);
+const NOT_KEPT = new Set<ToWebview['type']>(['dirEntries', 'fileContent', 'fileSaved', 'saveRefused', 'showSession']);
 const STATIC: Record<string, string> = {
   '/webview.js': 'text/javascript; charset=utf-8',
   '/webview.css': 'text/css; charset=utf-8',

@@ -408,6 +408,12 @@ export type ToWebview =
    * away; maxRunning: how many may run at once.
    */
   | { type: 'live'; sessions: LiveSessionView[]; activeId?: string; maxRunning: number }
+  /**
+   * Desktop (IDE layout): show this open session ("Show" on its approval notice). The page first
+   * asks about unsaved changes in its editor, then sends switchSession. (id, not sessionId: it is
+   * not a message of the session shown.)
+   */
+  | { type: 'showSession'; id: string }
   | Scoped<{ type: 'fileMatches'; query: string; files: string[] }>
   | Scoped<{ type: 'hunks'; path: string; hunks: HunkView[] }>
   | { type: 'dialog'; id: string; dialog: DialogView }

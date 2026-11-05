@@ -857,6 +857,13 @@ export const TR: Record<string, string> = {
   '{n} hidden session': '{n} gizli oturum',
   '{n} hidden sessions': '{n} gizli oturum',
   'Too many open sessions. Close one first.': 'Çok fazla açık oturum var. Önce birini kapatın.',
+  'Needs approval': 'Onay bekliyor',
+  '{n} session needs approval': '{n} oturum onay bekliyor',
+  '{n} sessions need approval': '{n} oturum onay bekliyor',
+  'Close (keeps it in the list)': 'Kapat (listede kalır)',
+  'Sessions running at once': 'Aynı anda çalışan oturumlar',
+  'Each running session may start an agent CLI or Claude Code process (more with parallel sub-agents).':
+    'Çalışan her oturum bir agent CLI ya da Claude Code süreci başlatabilir (paralel sub-agentlarla daha fazla).',
   'A session in {folder} needs your approval: {title}': '{folder} klasöründeki bir oturum onayınızı bekliyor: {title}',
   'A session is already running in {folder}. Orka runs one session at a time per folder; stop it or wait, then start a new one.':
     '{folder} klasöründe zaten çalışan bir oturum var. Orka her klasörde aynı anda tek oturum çalıştırır; onu durdurun ya da bitmesini bekleyin, sonra yenisini başlatın.',

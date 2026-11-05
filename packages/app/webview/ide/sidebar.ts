@@ -1,7 +1,8 @@
-// The desktop app's session list: the tasks of the recent project folders, newest first.
+// The desktop app's session list: the tasks of the recent project folders, newest first, with the
+// sessions open now (one per folder) marked: running, waiting for an approval, or shown.
 import type { TaskSummary } from '@orka/core';
 import { t, tn } from '@orka/core/src/i18n';
-import type { RadarView, SessionGroup, SessionOrganizerView } from '../../src/protocol';
+import type { LiveSessionView, RadarView, SessionGroup, SessionOrganizerView } from '../../src/protocol';
 import { attr, escapeHtml, icon } from '../core/dom';
 import { ago } from '../core/format';
 import { radarBadge, radarLabel } from '../features/radar';
@@ -14,12 +15,11 @@ export interface SidebarView {
   /** Folded sections: "group:<id>" or "folder:<path>". */
   collapsed: ReadonlySet<string>;
   showHidden: boolean;
-  /** The folder the agent works in and the task open there. */
-  folder?: string;
-  taskId?: string;
-  /** Title of the open task while it is not in the history yet (empty: a new task). */
+  /** The open sessions, and the one the page shows. */
+  live: LiveSessionView[];
+  activeId?: string;
+  /** Title of the shown session's task while it is not in the history yet (empty: a new task). */
   draftTitle: string;
-  running: boolean;
   query: string;
 }
 
@@ -33,6 +33,7 @@ export function sidebarFrame(logo: string): string {
   return `
     <div class="side-head">
       <img class="side-logo" src="${attr(logo)}" width="22" height="22" alt=""><strong>Orka</strong><span class="spacer"></span>
+      <span class="side-approvals" id="side-approvals"></span>
       ${railButton('toggle-sidebar', 'sidebar', t('Hide the sidebar'), 'Ctrl+B')}
     </div>
     <button class="side-new" data-action="new-session" title="${attr(`${t('New session')} (Ctrl+Alt+N)`)}"><span class="side-new-icon">${icon('plus')}</span><span>${escapeHtml(t('New session'))}</span></button>
@@ -55,6 +56,7 @@ export function sidebarFrame(logo: string): string {
       ${railButton('toggle-sidebar', 'sidebar', t('Show the sidebar'), 'Ctrl+B')}
       <span class="rail-new">${railButton('new-session', 'plus', t('New session'), 'Ctrl+Alt+N')}</span>
       ${railButton('search-sessions', 'search', t('Search sessions'), 'Ctrl+K')}
+      <span class="rail-approvals" id="rail-approvals"></span>
       <span class="spacer"></span>
       <span class="rail-files" id="rail-files"></span>
       <span class="rail-radar" id="rail-radar"></span>
@@ -71,6 +73,23 @@ export function radarEntryHtml(where: 'list' | 'rail', radar: RadarView | undefi
   return where === 'rail'
     ? `<button class="icon-btn" data-action="open-radar" aria-label="${attr(label)}" title="${attr(label)}">${icon('radar')}${badge}</button>`
     : `<button class="side-link" data-action="open-radar" aria-label="${attr(label)}" title="${attr(label)}">${icon('radar')}<span>Radar</span>${badge}</button>`;
+}
+
+/** The open sessions, other than the one shown, that wait for an approval. */
+export function waitingSessions(live: readonly LiveSessionView[], activeId: string | undefined): LiveSessionView[] {
+  return live.filter((s) => s.id !== activeId && s.state === 'approval');
+}
+
+/**
+ * The count of other sessions waiting for an approval, in the sidebar's head and in the rail; a
+ * click shows the first of them. Empty while none waits.
+ */
+export function approvalsBadgeHtml(where: 'head' | 'rail', live: readonly LiveSessionView[], activeId: string | undefined): string {
+  const waiting = waitingSessions(live, activeId);
+  if (!waiting.length) return '';
+  const label = tn('{n} session needs approval', '{n} sessions need approval', waiting.length);
+  const count = waiting.length > 99 ? '99+' : String(waiting.length);
+  return `<button class="${where === 'rail' ? 'icon-btn' : 'approvals-badge'}" data-action="switch-session" data-session="${attr(waiting[0].id)}" aria-label="${attr(label)}" title="${attr(label)}">${icon('shield')}<span class="approvals-count" aria-hidden="true">${count}</span></button>`;
 }
 
 export function themeSwitchHtml(theme: 'system' | 'light' | 'dark'): string {
@@ -93,22 +112,56 @@ interface Listed {
   folderName: string;
 }
 
+/** A row's classes and the mark before its title for the open session it shows, if any. */
+function liveState(live: LiveSessionView | undefined): { cls: string; mark: string } {
+  if (live?.state === 'approval') {
+    return { cls: ' needs-approval', mark: `<span class="approval-mark" role="img" aria-label="${attr(t('Needs approval'))}" title="${attr(t('Needs approval'))}">${icon('shield')}</span>` };
+  }
+  if (live?.state === 'running') return { cls: ' running', mark: '<span class="run-dot"></span>' };
+  return { cls: '', mark: '' };
+}
+
+/** The … button of a row; an open session that is not shown also names itself (Close or Stop in its menu). */
+function moreButton(taskId: string, folder: string, live: LiveSessionView | undefined, shown: boolean, draft = false): string {
+  const session = live && !shown ? ` data-session="${attr(live.id)}" data-state="${attr(live.state)}"${draft ? ' data-draft="true"' : ''}` : '';
+  return `<button class="icon-btn side-more" data-action="session-menu" data-id="${attr(taskId)}" data-folder="${attr(folder)}"${session} aria-haspopup="menu" aria-label="${attr(
+    t('More for this session'),
+  )}" title="${attr(t('More for this session'))}">${icon('more')}</button>`;
+}
+
 /**
  * The list: the user's own groups first, then each recent folder with its other sessions, then (on
- * request) the hidden ones. Sections fold away; a search shows every match, folded or not.
+ * request) the hidden ones. Sections fold away; a search shows every match, folded or not. A row of
+ * an open session that is not shown switches to it; nothing of either session stops.
  */
 export function sessionListHtml(v: SidebarView): string {
   const query = v.query.trim().toLowerCase();
   const matches = (title: string) => !query || title.toLowerCase().includes(query);
   const hidden = new Set(v.organizer.hidden);
   const all: Listed[] = v.groups.flatMap((g) => g.tasks.map((task) => ({ task, folder: g.folder, folderName: g.name })));
+  const liveOf = (folder: string, taskId: string) => v.live.find((s) => s.taskId === taskId && samePath(s.folder, folder));
+  const shownFolder = v.live.find((s) => s.id === v.activeId)?.folder;
   const row = (item: Listed, meta?: string) => {
-    const open = !!v.folder && samePath(item.folder, v.folder) && item.task.id === v.taskId;
-    return `<div class="side-item${open ? ' current' : ''}${open && v.running ? ' running' : ''}">
-      <button class="side-open" data-action="open-session" data-id="${attr(item.task.id)}" data-folder="${attr(item.folder)}" title="${attr(`${item.task.title}\n${item.folderName} · ${ago(item.task.updatedAt)}`)}"${open ? ' aria-current="true"' : ''}>
-        <span class="side-title">${open && v.running ? '<span class="run-dot"></span>' : ''}<span class="ellipsis">${escapeHtml(item.task.title)}</span>${meta ? `<span class="side-meta">${escapeHtml(meta)}</span>` : ''}</span></button>
-      <button class="icon-btn side-more" data-action="session-menu" data-id="${attr(item.task.id)}" data-folder="${attr(item.folder)}" aria-haspopup="menu" aria-label="${attr(t('More for this session'))}" title="${attr(t('More for this session'))}">${icon('more')}</button>
+    const live = liveOf(item.folder, item.task.id);
+    const shown = !!live && live.id === v.activeId;
+    const state = liveState(live);
+    const action = live && !shown ? `data-action="switch-session" data-session="${attr(live.id)}"` : 'data-action="open-session"';
+    return `<div class="side-item${shown ? ' current' : ''}${state.cls}">
+      <button class="side-open" ${action} data-id="${attr(item.task.id)}" data-folder="${attr(item.folder)}" title="${attr(`${item.task.title}\n${item.folderName} · ${ago(item.task.updatedAt)}`)}"${shown ? ' aria-current="true"' : ''}>
+        <span class="side-title">${state.mark}<span class="ellipsis">${escapeHtml(item.task.title)}</span>${meta ? `<span class="side-meta">${escapeHtml(meta)}</span>` : ''}</span></button>
+      ${moreButton(item.task.id, item.folder, live, shown)}
     </div>`;
+  };
+  /** An open session whose task is not in the history yet (a new task, or one not saved so far). */
+  const draftRow = (live: LiveSessionView, folder: string) => {
+    const shown = live.id === v.activeId;
+    const title = (shown ? v.draftTitle || live.title : live.title) || t('New session');
+    const state = liveState(live);
+    const inner = `<span class="side-title">${state.mark}<span class="ellipsis">${escapeHtml(title)}</span></span>`;
+    return shown
+      ? `<div class="side-item current draft${state.cls}"><span class="side-open" aria-current="true">${inner}</span></div>`
+      : `<div class="side-item draft${state.cls}"><button class="side-open" data-action="switch-session" data-session="${attr(live.id)}" title="${attr(title)}">${inner}</button>
+      ${moreButton(live.taskId, folder, live, false, true)}</div>`;
   };
   /** A foldable section; `buttons` sit at the end of its heading. */
   const section = (key: string, head: string, rows: string[], cls: string, buttons: string) => {
@@ -131,16 +184,17 @@ export function sessionListHtml(v: SidebarView): string {
   }
 
   for (const folder of v.groups) {
-    const current = !!v.folder && samePath(folder.folder, v.folder);
+    const current = !!shownFolder && samePath(folder.folder, shownFolder);
     const items = all.filter((i) => i.folder === folder.folder && !v.organizer.assigned[i.task.id] && !hidden.has(i.task.id) && matches(i.task.title));
-    // The open task is listed once it is saved; until then it shows as a draft at the top.
-    const draft = current && !folder.tasks.some((task) => task.id === v.taskId) && matches(v.draftTitle || t('New session'));
-    if (query && !items.length && !draft) continue;
-    const rows = items.map((i) => row(i));
-    if (draft) {
-      rows.unshift(`<div class="side-item current draft${v.running ? ' running' : ''}"><span class="side-open" aria-current="true">
-        <span class="side-title">${v.running ? '<span class="run-dot"></span>' : ''}<span class="ellipsis">${escapeHtml(v.draftTitle || t('New session'))}</span></span></span></div>`);
-    }
+    // An open session's task is listed once it is saved; until then it shows as a draft at the top.
+    const drafts = v.live.filter(
+      (s) =>
+        samePath(s.folder, folder.folder) &&
+        !folder.tasks.some((task) => task.id === s.taskId) &&
+        matches((s.id === v.activeId ? v.draftTitle || s.title : s.title) || t('New session')),
+    );
+    if (query && !items.length && !drafts.length) continue;
+    const rows = [...drafts.map((s) => draftRow(s, folder.folder)), ...items.map((i) => row(i))];
     if (!rows.length) rows.push(`<div class="side-empty">${escapeHtml(t('No sessions yet.'))}</div>`);
     const head = `${icon('folder')}<span class="ellipsis" title="${attr(folder.folder)}">${escapeHtml(folder.name)}</span>`;
     const add = `<button class="icon-btn" data-action="new-session" data-folder="${attr(folder.folder)}" aria-label="${attr(t('New session in {folder}', { folder: folder.name }))}" title="${attr(t('New session in {folder}', { folder: folder.name }))}">${icon('plus')}</button>`;
@@ -159,17 +213,34 @@ export function sessionListHtml(v: SidebarView): string {
   return `<div class="side-empty">${escapeHtml(query ? t('No session matches.') : t('Open a folder to start a session.'))}</div>`;
 }
 
-/** The … menu of a session: move it to a group, out of it, hide or show it, delete it. */
-export function sessionMenuHtml(taskId: string, folder: string, organizer: SessionOrganizerView): string {
+/** An open session that is not shown, as its … menu offers it: Stop while it runs, else Close. */
+export interface MenuSession {
+  id: string;
+  running: boolean;
+  /** Its task is not saved yet: the menu offers nothing else. */
+  draft: boolean;
+}
+
+/**
+ * The … menu of a session: stop or close it while it is open in the background, move it to a
+ * group, out of it, hide or show it, delete it.
+ */
+export function sessionMenuHtml(taskId: string, folder: string, organizer: SessionOrganizerView, live?: MenuSession): string {
   const inGroup = organizer.assigned[taskId];
   const hidden = organizer.hidden.includes(taskId);
   const item = (action: string, glyph: string, label: string, extra = '', cls = '') =>
     `<button class="menu-item${cls}" role="menuitem" data-action="${action}" data-id="${attr(taskId)}" data-folder="${attr(folder)}"${extra}>${icon(glyph)}<span>${escapeHtml(label)}</span></button>`;
+  const liveItem = live
+    ? live.running
+      ? item('stop-session', 'stop', t('Stop'), ` data-session="${attr(live.id)}"`)
+      : item('close-session', 'x', t('Close (keeps it in the list)'), ` data-session="${attr(live.id)}"`)
+    : '';
+  if (live?.draft) return liveItem;
   const groups = organizer.groups
     .filter((g) => g.id !== inGroup)
     .map((g) => item('session-to-group', 'folder', g.name, ` data-group="${attr(g.id)}"`))
     .join('');
-  return `${organizer.groups.length > (inGroup ? 1 : 0) ? `<div class="menu-label">${escapeHtml(t('Move to group'))}</div>${groups}` : ''}
+  return `${liveItem ? `${liveItem}<hr>` : ''}${organizer.groups.length > (inGroup ? 1 : 0) ? `<div class="menu-label">${escapeHtml(t('Move to group'))}</div>${groups}` : ''}
     ${item('session-new-group', 'plus', t('New group…'))}
     ${inGroup ? item('session-ungroup', 'undo', t('Take out of the group')) : ''}
     <hr>

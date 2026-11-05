@@ -326,7 +326,7 @@
   color: var(--fg-strong);
 }
 
-.side-item.draft .side-open {
+.side-item.current.draft .side-open {
   cursor: default;
 }
 
@@ -500,6 +500,67 @@
   border-radius: 50%;
   background: var(--accent);
   animation: pulse 1.2s ease-in-out infinite;
+}
+
+/* An open session that waits for an approval. */
+.approval-mark {
+  flex: none;
+  display: inline-flex;
+  color: var(--warn);
+}
+
+.approval-mark .icon {
+  width: 13px;
+  height: 13px;
+}
+
+/* Other sessions waiting for an approval: in the sidebar's head and in the rail. */
+.approvals-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 7px;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  color: var(--warn);
+  background: none;
+  border: 1px solid var(--warn);
+  border-radius: 999px;
+}
+
+.approvals-badge:hover {
+  background: var(--hover);
+}
+
+.approvals-badge .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.side-approvals:empty,
+.rail-approvals:empty {
+  display: none;
+}
+
+.rail-approvals .icon-btn {
+  position: relative;
+  color: var(--warn);
+}
+
+.rail-approvals .approvals-count {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 3px;
+  font-size: var(--fs-10);
+  font-weight: 600;
+  line-height: 15px;
+  color: var(--bg);
+  background: var(--warn);
+  border-radius: 999px;
 }
 
 /* Closed: a narrow rail of icons instead of the list. */

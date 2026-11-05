@@ -560,9 +560,13 @@ describe('approvals and permissions per session', () => {
       shell.last('live')!.sessions.map((s) => s.state),
       ['idle', 'idle'],
     );
+    // The page is asked to show alpha (it asks about unsaved editor changes first), then switches.
     shell.answer = 'Show';
     const third = a.host.requestApproval(request('c3', 'Edit three.txt'));
-    await until(() => controller.activeSession === a, 'alpha to be shown');
+    await until(() => shell.last('showSession')?.id === a.id, 'the page to be asked to show alpha');
+    assert.equal(controller.activeSession, b, 'nothing switches before the page does');
+    await controller.handleMessage({ type: 'switchSession', sessionId: a.id });
+    assert.equal(controller.activeSession, a);
     assert.equal(notices().length, 2);
     const init = shell.last('init')!;
     assert.equal(init.sessionId, a.id);

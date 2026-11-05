@@ -26,9 +26,14 @@ export function forShownSession(message: object): boolean {
   return named === undefined || sessionId === undefined || named === sessionId;
 }
 
-/** Messages about the session shown name it, so the app never applies them to another one. */
+/**
+ * Messages about the session shown name it, so the app never applies them to another one. A
+ * message that already names a session (Stop on another open session) keeps that name.
+ */
 export const post = (message: FromWebview) =>
-  vscode.postMessage(sessionId !== undefined && SESSION_MESSAGES.has(message.type) ? { ...message, sessionId } : message);
+  vscode.postMessage(
+    sessionId !== undefined && SESSION_MESSAGES.has(message.type) && (message as { sessionId?: unknown }).sessionId === undefined ? { ...message, sessionId } : message,
+  );
 
 /** What the UI keeps across reloads: the unsent draft and, in the desktop app, which side panels are closed. */
 export interface UiState {

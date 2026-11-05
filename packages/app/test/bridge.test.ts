@@ -29,6 +29,18 @@ describe('page and sessions', () => {
     ]);
   });
 
+  it('keeps the session a message names itself (Stop on another open session)', () => {
+    setSessionId('s-1');
+    post({ type: 'stop', sessionId: 's-2' });
+    post({ type: 'stop' });
+    post({ type: 'switchSession', sessionId: 's-2' });
+    assert.deepEqual(pagePosted, [
+      { type: 'stop', sessionId: 's-2' },
+      { type: 'stop', sessionId: 's-1' },
+      { type: 'switchSession', sessionId: 's-2' },
+    ]);
+  });
+
   it("drops the app's messages for a session it does not show", () => {
     assert.ok(forShownSession({ sessionId: 's-2' }), 'no session known yet (a reload): taken, the next init replaces it all');
     setSessionId('s-1');

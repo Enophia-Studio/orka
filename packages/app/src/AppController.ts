@@ -654,12 +654,13 @@ export class AppController implements Disposable {
   }
 
   /**
-   * Show a session that waits in the background ("Show" on its approval notice). In the classic
-   * layout this is a folder change, which ends the session shown (refused while that one runs).
+   * Show a session that waits in the background ("Show" on its approval notice). In the IDE layout
+   * the page switches, so a file with unsaved changes in its editor is asked about first. In the
+   * classic layout this is a folder change, which ends the session shown (refused while that one runs).
    */
   private async showSession(session: SessionController): Promise<void> {
     if (this.sessions.get(session.id) !== session || session.id === this.activeId) return;
-    if (this.parallel()) await this.switchSession(session.id);
+    if (this.parallel()) this.shell.post({ type: 'showSession', id: session.id });
     else await this.selectFolder(session.root);
   }
 
