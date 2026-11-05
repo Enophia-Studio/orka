@@ -1,4 +1,4 @@
-import { type ApprovalRequest, FileTaskStore } from '@orka/core';
+import { type ApprovalRequest, FileTaskStore, type Tool } from '@orka/core';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -400,6 +400,57 @@ describe('parallel sessions (desktop IDE layout)', () => {
     await controller.handleMessage({ type: 'switchSession', sessionId: alpha.id });
     await until(() => shell.last('config')?.config.mcp.servers.length === 1, "alpha's settings view");
     assert.equal(shell.last('config')!.config.mcp.servers[0].enabled, true);
+  });
+
+  it(".mcp.json servers run in their folder's session; the settings' servers are shared", async () => {
+    const fakeMcp = path.resolve(__dirname, '..', '..', '..', 'core', 'test', 'fixtures', 'fake-mcp.mjs');
+    const server = { command: process.execPath, args: [fakeMcp] };
+    writeFileSync(path.join(folderA, '.mcp.json'), JSON.stringify({ mcpServers: { wa: server } }));
+    writeFileSync(path.join(folderB, '.mcp.json'), JSON.stringify({ mcpServers: { wb: server } }));
+    const { shell, controller } = await start('desktop', { mcpServers: { shared: server } });
+    // What a new task of the session gets (the orchestrator asks for it once per task).
+    const toolsFor = async (session: SessionController) =>
+      [...new Set((await (controller as unknown as { mcpTools(s: SessionController): Promise<Tool[]> }).mcpTools(session)).map((tool) => tool.name.split('__')[1]))];
+    const states = (session: SessionController) => session.mcp.status().map((s) => [s.name, s.state]);
+    const a = controller.activeSession!;
+    shell.answer = 'Allow';
+    assert.deepEqual(await toolsFor(a), ['shared', 'wa']);
+
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    shell.answer = 'Not now';
+    assert.deepEqual(await toolsFor(b), ['shared'], "beta's file is not allowed, and alpha's servers are not beta's");
+    assert.deepEqual(states(a), [['wa', 'ready']], "a task in beta leaves alpha's server running");
+    assert.deepEqual(states(b), []);
+    assert.deepEqual(
+      [folderA, folderB].map((f) => shell.stateFor!(f).get<{ allowed: boolean }>('orka.mcpTrust')?.allowed),
+      [true, false],
+      "each folder's answer is kept with that folder",
+    );
+    assert.equal(shell.workspaceState.get('orka.mcpTrust'), undefined);
+    const view = () => shell.last('config')!.config.mcp.servers.map((s) => [s.name, s.source, s.enabled, s.state]);
+    await until(() => shell.last('config')?.config.folder === b.root, "beta's settings view");
+    assert.deepEqual(view(), [
+      ['shared', 'settings', true, 'ready'],
+      ['wb', 'workspace', false, 'idle'],
+    ]);
+
+    // Switched on in beta's settings view: beta's folder is trusted, alpha's answer stays.
+    await controller.handleMessage({ type: 'toggleMcpServer', name: 'wb', enabled: true });
+    assert.deepEqual(
+      [folderA, folderB].map((f) => shell.stateFor!(f).get<{ allowed: boolean }>('orka.mcpTrust')?.allowed),
+      [true, true],
+    );
+    assert.deepEqual(await toolsFor(b), ['shared', 'wb']);
+    assert.deepEqual(states(a), [['wa', 'ready']]);
+
+    // Closing alpha stops its server; the shared one runs on.
+    await controller.handleMessage({ type: 'closeSession', sessionId: a.id });
+    assert.deepEqual(states(a), [['wa', 'idle']]);
+    assert.deepEqual(view(), [
+      ['shared', 'settings', true, 'ready'],
+      ['wb', 'workspace', true, 'ready'],
+    ]);
   });
 });
 

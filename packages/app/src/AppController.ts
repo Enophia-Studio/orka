@@ -106,7 +106,6 @@ const ENV_KEYS: Partial<Record<ProviderKind, string[]>> = {
   openai: ['OPENAI_API_KEY'],
   gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
 };
-const MCP_TRUST_STATE = 'orka.mcpTrust';
 const MODEL_CACHE_STATE = 'orka.modelCache';
 const CLAUDE_UPDATE_STATE = 'orka.claudeCodeUpdatedAt';
 /** How often model lists and Claude Code are refreshed in the background. */
@@ -171,7 +170,7 @@ export class AppController implements Disposable {
   private skills: Skill[] = [];
   private builtinSkillNames = new Set<string>();
   private skillErrors: string[] = [];
-  /** MCP servers, kept running across tasks. */
+  /** MCP servers from the settings, kept running across tasks and shared by every session (a folder's .mcp.json servers are its session's). */
   private readonly mcp = new McpManager(() => this.postConfig());
   private appUpdateCheck?: Promise<void>;
   private appUpdateTimer?: ReturnType<typeof setInterval>;
@@ -413,6 +412,7 @@ export class AppController implements Disposable {
         break;
       case 'restartMcp':
         this.mcp.restart();
+        this.activeSession?.mcp.restart();
         break;
       case 'editMcpServers':
         await this.shell.openSettings('mcpServers');
@@ -934,41 +934,24 @@ export class AppController implements Disposable {
   }
 
   /**
-   * The servers a task may use: the user's settings, plus the session folder's .mcp.json once the
-   * user allowed it (it starts programs on this machine, so a cloned repository must not do that silently).
+   * Tools of the MCP servers for a new task of this session (started on demand, kept running across
+   * tasks): the settings' servers, which the app runs for every session, and the session folder's
+   * .mcp.json servers once the user allowed them, which run in that session only (a task in another
+   * folder neither stops nor sees them).
    */
-  private async mcpConfigs(session: SessionController | undefined, askTrust: boolean): Promise<Record<string, McpServerConfig>> {
-    const own = this.settings.mcp.servers;
-    const workspace = session ? await session.workspaceMcp() : { servers: {}, hash: '' };
-    const names = Object.keys(workspace.servers).filter((n) => !(n in own));
-    if (!names.length || !session) return own;
-    const state = session.folderState();
-    const trust = state.get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
-    let allowed = trust?.hash === workspace.hash ? trust.allowed : undefined;
-    if (allowed === undefined && askTrust) {
-      const allow = t('Allow');
-      const choice = await this.shell.message(
-        'warning',
-        t('This folder defines MCP servers in .mcp.json: {names}. They start programs on your machine. Allow Orka to use them?', { names: names.join(', ') }),
-        { modal: true },
-        allow,
-        t('Not now'),
-      );
-      allowed = choice === allow;
-      await state.update(MCP_TRUST_STATE, { hash: workspace.hash, allowed });
-    }
-    if (!allowed) return own;
-    return { ...Object.fromEntries(names.map((n) => [n, workspace.servers[n]])), ...own };
-  }
-
-  /** Tools of all MCP servers for a new task of this session (started on demand, kept running across tasks). */
   private async mcpTools(session: SessionController): Promise<Tool[]> {
     if (!this.settings.mcp.enabled) {
       this.mcp.sync({});
+      session.mcp.sync({});
       return [];
     }
-    this.mcp.sync(await this.mcpConfigs(session, true));
-    return this.mcp.tools();
+    const own = this.settings.mcp.servers;
+    this.mcp.sync(own);
+    session.mcp.sync(await session.trustedMcpServers(Object.keys(own), true));
+    const [shared, workspace] = await Promise.all([this.mcp.tools(), session.mcp.tools()]);
+    // Tool names are cleaned server names: two servers can still end up with one name.
+    const names = new Set(shared.map((tool) => tool.name));
+    return [...shared, ...workspace.filter((tool) => !names.has(tool.name))];
   }
 
   private async setMcpServerEnabled(name: string, enabled: boolean): Promise<void> {
@@ -978,19 +961,17 @@ export class AppController implements Disposable {
       await this.updateSetting('mcpServers', servers);
       return;
     }
-    // A workspace server: switching it on means trusting the file, off means not.
-    const session = this.activeSession;
-    const workspace = session ? await session.workspaceMcp() : { servers: {} as Record<string, McpServerConfig>, hash: '' };
-    if (session && workspace.servers[name]) await session.folderState().update(MCP_TRUST_STATE, { hash: workspace.hash, allowed: enabled });
-    this.mcp.sync(await this.mcpConfigs(session, false));
+    // A server of the active session's folder: switching it on means trusting the file, off means not.
+    await this.activeSession?.setMcpTrust(name, enabled, Object.keys(servers));
+    this.postConfig();
   }
 
+  /** The settings' servers as the app runs them, and the active session folder's .mcp.json servers as that session runs them. */
   private mcpView(): ConfigView['mcp'] {
-    const status = new Map(this.mcp.status().map((s) => [s.name, s]));
     const session = this.activeSession;
+    const status = new Map([...(session?.mcp.status() ?? []), ...this.mcp.status()].map((s) => [s.name, s]));
     const workspace = session?.workspaceMcpServers ?? { servers: {}, hash: '' };
-    const trust = session?.folderState().get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
-    const workspaceAllowed = trust?.hash === workspace.hash && trust.allowed;
+    const workspaceAllowed = !!session?.mcpTrusted;
     const view = (name: string, config: McpServerConfig, source: McpServerView['source']): McpServerView => {
       const s = status.get(name);
       return {

@@ -19,6 +19,7 @@ import {
   initProjectMemory,
   isSecretFile,
   lineText,
+  McpManager,
   type McpServerConfig,
   newTaskId,
   NO_HOOKS,
@@ -49,6 +50,7 @@ import { WorkspaceFiles } from './workspaceFiles';
 const MAX_ATTACHMENTS = 10;
 const MAX_ATTACHMENT_BYTES = 200_000;
 const HOOKS_TRUST_STATE = 'orka.hooksTrust';
+const MCP_TRUST_STATE = 'orka.mcpTrust';
 /** The longest editor selection sent with a message (the context builder's own limit). */
 const MAX_SELECTION_CHARS = 8_000;
 const MAX_SELECTION_LINE = 10_000_000;
@@ -132,6 +134,13 @@ export class SessionController {
   private handoffBusy = 0;
   /** The folder's .mcp.json as last read (for the settings view). */
   private workspaceMcpCache: { servers: Record<string, McpServerConfig>; hash: string } = { servers: {}, hash: '' };
+  /**
+   * The folder's .mcp.json servers the user allowed, kept running across this session's tasks and
+   * stopped with it. The servers from the settings are the app's (shared by every session).
+   */
+  readonly mcp = new McpManager(() => {
+    if (this.ctx.isActive(this)) this.ctx.postConfig();
+  });
   /** The request that runs now: a new task waits for it to end in its own task. */
   private running?: Promise<unknown>;
   private startingTask?: Promise<void>;
@@ -740,6 +749,47 @@ export class SessionController {
 
   // ---------------------------------------------------------------- MCP servers and hooks of the folder
 
+  /**
+   * The folder's .mcp.json servers the user allowed, minus those named in the settings (the app's
+   * servers win). Asked once for each version of the file when `askTrust`: it starts programs on
+   * this machine, so a cloned repository must not do that silently.
+   */
+  async trustedMcpServers(settingsNames: readonly string[], askTrust: boolean): Promise<Record<string, McpServerConfig>> {
+    const workspace = await this.workspaceMcp();
+    const names = Object.keys(workspace.servers).filter((n) => !settingsNames.includes(n));
+    if (!names.length) return {};
+    const state = this.folderState();
+    const trust = state.get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
+    let allowed = trust?.hash === workspace.hash ? trust.allowed : undefined;
+    if (allowed === undefined && askTrust) {
+      const allow = t('Allow');
+      const choice = await this.ctx.shell.message(
+        'warning',
+        t('This folder defines MCP servers in .mcp.json: {names}. They start programs on your machine. Allow Orka to use them?', { names: names.join(', ') }),
+        { modal: true },
+        allow,
+        t('Not now'),
+      );
+      allowed = choice === allow;
+      await state.update(MCP_TRUST_STATE, { hash: workspace.hash, allowed });
+    }
+    return allowed ? Object.fromEntries(names.map((n) => [n, workspace.servers[n]])) : {};
+  }
+
+  /** The user allowed the folder's .mcp.json as last read. */
+  get mcpTrusted(): boolean {
+    const trust = this.folderState().get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
+    return trust?.hash === this.workspaceMcpCache.hash && trust.allowed;
+  }
+
+  /** A server of the folder's .mcp.json switched on or off: that trusts the file, or not. */
+  async setMcpTrust(name: string, enabled: boolean, settingsNames: readonly string[]): Promise<void> {
+    const workspace = await this.workspaceMcp();
+    if (!workspace.servers[name]) return;
+    await this.folderState().update(MCP_TRUST_STATE, { hash: workspace.hash, allowed: enabled });
+    this.mcp.sync(await this.trustedMcpServers(settingsNames, false));
+  }
+
   /** Servers from the folder's .mcp.json (the format Claude Code uses), if any. */
   async workspaceMcp(): Promise<{ servers: Record<string, McpServerConfig>; hash: string }> {
     try {
@@ -1047,7 +1097,8 @@ export class SessionController {
 
   /**
    * The session goes away (another folder, or the app closes): its task is saved, an open hand-off
-   * is let go, its processes stop, open approvals are answered "no" and its places in the RunGate are freed.
+   * is let go, its processes and its folder's MCP servers stop, open approvals are answered "no"
+   * and its places in the RunGate are freed.
    */
   async dispose(): Promise<void> {
     // The task's state is read before anything is stopped.
@@ -1059,6 +1110,8 @@ export class SessionController {
     this.denyApprovals();
     // Its stopped run may take a moment to end: its place and folder are free at once.
     this.ctx.gate.releaseAll(this.id);
+    // The folder's own MCP servers stop with it (the settings' servers are the app's).
+    this.mcp.dispose();
     await saved;
   }
 }
