@@ -251,6 +251,19 @@ describe('agent CLIs', () => {
     assert.equal(terminal.shown, true);
   });
 
+  it("lists Antigravity CLI with its ACP docs, terms and Google's FAQ, and opens only those links", async () => {
+    const { shell, controller } = await start('desktop');
+    const agy = shell.last('init')!.config.agentClis.find((a) => a.id === 'antigravity');
+    assert.deepEqual(
+      [agy?.label, agy?.docsUrl, agy?.termsUrl, agy?.faqUrl],
+      ['Antigravity CLI', 'https://antigravity.google/docs/ide/extensions/acp/', 'https://antigravity.google/terms', 'https://antigravity.google/docs/faq'],
+    );
+    assert.equal(shell.last('init')!.config.agentClis.find((a) => a.id === 'codex')?.faqUrl, '');
+    for (const link of ['docs', 'terms', 'faq'] as const) await controller.handleMessage({ type: 'openAgentLink', id: 'antigravity', link });
+    await controller.handleMessage({ type: 'openAgentLink', id: 'codex', link: 'faq' });
+    assert.deepEqual(shell.opened, ['https://antigravity.google/docs/ide/extensions/acp/', 'https://antigravity.google/terms', 'https://antigravity.google/docs/faq']);
+  });
+
   it('says which program is missing when a sign-in needs another one', async () => {
     const saved = { PATH: process.env.PATH, Path: process.env.Path };
     process.env.PATH = path.join(home, 'empty-bin');

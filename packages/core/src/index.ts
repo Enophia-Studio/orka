@@ -58,6 +58,7 @@ export {
   installHint,
   loginCommand,
   resolveAgentExecutable,
+  tooOldForAcp,
 } from './acp/catalog';
 export { AGENT_POLICIES, agentPolicy, type AgentPolicy, type AuthKind, NOT_IN_CATALOG } from './acp/policy';
 export { type AcpAction, actionFor, commandOf } from './acp/mapping';

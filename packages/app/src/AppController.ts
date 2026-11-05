@@ -330,7 +330,8 @@ export class AppController implements Disposable {
         break;
       case 'openAgentLink': {
         const entry = this.agentEntry(message.id);
-        const url = message.link === 'terms' ? agentPolicy(entry?.policy ?? '')?.termsUrl : entry?.docsUrl;
+        const policy = agentPolicy(entry?.policy ?? '');
+        const url = message.link === 'terms' ? policy?.termsUrl : message.link === 'faq' ? policy?.faqUrl : entry?.docsUrl;
         if (url?.startsWith('https://')) await this.shell.openExternal(url);
         break;
       }
@@ -2064,6 +2065,7 @@ export class AppController implements Disposable {
         commandLine: custom ? [custom.command, ...custom.args].join(' ') : undefined,
         note: policy ? t(policy.note) : '',
         termsUrl: policy?.termsUrl ?? '',
+        faqUrl: policy?.faqUrl ?? '',
         docsUrl: entry.docsUrl,
         installHint: installHint(entry),
         loginCommand: loginCommand(entry, s.paths[entry.id], this.agentStatus.get(entry.id)?.executable),

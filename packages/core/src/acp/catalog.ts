@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { childEnv, findExecutable, resolveCommand } from '../host/commands';
 import { killTree } from '../host/processes';
 import { t } from '../i18n';
+import { isNewerVersion } from '../updates/UpdateCheck';
 import type { AcpLaunchSpec } from './AcpClient';
 
 /**
@@ -26,6 +27,11 @@ export interface AgentCliEntry {
   /** Prints the version; empty when the program has no such flag (the check then only finds it). */
   versionArgs: readonly string[];
   /**
+   * The first version with the ACP mode Orka runs, and the vendor's update command to show when
+   * the installed one is older (the check reports an error; Orka never runs the update).
+   */
+  minVersion?: { version: string; updateHint: string };
+  /**
    * The vendor's own sign-in, which the user runs in a terminal: these arguments for the agent's
    * own program, or for `bin`, another program of the vendor's (with how to install it).
    */
@@ -42,18 +48,21 @@ export interface AgentCliEntry {
 
 export const AGENT_CLIS: readonly AgentCliEntry[] = [
   {
-    id: 'gemini',
-    label: 'Gemini CLI',
+    id: 'antigravity',
+    label: 'Antigravity CLI',
     vendor: 'Google',
-    bin: 'gemini',
-    // Builds before "--acp" used "--experimental-acp" (now deprecated); those can be added as a custom agent.
-    acpArgs: ['--acp'],
+    bin: 'agy',
+    // "agy acp" is documented at antigravity.google/docs/ide/extensions/acp/ for any ACP client;
+    // it came with agy 1.5.0 (agy's own changelog). Older builds reject the "acp" argument.
+    acpArgs: ['acp'],
     versionArgs: ['--version'],
-    // Sign-in is a choice inside the interactive CLI (Google account, API key or Vertex AI).
+    minVersion: { version: '1.5.0', updateHint: 'agy update' },
+    // "agy acp" uses the sign-in cached by an interactive agy session, where the user picks the method.
     login: { args: [] },
-    installHint: 'npm install -g @google/gemini-cli',
-    docsUrl: 'https://geminicli.com/docs/cli/acp-mode/',
-    policy: 'google',
+    installHint: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+    installHintWindows: 'irm https://antigravity.google/cli/install.ps1 | iex',
+    docsUrl: 'https://antigravity.google/docs/ide/extensions/acp/',
+    policy: 'antigravity',
     kind: 'builtin',
   },
   {
@@ -98,6 +107,22 @@ export const AGENT_CLIS: readonly AgentCliEntry[] = [
     installHintWindows: "irm 'https://cursor.com/install?win32=true' | iex",
     docsUrl: 'https://cursor.com/docs/cli/acp',
     policy: 'cursor',
+    kind: 'builtin',
+  },
+  {
+    // Legacy: Google moved personal accounts to Antigravity CLI; the id stays so "agent:gemini" keeps working.
+    id: 'gemini',
+    label: 'Gemini CLI (legacy)',
+    vendor: 'Google',
+    bin: 'gemini',
+    // Builds before "--acp" used "--experimental-acp" (now deprecated); those can be added as a custom agent.
+    acpArgs: ['--acp'],
+    versionArgs: ['--version'],
+    // Sign-in is a choice inside the interactive CLI (API key, Vertex AI or a Code Assist licence).
+    login: { args: [] },
+    installHint: 'npm install -g @google/gemini-cli',
+    docsUrl: 'https://geminicli.com/docs/cli/acp-mode/',
+    policy: 'google',
     kind: 'builtin',
   },
 ];
@@ -237,8 +262,22 @@ export async function checkAgentCli(entry: AgentCliEntry, overridePath?: string,
     child.on('error', (error) => done({ state: 'error', executable, detail: error.message }));
     child.on('close', (code) => {
       const line = output.trim().split(/\r?\n/).find((l) => l.trim()) ?? '';
-      if (code === 0) done({ state: 'ready', executable, version: /\d+\.\d+[\w.+-]*/.exec(line)?.[0] ?? (line.slice(0, 60) || undefined) });
-      else done({ state: 'error', executable, detail: output.trim().split(/\r?\n/).slice(-3).join(' ') || `exit code ${code}` });
+      if (code !== 0) return done({ state: 'error', executable, detail: output.trim().split(/\r?\n/).slice(-3).join(' ') || `exit code ${code}` });
+      const version = /\d+\.\d+[\w.+-]*/.exec(line)?.[0] ?? (line.slice(0, 60) || undefined);
+      const tooOld = tooOldForAcp(entry, version);
+      done(tooOld ? { state: 'error', executable, version, detail: tooOld } : { state: 'ready', executable, version });
     });
+  });
+}
+
+/** Why the installed version cannot run the ACP mode (it predates `minVersion`); undefined when it can or is unknown. */
+export function tooOldForAcp(entry: AgentCliEntry, version: string | undefined): string | undefined {
+  const min = entry.minVersion;
+  if (!min || !version || !isNewerVersion(min.version, version)) return undefined;
+  return t('{agent} {version} has no ACP mode yet; version {min} or newer is needed. Update it with "{command}".', {
+    agent: entry.label,
+    version,
+    min: min.version,
+    command: min.updateHint,
   });
 }

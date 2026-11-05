@@ -805,6 +805,7 @@ export const TR: Record<string, string> = {
   'Sign in: run "{command}" in a terminal': 'Giriş: bir terminalde "{command}" çalıştırın',
   'Terms: {url}': 'Koşullar: {url}',
   'Docs: {url}': 'Belgeler: {url}',
+  'FAQ: {url}': 'SSS: {url}',
   'Not in the catalog': 'Katalogda olmayanlar',
   '--provider agent:<id> runs any agent above; "provider" in {file} may only name the ones in "agentClis.enabled". More: {url}':
     '--provider agent:<id> yukarıdaki her agent\'ı çalıştırır; {file} içindeki "provider" yalnızca "agentClis.enabled" listesindekileri seçebilir. Ayrıntılar: {url}',
@@ -915,6 +916,7 @@ export const TR: Record<string, string> = {
   'Sign in…': 'Giriş yap…',
   Docs: 'Belgeler',
   Terms: 'Şartlar',
+  FAQ: 'SSS',
   preview: 'önizleme',
   'Offer it as the main agent': 'Ana agent olarak sun',
   'Coding agents you installed and signed in to yourself. As the main agent they run their own tools; Orka answers their permission requests, keeps their file changes reviewable and revertible, and its Supervisor reviews the result. Orka never reads or stores their sign-in.':
@@ -987,8 +989,12 @@ export const TR: Record<string, string> = {
   '{agent} keeps its own context; there is nothing for Orka to compact.': "{agent} kendi bağlamını kendisi tutuyor; Orka'nın compact edeceği bir şey yok.",
   '{agent} takes over as the main agent, with a summary of this task so far.': '{agent} ana agent olarak devralıyor; bu görevin şu ana kadarki özetiyle birlikte.',
   // Agent policy notes and catalog exclusions (dynamic keys)
-  "Runs your installed Gemini CLI in its ACP mode. Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it. Google moved unpaid and Google One accounts from Gemini CLI to Antigravity.":
-    "Kurulu Gemini CLI'ınızı ACP modunda çalıştırır. Orka, Gemini CLI'ın oturumunu asla kendisi kullanmaz: Google'ın koşulları başka yazılımların bunu kullanmasını yasaklar. Google, ücretsiz ve Google One hesaplarını Gemini CLI'dan Antigravity'ye taşıdı.",
+  "Runs your installed Antigravity CLI (\"agy acp\"), which Google documents for any ACP client. Google's FAQ calls wrapping agy in third-party apps unsupported on consumer plans: read both and decide how you sign in.":
+    "Kurulu Antigravity CLI'ınızı (\"agy acp\") çalıştırır; Google bu modu her ACP istemcisi için belgeliyor. Google'ın SSS'i ise agy'nin üçüncü taraf uygulamalar içinde bireysel planlarla kullanılmasını desteklenmiyor olarak tanımlıyor: ikisini de okuyup nasıl giriş yapacağınıza siz karar verin.",
+  "Legacy: only for a Gemini API key or Code Assist Standard/Enterprise; personal Google accounts moved to Antigravity CLI. Runs your installed Gemini CLI in its ACP mode; Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it.":
+    "Eski sürüm: yalnızca Gemini API key ya da Code Assist Standard/Enterprise için; kişisel Google hesapları Antigravity CLI'a taşındı. Kurulu Gemini CLI'ınızı ACP modunda çalıştırır; Orka, Gemini CLI'ın oturumunu asla kendisi kullanmaz: Google'ın koşulları başka yazılımların bunu kullanmasını yasaklar.",
+  '{agent} {version} has no ACP mode yet; version {min} or newer is needed. Update it with "{command}".':
+    '{agent} {version} sürümünde henüz ACP modu yok; {min} ya da daha yeni bir sürüm gerekiyor. "{command}" ile güncelleyin.',
   'Runs the codex-acp adapter (Apache-2.0) you installed. Sign in with Codex itself, with a ChatGPT plan or an API key.':
     "Kurduğunuz codex-acp adaptörünü (Apache-2.0) çalıştırır. Codex'in kendisiyle, bir ChatGPT planı ya da API key ile giriş yapın.",
   'Runs your installed GitHub Copilot CLI as an ACP server. GitHub documents this mode for other clients; it is a public preview and may change.':
@@ -997,8 +1003,6 @@ export const TR: Record<string, string> = {
     'Kurulu Cursor CLI\'ınızı ("agent acp") çalıştırır; Cursor bu modu özel istemciler için belgeliyor.',
   "An ACP agent you added yourself. Orka runs exactly the command you entered; make sure your use follows that agent's terms.":
     "Kendi eklediğiniz bir ACP agent'ı. Orka tam olarak girdiğiniz komutu çalıştırır; kullanımınızın o agent'ın koşullarına uygun olduğundan emin olun.",
-  "Google's terms do not allow using Antigravity through third-party software on consumer plans.":
-    "Google'ın koşulları, bireysel planlarda Antigravity'nin üçüncü taraf yazılımlar üzerinden kullanılmasına izin vermiyor.",
   "The Claude ACP adapter's licence is unclear. Claude stays available through the Claude API provider and the opt-in Claude Code provider.":
     "Claude ACP adaptörünün lisansı belirsiz. Claude, Claude API provider'ı ve isteğe bağlı Claude Code provider'ı üzerinden kullanılabilir olmaya devam ediyor.",
 

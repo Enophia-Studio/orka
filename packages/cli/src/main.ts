@@ -424,7 +424,11 @@ async function printAgents(filter: string | undefined, config: OrkaConfig, s: St
       signIn[i] ? t('Sign in: run "{command}" in a terminal', { command: signIn[i] }) : '',
     ].filter(Boolean);
     if (setup.length) out(s.dim(`  ${setup.join('  ·  ')}`));
-    const links = [policy?.termsUrl ? t('Terms: {url}', { url: policy.termsUrl }) : '', entry.docsUrl ? t('Docs: {url}', { url: entry.docsUrl }) : ''].filter(Boolean);
+    const links = [
+      policy?.termsUrl ? t('Terms: {url}', { url: policy.termsUrl }) : '',
+      policy?.faqUrl ? t('FAQ: {url}', { url: policy.faqUrl }) : '',
+      entry.docsUrl ? t('Docs: {url}', { url: entry.docsUrl }) : '',
+    ].filter(Boolean);
     if (links.length) out(s.dim(`  ${links.join('  ·  ')}`));
   }
   if (!id) {

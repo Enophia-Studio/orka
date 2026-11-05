@@ -53,6 +53,8 @@ export interface AgentCliView {
   commandLine?: string;
   note: string;
   termsUrl: string;
+  /** The vendor's FAQ on use from other software ('' = none). */
+  faqUrl: string;
   docsUrl: string;
   installHint: string;
   loginCommand?: string;
@@ -512,7 +514,7 @@ export type FromWebview =
   | { type: 'addCustomAgent' }
   | { type: 'removeCustomAgent'; id: string }
   /** Open an agent's documentation or terms (the URLs come from Orka's catalog, never from the page). */
-  | { type: 'openAgentLink'; id: string; link: 'docs' | 'terms' }
+  | { type: 'openAgentLink'; id: string; link: 'docs' | 'terms' | 'faq' }
   /** Continue the task in an external agent; text: what the user typed but did not send. */
   | Scoped<{ type: 'handoff'; agent: string; text?: string }>
   | { type: 'checkForUpdates' }

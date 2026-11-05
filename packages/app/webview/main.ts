@@ -1758,7 +1758,7 @@ document.addEventListener('click', (e) => {
       post({ type: 'removeCustomAgent', id: id! });
       break;
     case 'agent-link':
-      post({ type: 'openAgentLink', id: id!, link: target.dataset.link === 'terms' ? 'terms' : 'docs' });
+      post({ type: 'openAgentLink', id: id!, link: target.dataset.link === 'terms' ? 'terms' : target.dataset.link === 'faq' ? 'faq' : 'docs' });
       break;
     case 'update-claude-code':
       target.setAttribute('disabled', '');
@@ -2886,6 +2886,7 @@ function agentClisSection(): string {
     const links = [
       a.docsUrl ? `<button class="link" data-action="agent-link" data-link="docs" ${id}>${escapeHtml(t('Docs'))}</button>` : '',
       a.termsUrl ? `<button class="link" data-action="agent-link" data-link="terms" ${id}>${escapeHtml(t('Terms'))}</button>` : '',
+      a.faqUrl ? `<button class="link" data-action="agent-link" data-link="faq" ${id}>${escapeHtml(t('FAQ'))}</button>` : '',
     ].join('');
     return `<div class="card">
       <div class="card-head"><strong>${escapeHtml(a.label)}</strong>${a.preview ? `<span class="tag">${escapeHtml(t('preview'))}</span>` : ''}${a.custom ? `<span class="tag sub">${escapeHtml(t('yours'))}</span>` : ''}<span class="spacer"></span>${state(a)}</div>

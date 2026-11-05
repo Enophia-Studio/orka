@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { AcpClient, type AcpLaunchSpec, type AcpSessionHandlers, safeEnv } from '../src/acp/AcpClient';
-import { checkAgentCli, customAgentEntry, resolveAgentExecutable } from '../src/acp/catalog';
+import { agentCli, checkAgentCli, customAgentEntry, resolveAgentExecutable, tooOldForAcp } from '../src/acp/catalog';
 import { actionFor, commandOf } from '../src/acp/mapping';
 import { AcpAgentPool } from '../src/acp/pool';
 import { commandLine } from '../src/acp/terminals';
@@ -325,6 +325,20 @@ describe('ACP helpers', () => {
     assert.equal(resolveAgentExecutable(node, path.join(process.cwd(), 'missing', 'agent.exe')), undefined, "the user's path must exist");
     const custom = customAgentEntry({ name: 'My Agent!', command: 'my-agent', args: ['--acp'] });
     assert.deepEqual([custom.id, custom.policy, custom.acpArgs], ['custom:my-agent', 'custom', ['--acp']]);
+  });
+
+  it('reports an installed agent older than its ACP mode as an error that names the update command', async () => {
+    const node = { ...customAgentEntry({ name: 'Node', command: process.execPath }), versionArgs: ['--version'] };
+    const old = await checkAgentCli({ ...node, minVersion: { version: '999.0.0', updateHint: 'node update' } });
+    assert.equal(old.state, 'error');
+    assert.match(old.version ?? '', /^\d+\.\d+/, 'the version found is still reported');
+    assert.match(old.detail ?? '', /^Node \d+\.\d+\S* has no ACP mode yet; version 999\.0\.0 or newer is needed\. Update it with "node update"\.$/);
+    assert.equal((await checkAgentCli({ ...node, minVersion: { version: '1.0.0', updateHint: 'node update' } })).state, 'ready');
+
+    const agy = agentCli('antigravity')!;
+    assert.match(tooOldForAcp(agy, '1.4.7') ?? '', /Antigravity CLI 1\.4\.7 has no ACP mode yet; version 1\.5\.0 or newer is needed\. Update it with "agy update"\./);
+    for (const version of ['1.5.0', '1.5.1', '2.0.0', undefined]) assert.equal(tooOldForAcp(agy, version), undefined, String(version));
+    assert.equal(tooOldForAcp(agentCli('codex')!, '0.0.1'), undefined, 'no minimum, no check');
   });
 });
 
