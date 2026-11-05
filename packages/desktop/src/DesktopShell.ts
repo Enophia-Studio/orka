@@ -62,7 +62,12 @@ export class DesktopShell implements AppShell, Disposable {
   }
 
   private folderState(): StateStore {
-    return this.state.scope(this.folder ? `folder:${folderKey(this.folder)}` : 'folder:none');
+    return this.folder ? this.stateFor(this.folder) : this.state.scope('folder:none');
+  }
+
+  /** One folder's state (the same as workspaceState while it is the open folder). */
+  stateFor(root: string): StateStore {
+    return this.state.scope(`folder:${folderKey(root)}`);
   }
 
   storage(root: string): { tasks: string; snapshots: string } {

@@ -187,6 +187,21 @@ export interface SessionGroup {
   tasks: TaskSummary[];
 }
 
+/**
+ * A session open in the desktop app (IDE layout): it keeps its task and may run while the page
+ * shows another one. title: '' while its task is empty.
+ */
+export interface LiveSessionView {
+  id: string;
+  folder: string;
+  name: string;
+  taskId: string;
+  title: string;
+  state: 'idle' | 'running' | 'approval';
+  /** Approvals waiting for the user. */
+  approvals: number;
+}
+
 /** How the user arranged the session list: their own groups, which task is in which, hidden tasks. */
 export interface SessionOrganizerView {
   groups: Array<{ id: string; name: string }>;
@@ -387,7 +402,9 @@ export type ToWebview =
   | { type: 'showHistory' }
   | { type: 'history'; tasks: TaskSummary[]; currentId?: string }
   /** Desktop: the tasks of the recent folders, for the session list; taskId: the task open now (saved or not). */
-  | { type: 'sessions'; groups: SessionGroup[]; taskId?: string; organizer: SessionOrganizerView }
+  | { type: 'sessions'; groups: SessionGroup[]; taskId?: string; organizer: SessionOrganizerView; live?: LiveSessionView[] }
+  /** Desktop (IDE layout): the open sessions, sent when one starts, stops, waits for approval or goes away. */
+  | { type: 'live'; sessions: LiveSessionView[]; activeId?: string }
   | Scoped<{ type: 'fileMatches'; query: string; files: string[] }>
   | Scoped<{ type: 'hunks'; path: string; hunks: HunkView[] }>
   | { type: 'dialog'; id: string; dialog: DialogView }
@@ -531,6 +548,10 @@ export type FromWebview =
   | { type: 'dialogResult'; id: string; value?: string | number }
   /** Desktop: work in another folder (a recent one, or pick one when path is empty). */
   | { type: 'openFolder'; path?: string }
+  /** Desktop (IDE layout): show another open session; nothing is stopped or reloaded. */
+  | { type: 'switchSession'; sessionId: string }
+  /** Desktop (IDE layout): close an idle session that is not shown (its task stays in the list). */
+  | { type: 'closeSession'; sessionId: string }
   /** Radar (desktop): check the feeds that are due, analyze what is waiting, stop the analysis, retry quarantined entries. */
   | { type: 'radar'; action: 'poll' | 'analyze' | 'stop' | 'retry' }
   /** A new session in the current folder with the proposal of this cluster in the message box (never sent). */

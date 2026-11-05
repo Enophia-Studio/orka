@@ -81,6 +81,9 @@ export class FakeShell implements AppShell {
   inputAnswer?: string;
   private folder?: string;
   private readonly folderListeners = new Set<() => void>();
+  /** Desktop: each folder's own state (VS Code has workspaceState only). */
+  readonly stateFor?: (root: string) => MemoryState;
+  private readonly folderStates = new Map<string, MemoryState>();
 
   constructor(
     readonly kind: 'vscode' | 'desktop',
@@ -94,6 +97,14 @@ export class FakeShell implements AppShell {
     this.orkaHome = home;
     this.canOpenFolder = kind === 'desktop';
     this.folder = recent[0];
+    if (kind === 'desktop') {
+      this.stateFor = (root) => {
+        const key = path.resolve(root).toLowerCase();
+        let state = this.folderStates.get(key);
+        if (!state) this.folderStates.set(key, (state = new MemoryState()));
+        return state;
+      };
+    }
   }
 
   /** The newest message of this type sent to the UI. */

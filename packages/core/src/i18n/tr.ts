@@ -856,6 +856,9 @@ export const TR: Record<string, string> = {
   'Hide from the list': 'Listeden gizle',
   '{n} hidden session': '{n} gizli oturum',
   '{n} hidden sessions': '{n} gizli oturum',
+  'Too many open sessions. Close one first.': 'Çok fazla açık oturum var. Önce birini kapatın.',
+  'A session is already running in {folder}. Orka runs one session at a time per folder; stop it or wait, then start a new one.':
+    '{folder} klasöründe zaten çalışan bir oturum var. Orka her klasörde aynı anda tek oturum çalıştırır; onu durdurun ya da bitmesini bekleyin, sonra yenisini başlatın.',
 
   // Agent CLIs in the app (settings, pickers, notices)
   '{agent} is not installed. Install it ({hint}), then check it again in Settings > Providers.':

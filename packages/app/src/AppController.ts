@@ -69,6 +69,7 @@ import type {
   ExternalAgentView,
   FromWebview,
   ImageAttachment,
+  LiveSessionView,
   McpServerView,
   ProviderView,
   SessionGroup,
@@ -119,6 +120,8 @@ const ORGANIZER_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const APP_UPDATE_STATE = 'orka.appUpdate';
 /** How often a running app looks again whether the daily update check is due. */
 const APP_UPDATE_POLL_MS = 6 * 60 * 60 * 1000;
+/** Sessions kept open at once in the desktop app; one more closes the least recently used idle one. */
+const MAX_LIVE_SESSIONS = 8;
 
 /** The last answer about Orka releases, and the version the user was already told about. */
 interface AppUpdateState {
@@ -157,7 +160,7 @@ export class AppController implements Disposable {
   /** Provider instances by configuration, shared by all agent roles. */
   private readonly providers = new Map<string, AIProvider>();
   private providersStale = false;
-  /** Live sessions by id, and the one the chat UI shows (one session, of the current folder, for now). */
+  /** Open sessions by id (at most one per folder), and the one the chat UI shows: the current folder's. */
   private readonly sessions = new Map<string, SessionController>();
   private activeId?: string;
   private readonly sessionContext: SessionContext;
@@ -208,7 +211,7 @@ export class AppController implements Disposable {
       shell.watch('skills', () => void this.reloadSkills()),
       shell.watch('mcpConfig', () => void this.readWorkspaceMcp().then(() => this.postConfig())),
       shell.settings.onDidChange(() => void this.onSettingsChanged()),
-      shell.onDidChangeFolder(() => this.replaceSession()),
+      shell.onDidChangeFolder(() => this.onFolderChanged()),
     );
     const secrets = shell.secrets.onDidChange?.((key) => {
       const ref = this.keyedProviders().find((r) => secretKey(r) === key);
@@ -220,7 +223,7 @@ export class AppController implements Disposable {
 
   async initialize(): Promise<void> {
     await Promise.all([...this.keyedProviders().map((ref) => this.loadApiKey(ref)), this.reloadSkills(false)]);
-    this.replaceSession();
+    this.onFolderChanged();
     void (this.settings.claudeCode.enabled ? this.checkClaudeCode() : Promise.resolve()).then(() => this.scheduledUpdates());
     void this.readWorkspaceMcp().then(() => this.postConfig());
     void this.checkAppUpdate();
@@ -393,6 +396,12 @@ export class AppController implements Disposable {
       case 'openFolder':
         await this.selectFolder(message.path);
         break;
+      case 'switchSession':
+        await this.switchSession(message.sessionId);
+        break;
+      case 'closeSession':
+        await this.closeSession(message.sessionId);
+        break;
       case 'toggleMcpServer':
         await this.setMcpServerEnabled(message.name, message.enabled);
         break;
@@ -501,36 +510,167 @@ export class AppController implements Disposable {
       configView: () => this.configView(),
       postConfig: () => this.postConfig(),
       postHistory: () => this.postHistory(),
-      changed: () => this.updateStatus(),
+      changed: () => {
+        this.updateStatus();
+        this.postLive();
+      },
       runFinished: () => {
-        if (this.providersStale) this.disposeProviders();
+        // Providers waiting for an idle moment are rebuilt once no session uses them.
+        if (this.providersStale && !this.anyRunning()) this.disposeProviders();
       },
     };
   }
 
   /**
-   * The current folder's session replaces the one there was: the old one saves its task, lets go of
-   * an open hand-off, stops its processes and answers open approvals "no".
+   * Several sessions at once, each in its own folder, run in the desktop app's IDE layout only. The
+   * VS Code panel and the classic layout show one session, and a folder change ends it.
    */
-  private replaceSession(): void {
-    for (const session of this.sessions.values()) void session.dispose();
-    this.sessions.clear();
-    this.activeId = undefined;
+  private parallel(): boolean {
+    return this.shell.kind === 'desktop' && this.settings.desktop.layout === 'ide';
+  }
+
+  /** The open session of a folder (at most one per folder). */
+  private liveFor(folder: string): SessionController | undefined {
+    return [...this.sessions.values()].find((s) => samePath(s.root, folder));
+  }
+
+  /**
+   * The shell works in another folder (or the app starts): show that folder's session. With
+   * parallel sessions, the one shown before keeps running in the background and the folder's open
+   * session is shown as it is; otherwise the one shown before ends first (see endActive).
+   */
+  private onFolderChanged(): void {
+    if (!this.parallel()) this.endActive();
     const folder = this.shell.currentFolder();
     if (!folder) {
+      this.activeId = undefined;
       this.shell.attach(undefined, this.settings);
       this.idleView = emptySession();
       this.postInit();
       this.updateStatus();
+      this.postLive();
       return;
     }
-    const session = new SessionController(this.sessionContext, folder.path);
-    this.sessions.set(session.id, session);
+    let session = this.liveFor(folder.path);
+    if (!session) {
+      if (!this.makeRoom()) {
+        void this.shell.message('info', t('Too many open sessions. Close one first.'));
+        // The shell goes back to the session shown; its change shows that session again.
+        const shown = this.activeSession;
+        if (shown) void this.shell.selectFolder(shown.root);
+        return;
+      }
+      session = new SessionController(this.sessionContext, folder.path);
+      this.sessions.set(session.id, session);
+    }
+    this.activate(session);
+  }
+
+  /**
+   * The session shown ends: it saves its task, lets go of an open hand-off, stops its processes and
+   * answers open approvals "no".
+   */
+  private endActive(): void {
+    const session = this.activeSession;
+    if (!session) return;
+    this.sessions.delete(session.id);
+    this.activeId = undefined;
+    void session.dispose();
+  }
+
+  /**
+   * Idle sessions end, so the next ones get a host with the new settings: the session shown is
+   * created again with an empty task (as a folder change does), the others close (their tasks stay
+   * in the list). A running session keeps its host.
+   */
+  private renewHosts(): void {
+    for (const session of [...this.sessions.values()]) {
+      if (session.isRunning || session.id === this.activeId) continue;
+      this.sessions.delete(session.id);
+      void session.dispose();
+    }
+    const shown = this.activeSession;
+    if (shown?.isRunning) {
+      this.postLive();
+      return;
+    }
+    this.endActive();
+    this.onFolderChanged();
+  }
+
+  /** The page shows this session from now on (from scratch: its whole transcript). */
+  private activate(session: SessionController): void {
+    const previous = this.activeSession;
+    if (previous) previous.lastActive = Date.now();
     this.activeId = session.id;
+    session.lastActive = Date.now();
     this.shell.attach(session.orchestrator, this.settings);
     session.postInit();
     this.updateStatus();
+    this.postLive();
     void session.workspaceMcp().then(() => this.postConfig());
+  }
+
+  /**
+   * Room for one more open session: at the cap, the least recently used idle session that is not
+   * shown is closed (one without changes to review or a hand-off first); its task stays in the list.
+   * False when every other session runs.
+   */
+  private makeRoom(): boolean {
+    if (this.sessions.size < MAX_LIVE_SESSIONS) return true;
+    const oldest = this.closable();
+    if (!oldest) return false;
+    this.sessions.delete(oldest.id);
+    void oldest.dispose();
+    return true;
+  }
+
+  private hasRoom(): boolean {
+    return this.sessions.size < MAX_LIVE_SESSIONS || !!this.closable();
+  }
+
+  /** The session makeRoom closes, if any. */
+  private closable(): SessionController | undefined {
+    const idle = [...this.sessions.values()].filter((s) => s.id !== this.activeId && !s.isRunning);
+    return idle.sort((a, b) => Number(a.hasPendingWork) - Number(b.hasPendingWork) || a.lastActive - b.lastActive)[0];
+  }
+
+  /** Show another open session (desktop IDE layout); nothing of either session stops. */
+  private async switchSession(id: unknown): Promise<void> {
+    if (!this.parallel() || typeof id !== 'string') return;
+    const session = this.sessions.get(id);
+    if (!session || session.id === this.activeId) return;
+    // The shell works in the session's folder; its change shows the session (onFolderChanged).
+    if (!(await this.shell.selectFolder(session.root))) this.postConfig();
+  }
+
+  /** Close an idle session that is not shown (desktop IDE layout); its task stays in the list. */
+  private async closeSession(id: unknown): Promise<void> {
+    if (!this.parallel() || typeof id !== 'string') return;
+    const session = this.sessions.get(id);
+    if (!session || session.id === this.activeId || session.isRunning) return;
+    this.sessions.delete(session.id);
+    await session.dispose();
+    this.postLive();
+    await this.postSessions();
+  }
+
+  /** The open sessions as the desktop session list shows them. */
+  private liveViews(): LiveSessionView[] {
+    return [...this.sessions.values()].map((s) => ({
+      id: s.id,
+      folder: s.root,
+      name: path.basename(s.root) || s.root,
+      taskId: s.taskId,
+      title: s.title(),
+      state: s.state,
+      approvals: s.approvals,
+    }));
+  }
+
+  private postLive(): void {
+    if (!this.parallel()) return;
+    this.shell.post({ type: 'live', sessions: this.liveViews(), activeId: this.activeId });
   }
 
   // ---------------------------------------------------------------- agent actions
@@ -617,8 +757,19 @@ export class AppController implements Disposable {
       if (folder !== undefined && !target) return;
       // Another folder starts with a new task of its own.
       if (!target || !this.isCurrentFolder(target)) {
+        const live = target === undefined ? undefined : this.liveFor(target);
         await this.selectFolder(target);
-        return;
+        if (!live || !target || !this.isCurrentFolder(target)) return;
+        // The folder's open session is shown; one that runs goes on (its request is not stopped for a new task).
+        if (live.isRunning) {
+          void this.shell.message(
+            'info',
+            t('A session is already running in {folder}. Orka runs one session at a time per folder; stop it or wait, then start a new one.', {
+              folder: path.basename(live.root) || live.root,
+            }),
+          );
+          return;
+        }
       }
     }
     await this.activeSession?.newTask();
@@ -771,8 +922,9 @@ export class AppController implements Disposable {
     const own = this.settings.mcp.servers;
     const workspace = session ? await session.workspaceMcp() : { servers: {}, hash: '' };
     const names = Object.keys(workspace.servers).filter((n) => !(n in own));
-    if (!names.length) return own;
-    const trust = this.shell.workspaceState.get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
+    if (!names.length || !session) return own;
+    const state = session.folderState();
+    const trust = state.get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
     let allowed = trust?.hash === workspace.hash ? trust.allowed : undefined;
     if (allowed === undefined && askTrust) {
       const allow = t('Allow');
@@ -784,7 +936,7 @@ export class AppController implements Disposable {
         t('Not now'),
       );
       allowed = choice === allow;
-      await this.shell.workspaceState.update(MCP_TRUST_STATE, { hash: workspace.hash, allowed });
+      await state.update(MCP_TRUST_STATE, { hash: workspace.hash, allowed });
     }
     if (!allowed) return own;
     return { ...Object.fromEntries(names.map((n) => [n, workspace.servers[n]])), ...own };
@@ -810,14 +962,15 @@ export class AppController implements Disposable {
     // A workspace server: switching it on means trusting the file, off means not.
     const session = this.activeSession;
     const workspace = session ? await session.workspaceMcp() : { servers: {} as Record<string, McpServerConfig>, hash: '' };
-    if (workspace.servers[name]) await this.shell.workspaceState.update(MCP_TRUST_STATE, { hash: workspace.hash, allowed: enabled });
+    if (session && workspace.servers[name]) await session.folderState().update(MCP_TRUST_STATE, { hash: workspace.hash, allowed: enabled });
     this.mcp.sync(await this.mcpConfigs(session, false));
   }
 
   private mcpView(): ConfigView['mcp'] {
     const status = new Map(this.mcp.status().map((s) => [s.name, s]));
-    const workspace = this.activeSession?.workspaceMcpServers ?? { servers: {}, hash: '' };
-    const trust = this.shell.workspaceState.get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
+    const session = this.activeSession;
+    const workspace = session?.workspaceMcpServers ?? { servers: {}, hash: '' };
+    const trust = session?.folderState().get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
     const workspaceAllowed = trust?.hash === workspace.hash && trust.allowed;
     const view = (name: string, config: McpServerConfig, source: McpServerView['source']): McpServerView => {
       const s = status.get(name);
@@ -873,12 +1026,18 @@ export class AppController implements Disposable {
 
   private async selectFolder(fsPath?: string): Promise<void> {
     if (fsPath && fsPath === this.activeSession?.root) return;
-    if (this.activeSession?.isRunning) {
+    // With parallel sessions the session shown goes on in the background; otherwise it ends.
+    if (!this.parallel() && this.activeSession?.isRunning) {
       void this.shell.message('info', t('Stop the agent before switching folders.'));
       this.postConfig();
       return;
     }
-    // The shell reports a change through onDidChangeFolder, which replaces the session.
+    if (this.parallel() && fsPath && !this.liveFor(fsPath) && !this.hasRoom()) {
+      void this.shell.message('info', t('Too many open sessions. Close one first.'));
+      this.postConfig();
+      return;
+    }
+    // The shell reports a change through onDidChangeFolder, which shows the folder's session.
     if (!(await this.shell.selectFolder(fsPath))) this.postConfig();
   }
 
@@ -916,7 +1075,7 @@ export class AppController implements Disposable {
         tasks: (await new FileTaskStore(this.shell.storage(folder.path).tasks).list().catch(() => [])).slice(0, MAX_SESSION_TASKS),
       })),
     );
-    this.shell.post({ type: 'sessions', groups, taskId: this.activeSession?.taskId, organizer: this.sessionOrganizer() });
+    this.shell.post({ type: 'sessions', groups, taskId: this.activeSession?.taskId, organizer: this.sessionOrganizer(), live: this.liveViews() });
   }
 
   /** The user's groups and hidden sessions, as saved (anything malformed is dropped). */
@@ -1016,12 +1175,17 @@ export class AppController implements Disposable {
       const target = this.recentFolder(folder);
       if (!target) return;
       if (!this.isCurrentFolder(target)) {
-        if (this.activeSession?.isRunning) {
+        // The session that opens it: the folder's open one (parallel sessions), else the one shown, which ends.
+        const live = this.parallel() ? this.liveFor(target) : undefined;
+        const holder = this.parallel() ? live : this.activeSession;
+        if (holder?.isRunning && live?.taskId !== id) {
           void this.shell.message('info', t('Stop the agent before opening another task.'));
           return;
         }
         await this.selectFolder(target);
         if (!this.isCurrentFolder(target)) return;
+        // The task is that session's own: it is shown as it is.
+        if (live && live.taskId === id) return;
       }
     }
     await this.activeSession?.open(id);
@@ -1030,10 +1194,11 @@ export class AppController implements Disposable {
   async deleteTask(id: string, folder?: string): Promise<void> {
     const target = folder === undefined ? undefined : this.recentFolder(folder);
     if (folder !== undefined && !target) return;
-    // A task of another recent folder (desktop session list) is deleted from that folder's history.
+    // A task of another recent folder (desktop session list) is deleted from that folder's history,
+    // through its open session when it has one.
     const elsewhere = target !== undefined && !this.isCurrentFolder(target);
-    const session = elsewhere ? undefined : this.activeSession;
-    const store = elsewhere ? new FileTaskStore(this.shell.storage(target).tasks) : session?.store;
+    const session = elsewhere ? this.liveFor(target) : this.activeSession;
+    const store = session?.store ?? (elsewhere ? new FileTaskStore(this.shell.storage(target).tasks) : undefined);
     if (!store) return;
     const deleteLabel = t('Delete');
     const choice = await this.shell.message('warning', t('Delete this task from the history? This cannot be undone.'), { modal: true }, deleteLabel);
@@ -1171,9 +1336,9 @@ export class AppController implements Disposable {
       const ref = action.slice('setApiKey:'.length);
       return ref !== main || this.isReady(ref);
     };
-    const session = this.activeSession;
-    if (session) session.dropNotices(stale);
-    else if (dropNotices(this.idleView, stale)) this.postInit();
+    // Every open session: one in the background shows its transcript again when it is shown.
+    for (const session of this.sessions.values()) session.dropNotices(stale);
+    if (!this.activeSession && dropNotices(this.idleView, stale)) this.postInit();
   }
 
   /** Provider/model an agent ("main", "supervisor" or a sub-agent) will actually run on. */
@@ -2007,8 +2172,8 @@ export class AppController implements Disposable {
     // Provider settings may have changed: rebuild providers once nothing is using them.
     if (this.anyRunning()) this.providersStale = true;
     else this.disposeProviders();
-    // A new shell takes a new host: the session is created again (not while it runs).
-    if (previousShell !== this.settings.shell && !this.activeSession?.isRunning) this.replaceSession();
+    // A new shell takes a new host: idle sessions make way for new ones (a running one goes on).
+    if (previousShell !== this.settings.shell) this.renewHosts();
     this.radar?.apply(this.settings.radar);
     this.updateStatus();
     this.postConfig();

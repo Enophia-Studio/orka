@@ -42,7 +42,7 @@ import { promises as fs, realpathSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import type { ConfigView, EditorSelection, HunkView, ImageAttachment, SessionMessage, SessionPost, ToWebview } from './protocol';
 import { type AppSettings, readMcpServers } from './settings';
-import type { AppShell, TerminalHandle } from './shell';
+import type { AppShell, StateStore, TerminalHandle } from './shell';
 import { WorkspaceFiles } from './workspaceFiles';
 
 const MAX_ATTACHMENTS = 10;
@@ -62,6 +62,9 @@ const MAX_HUNKS = 40;
 const MAX_HUNK_LINES = 80;
 /** How long a new task waits for a stopped request to end (an agent CLI is stopped after 5 s). */
 const STOP_WAIT_MS = 8_000;
+
+/** A session as the session list shows it: waiting for an approval, working, or neither. */
+export type LiveState = 'idle' | 'running' | 'approval';
 
 /** What a session needs from the app around it: settings, providers, skills, and the app-wide views it updates. */
 export interface SessionContext {
@@ -90,7 +93,7 @@ export interface SessionContext {
   configView(): ConfigView;
   postConfig(): void;
   postHistory(): Promise<void>;
-  /** The session started or finished a run (status bar). */
+  /** The session started or finished a run (status bar, the desktop session list). */
   changed(session: SessionController): void;
   /** A run of this session ended (providers waiting for an idle moment are rebuilt). */
   runFinished(session: SessionController): void;
@@ -129,6 +132,8 @@ export class SessionController {
   private startingTask?: Promise<void>;
   /** Saves under way, by path: one at a time per file. */
   private readonly saving = new Map<string, Promise<void>>();
+  /** When the page last showed this session (the least recently used idle one is closed first). */
+  lastActive = Date.now();
 
   constructor(
     private readonly ctx: SessionContext,
@@ -177,6 +182,26 @@ export class SessionController {
 
   get isRunning(): boolean {
     return this.orchestrator.isRunning;
+  }
+
+  /** What the session list shows for it. */
+  get state(): LiveState {
+    return this.isRunning ? 'running' : 'idle';
+  }
+
+  /** Approvals waiting for the user. */
+  get approvals(): number {
+    return this.pendingApprovals.size;
+  }
+
+  /** Changes waiting for Keep or Revert, or an open hand-off: closing the session would put them out of sight. */
+  get hasPendingWork(): boolean {
+    return this.session.changes.length > 0 || !!this.handoff;
+  }
+
+  /** The task's title: its first message ('' before there is one). */
+  title(): string {
+    return this.session.items.some((i) => i.kind === 'user') ? this.taskTitle() : '';
   }
 
   get taskId(): string {
@@ -683,11 +708,16 @@ export class SessionController {
     return this.workspaceMcpCache;
   }
 
+  /** What is kept for this session's folder (never another folder's, though that one may be shown). */
+  folderState(): StateStore {
+    return this.ctx.shell.stateFor?.(this.root) ?? this.ctx.shell.workspaceState;
+  }
+
   /** The agents' settings; hooks from the folder's own settings only once the user allowed them. */
   private orchestratorSettings(): OrchestratorSettings {
     const s = this.ctx.settings();
     if (!s.hooksFromWorkspace || !hasHooks(s.orchestrator.hooks)) return s.orchestrator;
-    const trust = this.ctx.shell.workspaceState.get<{ hash: string; allowed: boolean }>(HOOKS_TRUST_STATE);
+    const trust = this.folderState().get<{ hash: string; allowed: boolean }>(HOOKS_TRUST_STATE);
     return trust?.hash === hooksHash(s.orchestrator.hooks) && trust.allowed ? s.orchestrator : { ...s.orchestrator, hooks: NO_HOOKS };
   }
 
@@ -700,7 +730,7 @@ export class SessionController {
     const hooks = settings.orchestrator.hooks;
     if (!settings.hooksFromWorkspace || !hasHooks(hooks)) return;
     const hash = hooksHash(hooks);
-    const state = this.ctx.shell.workspaceState;
+    const state = this.folderState();
     if (state.get<{ hash: string }>(HOOKS_TRUST_STATE)?.hash === hash) return;
     const commands = [...(hooks?.afterEdit ?? []), ...(hooks?.beforeFinish ?? [])].map((h) => h.command);
     const allow = t('Allow');
@@ -914,7 +944,8 @@ export class SessionController {
       const agent = EXTERNAL_AGENTS[0];
       this.publishNotice('info', t('The provider hit a usage limit. You can continue this task in {agent} for free.', { agent: agent.label }), `handoff:${agent.id}`);
     }
-    if (event.type === 'run_started' || event.type === 'run_finished') this.ctx.changed(this);
+    // The session list follows its state, its task and title (the first message comes after run_started).
+    if (event.type === 'run_started' || event.type === 'run_finished' || event.type === 'user_message' || event.type === 'reset') this.ctx.changed(this);
     if (event.type === 'run_finished') {
       // Any approval still open belongs to a finished run.
       this.denyApprovals();

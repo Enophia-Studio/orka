@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { AppController } from '../src/AppController';
 import type { SessionController } from '../src/SessionController';
+import { SHELL_CHOICES } from '../src/settings';
 import { FakeShell } from './fakeShell';
 
 let home: string;
@@ -38,8 +39,8 @@ afterEach(async () => {
   rmSync(home, { recursive: true, force: true });
 });
 
-async function start(kind: 'vscode' | 'desktop', settings: Record<string, unknown> = {}) {
-  const shell = new FakeShell(kind, home, [folderA, folderB], settings);
+async function start(kind: 'vscode' | 'desktop', settings: Record<string, unknown> = {}, folders = [folderA, folderB]) {
+  const shell = new FakeShell(kind, home, folders, settings);
   const controller = new AppController(shell);
   controllers.push(controller);
   await controller.initialize();
@@ -55,6 +56,15 @@ async function until(check: () => boolean, what: string, ms = 5000): Promise<voi
 }
 
 const pendingOf = (session: SessionController) => (session as unknown as { pendingApprovals: Map<string, unknown> }).pendingApprovals;
+
+/** The agent's turns for the agent processes started from now on (each process plays the script from its start). */
+const script = (...turns: unknown[][]) => (process.env.FAKE_ACP_SCRIPT = JSON.stringify(turns));
+
+/** Messages posted since `from` that name this session. */
+const postedFor = (shell: FakeShell, sessionId: string, from = 0) => shell.posted.slice(from).filter((m) => 'sessionId' in m && m.sessionId === sessionId);
+
+const said = (shell: FakeShell, session: SessionController, text: string) =>
+  shell.posted.some((m) => m.type === 'event' && m.sessionId === session.id && m.event.type === 'assistant_delta' && m.event.text.includes(text));
 
 describe('sessions', () => {
   it('ends the session when VS Code changes the folder: task saved, approval answered, a new empty task', async () => {
@@ -160,5 +170,235 @@ describe('sessions', () => {
       tasks.map((t) => [t.id, t.title]),
       [[session.taskId, 'A long request']],
     );
+  });
+});
+
+describe('parallel sessions (desktop IDE layout)', () => {
+  it('runs sessions of two folders at once and shows each without stopping the other', async () => {
+    const log = path.join(home, 'acp.log');
+    process.env.FAKE_ACP_LOG = log;
+    const { shell, controller } = await start('desktop', { ...agentSettings, permissionMode: 'ask' });
+    const a = controller.activeSession!;
+    script([{ chunk: 'Alpha works.' }, { permission: { id: 'p1', title: 'Run a command', kind: 'execute' } }, { chunk: ' Alpha went on.' }, { stop: 'end_turn' }]);
+    const sentA = controller.send('Task in alpha');
+    await until(() => pendingOf(a).size === 1, "alpha's approval");
+    const [approval] = pendingOf(a).keys();
+
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    assert.notEqual(b.id, a.id);
+    assert.equal(b.root, path.resolve(folderB));
+    assert.ok(a.isRunning, 'alpha goes on in the background');
+    assert.equal(shell.last('init')?.sessionId, b.id);
+    const shownB = shell.posted.length;
+
+    script([{ chunk: 'Beta works.' }, { hang: true }]);
+    const sentB = controller.send('Task in beta');
+    await until(() => said(shell, b, 'Beta works.'), 'beta to work');
+    const live = shell.last('live')!;
+    assert.equal(live.activeId, b.id);
+    assert.deepEqual(
+      live.sessions.map((s) => [s.id, s.state, s.title]),
+      [
+        [a.id, 'running', 'Task in alpha'],
+        [b.id, 'running', 'Task in beta'],
+      ],
+    );
+
+    // Stopping beta leaves alpha waiting.
+    await controller.handleMessage({ type: 'stop' });
+    await sentB;
+    assert.ok(!b.isRunning);
+    assert.ok(a.isRunning);
+    assert.equal(pendingOf(a).size, 1);
+
+    // Alpha's approval, answered while beta is shown: alpha finishes in the background, silently.
+    await controller.handleMessage({ type: 'approve', id: approval, approved: true, sessionId: a.id });
+    await sentA;
+    assert.deepEqual(postedFor(shell, a.id, shownB), [], 'nothing of alpha reached the page while beta was shown');
+    assert.deepEqual(
+      shell.last('live')!.sessions.map((s) => [s.id, s.state]),
+      [
+        [a.id, 'idle'],
+        [b.id, 'idle'],
+      ],
+    );
+
+    // Shown again: alpha's whole transcript, with what it did in the background.
+    await controller.handleMessage({ type: 'switchSession', sessionId: a.id });
+    assert.equal(controller.activeSession, a);
+    assert.equal(shell.currentFolder()?.path, a.root);
+    const init = shell.last('init')!;
+    assert.equal(init.sessionId, a.id);
+    assert.equal(init.taskId, a.taskId);
+    assert.match(JSON.stringify(init.session.items), /Alpha works\. Alpha went on\./);
+    assert.equal(init.config.folder, a.root);
+
+    const prompts = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((e) => e.event === 'prompt');
+    assert.equal(new Set(prompts.map((e) => e.pid)).size, 2, 'one agent process per folder');
+  });
+
+  it('shows the running session of a folder instead of starting a second one there', async () => {
+    script([{ chunk: 'Working.' }, { hang: true }]);
+    const { shell, controller } = await start('desktop', agentSettings);
+    const a = controller.activeSession!;
+    const sent = controller.send('A long request');
+    await until(() => said(shell, a, 'Working.'), 'the agent to work');
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    const task = a.taskId;
+
+    await controller.handleMessage({ type: 'newTask', folder: folderA });
+    assert.equal(controller.activeSession, a);
+    assert.ok(a.isRunning, 'not stopped');
+    assert.equal(a.taskId, task, 'the same task');
+    assert.ok(shell.asked.some((q) => q.text.startsWith('A session is already running in alpha.')));
+    assert.equal(shell.last('init')?.sessionId, a.id);
+    assert.ok(b.isEmpty);
+
+    // Its task in the list is shown as it is, not refused.
+    const asked = shell.asked.length;
+    await controller.handleMessage({ type: 'switchSession', sessionId: b.id });
+    await controller.handleMessage({ type: 'openTask', id: task, folder: folderA });
+    assert.equal(controller.activeSession, a);
+    assert.equal(shell.asked.length, asked);
+
+    controller.stop();
+    await sent;
+  });
+
+  it('keeps eight sessions open: one more closes the least recently used idle one, its task saved', async () => {
+    const folders = Array.from({ length: 9 }, (_, i) => path.join(home, 'work', `f${i}`));
+    for (const folder of folders) mkdirSync(folder, { recursive: true });
+    script([{ chunk: 'Working.' }, { hang: true }]);
+    const { shell, controller } = await start('desktop', agentSettings, folders);
+    const running = controller.activeSession!;
+    const sent = controller.send('Still running');
+    await until(() => said(shell, running, 'Working.'), 'the agent to work');
+
+    script([{ chunk: 'Done.' }, { stop: 'end_turn' }]);
+    await controller.handleMessage({ type: 'selectFolder', path: folders[1] });
+    const done = controller.activeSession!;
+    await controller.send('Finished task');
+    for (const folder of folders.slice(2, 8)) await controller.handleMessage({ type: 'selectFolder', path: folder });
+    assert.equal(shell.last('live')!.sessions.length, 8);
+
+    await controller.handleMessage({ type: 'selectFolder', path: folders[8] });
+    const live = shell.last('live')!;
+    assert.equal(live.sessions.length, 8);
+    assert.equal(live.activeId, controller.activeSession!.id);
+    assert.ok(!live.sessions.some((s) => s.id === done.id), 'the least recently used idle session was closed');
+    assert.ok(live.sessions.some((s) => s.id === running.id), 'the running one, though older, stays');
+    assert.ok(running.isRunning);
+    const store = new FileTaskStore(shell.storage(folders[1]).tasks);
+    let tasks = await store.list();
+    for (const end = Date.now() + 5000; !tasks.length && Date.now() < end; tasks = await store.list()) await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(
+      tasks.map((t) => [t.id, t.title]),
+      [[done.taskId, 'Finished task']],
+    );
+
+    // Closing: only an idle session that is not shown.
+    const idle = live.sessions.find((s) => s.folder === path.resolve(folders[2]))!;
+    await controller.handleMessage({ type: 'closeSession', sessionId: running.id });
+    await controller.handleMessage({ type: 'closeSession', sessionId: controller.activeSession!.id });
+    await controller.handleMessage({ type: 'closeSession', sessionId: idle.id });
+    assert.deepEqual(
+      shell.last('live')!.sessions.map((s) => s.id),
+      live.sessions.filter((s) => s.id !== idle.id).map((s) => s.id),
+    );
+
+    await controller.handleMessage({ type: 'stop', sessionId: running.id });
+    await sent;
+  });
+
+  for (const [kind, settings] of [
+    ['vscode', {}],
+    ['desktop', { 'desktop.layout': 'classic' }],
+  ] as const) {
+    it(`keeps one session in ${kind === 'vscode' ? 'VS Code' : 'the classic layout'}: no folder change while it runs`, async () => {
+      script([{ chunk: 'Working.' }, { hang: true }]);
+      const { shell, controller } = await start(kind, { ...agentSettings, ...settings });
+      const session = controller.activeSession!;
+      const sent = controller.send('A long request');
+      await until(() => said(shell, session, 'Working.'), 'the agent to work');
+      await controller.handleMessage({ type: 'selectFolder', path: folderB });
+      assert.ok(shell.asked.some((q) => q.text === 'Stop the agent before switching folders.'));
+      assert.equal(controller.activeSession, session);
+      assert.equal(shell.currentFolder()?.path, folderA);
+      assert.equal(shell.last('live'), undefined, 'no session list');
+      controller.stop();
+      await sent;
+      // Once it is idle, a folder change ends it.
+      await controller.handleMessage({ type: 'selectFolder', path: folderB });
+      assert.notEqual(controller.activeSession, session);
+      await controller.handleMessage({ type: 'switchSession', sessionId: session.id });
+      assert.equal(controller.activeSession!.root, path.resolve(folderB));
+    });
+  }
+
+  it('gives idle sessions a new host when the shell setting changes; a running one goes on', async () => {
+    const { shell, controller } = await start('desktop', { ...agentSettings, permissionMode: 'ask' });
+    const a = controller.activeSession!;
+    script([{ permission: { id: 'p1', title: 'Run a command', kind: 'execute' } }, { chunk: 'Alpha is done.' }, { stop: 'end_turn' }]);
+    const sent = controller.send('Task in alpha');
+    await until(() => pendingOf(a).size === 1, "alpha's approval");
+    const [approval] = pendingOf(a).keys();
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+
+    await shell.settings.update('shell', SHELL_CHOICES[1]);
+    await until(() => controller.activeSession !== b, 'a new session in beta');
+    assert.equal(controller.activeSession!.root, b.root);
+    assert.equal(shell.last('init')?.sessionId, controller.activeSession!.id);
+    assert.ok(a.isRunning);
+    assert.deepEqual(
+      shell.last('live')!.sessions.map((s) => s.id),
+      [a.id, controller.activeSession!.id],
+    );
+
+    await controller.handleMessage({ type: 'approve', id: approval, approved: true, sessionId: a.id });
+    await sent;
+    await controller.handleMessage({ type: 'switchSession', sessionId: a.id });
+    assert.match(JSON.stringify(shell.last('init')!.session.items), /Alpha is done\./);
+  });
+
+  it('rebuilds providers only once no session runs', async () => {
+    script([{ chunk: 'Working.' }, { hang: true }]);
+    const { shell, controller } = await start('desktop', agentSettings);
+    const a = controller.activeSession!;
+    const stale = () => (controller as unknown as { providersStale: boolean }).providersStale;
+    const sentA = controller.send('A long request');
+    await until(() => said(shell, a, 'Working.'), 'the agent to work');
+    // Provider settings change while alpha runs: its providers stay until it ends.
+    await shell.settings.update('claude.effort', 'low');
+    await until(stale, 'the providers to wait');
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    script([{ chunk: 'Done.' }, { stop: 'end_turn' }]);
+    await controller.send('A short request');
+    assert.ok(stale(), 'beta ended, but alpha still runs');
+    await controller.handleMessage({ type: 'stop', sessionId: a.id });
+    await sentA;
+    assert.ok(!stale());
+  });
+
+  it("keeps a folder's MCP trust with that folder", async () => {
+    writeFileSync(path.join(folderA, '.mcp.json'), JSON.stringify({ mcpServers: { wa: { command: 'wa-server' } } }));
+    const { shell, controller } = await start('desktop');
+    const alpha = controller.activeSession!;
+    await controller.handleMessage({ type: 'toggleMcpServer', name: 'wa', enabled: true });
+    assert.equal(shell.stateFor!(folderA).get<{ allowed: boolean }>('orka.mcpTrust')?.allowed, true);
+    assert.equal(shell.stateFor!(folderB).get('orka.mcpTrust'), undefined);
+    assert.equal(shell.workspaceState.get('orka.mcpTrust'), undefined);
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    await until(() => shell.last('config')?.config.folder === path.resolve(folderB), "beta's settings view");
+    assert.deepEqual(shell.last('config')!.config.mcp.servers, []);
+    await controller.handleMessage({ type: 'switchSession', sessionId: alpha.id });
+    await until(() => shell.last('config')?.config.mcp.servers.length === 1, "alpha's settings view");
+    assert.equal(shell.last('config')!.config.mcp.servers[0].enabled, true);
   });
 });

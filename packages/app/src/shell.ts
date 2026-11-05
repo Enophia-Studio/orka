@@ -58,6 +58,11 @@ export interface AppShell {
   readonly globalState: StateStore;
   /** Kept across sessions for the current folder. */
   readonly workspaceState: StateStore;
+  /**
+   * Kept across sessions for one folder, whichever is current (the desktop app, where sessions of
+   * other folders run in the background). Without it, workspaceState holds the one folder's state.
+   */
+  stateFor?(root: string): StateStore;
   readonly builtinSkillsDir: string;
   /** The surrounding app's display language (VS Code's), if it has one. */
   readonly appLanguage?: string;
