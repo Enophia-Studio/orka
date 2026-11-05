@@ -28,6 +28,7 @@ import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
 import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
+import { hunksHtml } from './features/hunks';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
 import {
   changePath,
@@ -1626,11 +1627,11 @@ document.addEventListener('click', (e) => {
       break;
     case 'keep-hunk':
       target.setAttribute('disabled', '');
-      post({ type: 'keepHunk', path: path!, index: Number(target.dataset.index) });
+      post({ type: 'keepHunk', path: path!, index: Number(target.dataset.index), ...hunkHeader(target) });
       break;
     case 'revert-hunk':
       target.setAttribute('disabled', '');
-      post({ type: 'revertHunk', path: path!, index: Number(target.dataset.index) });
+      post({ type: 'revertHunk', path: path!, index: Number(target.dataset.index), ...hunkHeader(target) });
       break;
     case 'accept-all':
       post({ type: 'acceptAll' });
@@ -3165,22 +3166,11 @@ function renderPlan(): void {
   applyWidths(el.plan);
 }
 
-function hunksHtml(change: FileChange): string {
-  const hunks = ui.hunks.get(change.absPath);
-  if (!hunks) return `<div class="hunks"><span class="spinner small"></span></div>`;
-  if (!hunks.length) return `<div class="hunks muted small">${escapeHtml(t('No differences.'))}</div>`;
-  return `<div class="hunks">${hunks
-    .map(
-      (h, i) => `<div class="hunk">
-      <div class="hunk-head"><span class="mono muted">${escapeHtml(h.header)}</span><span class="spacer"></span>
-        <button class="link" data-action="keep-hunk" data-path="${attr(change.absPath)}" data-index="${i}" title="${attr(t('Keep this change'))}">${icon('check')}${escapeHtml(t('Keep'))}</button>
-        <button class="link" data-action="revert-hunk" data-path="${attr(change.absPath)}" data-index="${i}" title="${attr(t('Undo only this part of the change'))}">${icon('undo')}${escapeHtml(t('Revert part'))}</button></div>
-      <pre class="hunk-body mono">${h.lines.map((l) => `<span class="hl ${l.type === '+' ? 'add' : l.type === '-' ? 'del' : ''}">${escapeHtml(l.type)}${escapeHtml(l.text)}</span>`).join('\n')}${
-        h.hidden ? `\n<span class="muted">${escapeHtml(t('… {n} more lines', { n: h.hidden }))}</span>` : ''
-      }</pre>
-    </div>`,
-    )
-    .join('')}</div>`;
+/** In the desktop app's IDE layout the hunks are highlighted and their buttons carry the header; elsewhere they are plain, as always. */
+function changeHunksHtml(change: FileChange): string {
+  const ide = layout === 'ide';
+  const highlight = ide && window.orkaEditor ? (path: string, lines: string[]) => window.orkaEditor?.highlightLines(path, lines) : undefined;
+  return hunksHtml(change, ui.hunks.get(change.absPath), { highlight, withHeader: ide });
 }
 
 function renderChanges(): void {
@@ -3208,19 +3198,25 @@ function renderChanges(): void {
           }
           <span class="badge ${attr(c.status)}">${escapeHtml(badge[c.status] ?? '')}</span>
           <button class="file" data-action="diff" data-path="${attr(c.absPath)}" title="${attr(t('Show diff'))}">${escapeHtml(c.relPath)}</button>
+          ${c.userEdited ? `<span class="change-mark" role="img" aria-label="${attr(t('Edited by you'))}" title="${attr(t('You edited this file after the agent. Undoing keeps your edits.'))}">${icon('edit')}</span>` : ''}
           ${c.added ? `<span class="stat add">+${Number(c.added) || 0}</span>` : ''}${c.removed ? `<span class="stat del">−${Number(c.removed) || 0}</span>` : ''}
           ${
             filesAvailable() && c.status !== 'deleted'
-              ? `<button class="icon-btn" data-action="open-in-editor" data-path="${attr(changePath(c))}" aria-label="${attr(t('Open in editor'))}" title="${attr(t('Open in editor'))}">${icon('edit')}</button>`
+              ? `<button class="icon-btn" data-action="open-in-editor" data-path="${attr(changePath(c))}" aria-label="${attr(t('Open in editor'))}" title="${attr(t('Open in editor'))}">${icon('read')}</button>`
               : ''
           }
           <button class="icon-btn" data-action="accept" data-path="${attr(c.absPath)}" aria-label="${attr(t('Accept'))}" title="${attr(t('Accept'))}">${icon('check')}</button>
           <button class="icon-btn" data-action="revert" data-path="${attr(c.absPath)}" aria-label="${attr(t('Revert'))}" title="${attr(t('Revert'))}">${icon('undo')}</button>
           </div>
-          ${open && canSplit ? hunksHtml(c) : ''}
+          ${open && canSplit ? changeHunksHtml(c) : ''}
         </li>`;
       })
       .join('')}</ul>`;
+}
+
+/** The header a hunk's button carries (IDE layout only), so the app leaves alone a part that changed since it was shown. */
+function hunkHeader(button: HTMLElement): { header?: string } {
+  return layout === 'ide' && button.dataset.header !== undefined ? { header: button.dataset.header } : {};
 }
 
 /** After the change list moves, refresh the hunks of expanded files (and forget files that left the list). */

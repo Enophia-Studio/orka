@@ -385,6 +385,61 @@ globalThis.fetch = (input, init) => {
     }
   });
 
+  /** Every message the page posts to the app, as sent (window.posted). */
+  const recordPosts = () =>
+    browser.evaluate(`(() => {
+      window.posted = [];
+      const real = window.fetch;
+      window.fetch = (url, init) => {
+        if (url === '/message') window.posted.push(JSON.parse(init.body));
+        return real(url, init);
+      };
+    })()`);
+
+  /** Type a message and send it; resolves when the run has ended. */
+  const ask = async (message, reply) => {
+    await browser.clickSelector('#input');
+    await browser.type(message);
+    await browser.clickSelector('#send');
+    await until(async () => (await text()).includes(reply), 'the reply');
+    await until(() => browser.evaluate('!document.body.classList.contains("busy")'), 'the end of the run');
+  };
+
+  /** Show the plan and changes in the side panel. */
+  const showChanges = async () => {
+    if (await browser.evaluate('document.querySelector("#aside").hidden')) await browser.clickSelector('.topbar .aside-btn');
+    if ((await browser.evaluate('document.querySelector("#aside-tab-task").getAttribute("aria-selected")')) !== 'true') await browser.clickSelector('#aside-tab-task');
+    await until(() => browser.evaluate('!document.querySelector("#aside-task").hidden && !!document.querySelector(".changes li")'), 'the changes');
+  };
+
+  it('shows the changed parts of a file highlighted, and keeps one by its header', async () => {
+    mkdirSync(path.join(work, 'src'));
+    const before = 'export function add(a: number, b: number): number {\n  return a + b;\n}\n';
+    const after = 'export function add(a: number, b: number): number {\n  // Sum.\n  return b + a;\n}\n';
+    writeFileSync(path.join(work, 'src', 'calc.ts'), before);
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    // The app asks once more for a build or test after unverified changes.
+    script = [() => toolUse('toolu_w', 'write_file', { path: 'src/calc.ts', content: after }), () => reply('Swapped the operands.'), () => reply('Nothing to build.')];
+    await ask('Swap the operands', 'Nothing to build.');
+    await recordPosts();
+    await showChanges();
+
+    await browser.clickSelector('[data-action="toggle-hunks"]');
+    await until(() => browser.evaluate('!!document.querySelector(".hunk-body .hl.add .tok-comment")'), 'the highlighted hunk');
+    assert.equal(await browser.evaluate('!!document.querySelector(".hunk-body .hl.del .tok-keyword")'), true, 'removed lines are highlighted too');
+    assert.equal(await browser.evaluate('!!document.querySelector(".hunk-body [style]")'), false, 'classes only');
+    assert.ok((await browser.evaluate('document.querySelector(".hunk-body").textContent.split("\\n")')).includes('+  // Sum.'), 'the text is unchanged');
+
+    await browser.clickSelector('[data-action="keep-hunk"]');
+    await until(() => browser.evaluate('document.querySelector("#changes-panel").hidden'), 'the change kept');
+    const keep = await browser.evaluate('window.posted.find((m) => m.type === "keepHunk")');
+    assert.equal(keep?.index, 0);
+    assert.equal(keep?.header, '@@ -1,3 +1,4 @@', 'the header goes along');
+    assert.equal(readFileSync(path.join(work, 'src', 'calc.ts'), 'utf8'), after);
+  });
+
   it('only lets its own window in', async () => {
     const url = await launch();
     const { port } = new URL(url);

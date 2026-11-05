@@ -1109,6 +1109,7 @@ export const TR: Record<string, string> = {
   'Changed by the agent': 'Agent tarafından değiştirildi',
   'Deleted by the agent': 'Agent tarafından silindi',
   'Edited by you': 'Sizin düzenlemeniz',
+  'You edited this file after the agent. Undoing keeps your edits.': "Bu dosyayı Agent'tan sonra siz düzenlediniz. Geri alma düzenlemelerinizi korur.",
   'Unsaved changes': 'Kaydedilmemiş değişiklikler',
   'Unsaved changes in {file}': '{file} dosyasında kaydedilmemiş değişiklikler var',
   'Open in editor': 'Editörde aç',

@@ -1628,8 +1628,16 @@
   margin-left: auto;
 }
 
+/* The same mark on a Changes row: a file the user edited after the agent. */
+.change-mark {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+
 .tree-mark .icon,
-.tree-link .icon {
+.tree-link .icon,
+.change-mark .icon {
   width: 12px;
   height: 12px;
 }
