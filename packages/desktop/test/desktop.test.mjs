@@ -491,6 +491,123 @@ globalThis.fetch = (input, init) => {
     await until(() => readFileSync(notes, 'utf8') === 'one\ntwo\nthree\nfour\nfive\nmine six\n', "only the agent's part undone");
   });
 
+  /**
+   * Parallel sessions: the app asks before every file write, does not ask for a build afterwards,
+   * and knows a second folder. `extra` is added to the settings.
+   */
+  function twoFolders(extra = {}) {
+    const other = mkdtempSync(path.join(tmpdir(), 'orka-desktop-other-'));
+    const file = path.join(home, 'desktop', 'settings.json');
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), permissionMode: 'ask', autoVerify: false, ...extra }));
+    writeFileSync(path.join(home, 'desktop', 'state.json'), JSON.stringify({ global: { recentFolders: [path.resolve(work), path.resolve(other)] } }));
+    return other;
+  }
+
+  /** Click the session list's "+" of a recent folder (once the list shows it). */
+  const newSessionIn = async (folder) => {
+    const button = `document.querySelector('.side-group-head [data-action="new-session"][data-folder="' + CSS.escape(${JSON.stringify(path.resolve(folder))}) + '"]')`;
+    await until(() => browser.evaluate(`!!${button}`), `the + of ${path.basename(folder)}`);
+    await browser.evaluate(`${button}.click()`);
+  };
+
+  /** Start a request in work that waits for the approval of a write to a.txt. */
+  const waitingInWork = async () => {
+    await browser.clickSelector('#input');
+    await browser.type('Write a.txt');
+    await browser.clickSelector('#send');
+    await until(() => browser.evaluate('!!document.querySelector(".approval [data-action=approve]")'), 'the approval card');
+  };
+
+  it('runs two sessions at once and surfaces a background approval', async () => {
+    const other = twoFolders();
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      script = [() => toolUse('toolu_a', 'write_file', { path: 'a.txt', content: 'from A\n' }), () => reply('B is done.'), () => reply('A is done.')];
+      await waitingInWork();
+      // An unsent text stays with its session.
+      await browser.clickSelector('#input');
+      await browser.type('draft for work');
+
+      // A new session in the other folder; work's waits in the background.
+      await newSessionIn(other);
+      await until(async () => (await text()).includes('What should we build?'), 'an empty session in the other folder');
+      assert.equal(await browser.evaluate('document.querySelector(".folder-btn span")?.textContent'), path.basename(other));
+      assert.equal(await browser.evaluate('document.querySelector("#input").value'), '', "work's draft stays with work");
+      await until(() => browser.evaluate('!!document.querySelector(".side-item.needs-approval [data-action=switch-session]")'), "work's row marked");
+      assert.equal(await browser.evaluate('document.querySelector("#side-approvals button")?.getAttribute("aria-label")'), '1 session needs approval');
+      assert.match(await browser.evaluate('document.title'), /^\(1\) /);
+
+      // The other session runs while work still waits; nothing is written in work.
+      await browser.clickSelector('#input');
+      await browser.type('Say done');
+      await browser.clickSelector('#send');
+      await until(async () => (await text()).includes('B is done.'), "the other session's reply");
+      assert.equal(existsSync(path.join(work, 'a.txt')), false);
+      assert.equal(requests.length, 2);
+
+      // The badge shows work again: its transcript, its approval card and its draft.
+      await browser.clickSelector('#side-approvals button');
+      await until(() => browser.evaluate('!!document.querySelector(".approval [data-action=approve]")'), "work's approval card again");
+      assert.equal(await browser.evaluate('document.querySelector(".folder-btn span")?.textContent'), path.basename(work));
+      assert.equal(await browser.evaluate('document.querySelector("#input").value'), 'draft for work');
+      assert.ok(!(await text()).includes('B is done.'));
+      await browser.clickSelector('.approval [data-action="approve"]');
+      await until(async () => (await text()).includes('A is done.'), "work's reply");
+      assert.equal(readFileSync(path.join(work, 'a.txt'), 'utf8'), 'from A\n');
+      await until(() => browser.evaluate('!document.querySelector("#side-approvals button") && !document.querySelector(".side-item.running, .side-item.needs-approval")'), 'both sessions idle');
+      assert.equal(await browser.evaluate('document.title'), 'Orka');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('shows the running session of a folder instead of starting a second one there', async () => {
+    const other = twoFolders();
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      script = [() => toolUse('toolu_a', 'write_file', { path: 'a.txt', content: 'from A\n' })];
+      await waitingInWork();
+      await newSessionIn(other);
+      await until(async () => (await text()).includes('What should we build?'), 'an empty session in the other folder');
+
+      // "+" in work: its running session comes back, still waiting, and the app says why.
+      await newSessionIn(work);
+      await until(async () => (await text()).includes('A session is already running in'), 'the notice');
+      assert.equal(await browser.evaluate('document.querySelector(".folder-btn span")?.textContent'), path.basename(work));
+      assert.equal(await browser.evaluate('!!document.querySelector(".approval [data-action=approve]")'), true, 'still waiting for the approval');
+      assert.equal(existsSync(path.join(work, 'a.txt')), false);
+      assert.equal(requests.length, 1);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses a run over the limit of sessions running at once', async () => {
+    const other = twoFolders({ 'sessions.maxRunning': 1 });
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      script = [() => toolUse('toolu_a', 'write_file', { path: 'a.txt', content: 'from A\n' }), () => reply('B ran anyway.')];
+      await waitingInWork();
+      await newSessionIn(other);
+      await until(async () => (await text()).includes('What should we build?'), 'an empty session in the other folder');
+      await browser.clickSelector('#input');
+      await browser.type('Say done');
+      await browser.clickSelector('#send');
+      await until(async () => (await text()).includes('1 session is already running (the limit is 1, in Settings > Control).'), 'the refusal');
+      await sleep(500);
+      assert.equal(requests.length, 1, 'no request for the refused run');
+      assert.ok(!(await text()).includes('B ran anyway.'));
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
   it('only lets its own window in', async () => {
     const url = await launch();
     const { port } = new URL(url);

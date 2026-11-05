@@ -345,7 +345,7 @@
         folders: [{ name: 'LobbyDemo', path: root }, { name: 'SharedLib', path: 'D:/game/SharedLib' }],
         folder: root,
         canOpenFolder: ide,
-        app: { version: '0.5.0', checkUpdates: true, checkedAt: Date.now() - 3600e3 },
+        app: { version: '0.6.0', checkUpdates: true, checkedAt: Date.now() - 3600e3 },
         agentClis: [
           { id: 'gemini', label: 'Gemini CLI', vendor: 'Google', custom: false, enabled: true, status: { state: 'ready', version: '0.66.0', executable: 'C:/Users/you/AppData/Roaming/npm/gemini.cmd' }, path: '', note: "Runs your installed Gemini CLI in its ACP mode. Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it. Google moved unpaid and Google One accounts from Gemini CLI to Antigravity.", termsUrl: 'https://geminicli.com/docs/resources/tos-privacy/', docsUrl: 'https://geminicli.com/docs/cli/acp-mode/', installHint: 'npm install -g @google/gemini-cli', loginCommand: 'gemini', preview: false },
           { id: 'codex', label: 'Codex (codex-acp)', vendor: 'OpenAI', custom: false, enabled: true, status: { state: 'not_found' }, path: '', note: 'Runs the codex-acp adapter (Apache-2.0) you installed. Sign in with Codex itself, with a ChatGPT plan or an API key.', termsUrl: 'https://openai.com/policies/terms-of-use/', docsUrl: 'https://github.com/agentclientprotocol/codex-acp', installHint: 'npm install -g @agentclientprotocol/codex-acp', loginCommand: 'codex login', preview: false },
