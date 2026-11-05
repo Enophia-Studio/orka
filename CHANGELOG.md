@@ -8,7 +8,7 @@ The desktop app gets Files: browse the open folder, edit files and send them to 
 
 - **A Files tab** next to the plan and changes and Radar, also opened from the session list, its rail or **Ctrl+Shift+E**. The tree lists a folder when you open it, marks the open file, unsaved changes, the agent's changes and the files you edited, and dims dependency and build folders. `.git` is not listed.
 - **An editor (CodeMirror 6)** for UTF-8 text files up to 2 MB. It opens in place of the conversation, with the message box kept below it and a **Chat | file** switch in the title bar. Syntax colours for JavaScript/TypeScript, JSON, CSS and Unity's USS, HTML, Markdown, Python, YAML (and Unity's text assets) and C# and other C-like languages; other files open as plain text. Search with Ctrl+F, save with **Ctrl+S**, **Esc** goes back to the message box. A file's line endings and UTF-8 BOM are kept as they were; a file with mixed line endings opens read-only, and binary, non-UTF-8 and larger files are not opened.
-- **A save never overwrites a newer file.** When the file changed on disk since you opened it, the save is refused and a banner offers **Reload**, **Compare** (the disk against your text) or **Keep mine**, which asks before it overwrites. A file that changes on disk while you have no unsaved changes simply follows. **Open in system app** opens a file in its own program, never a program or a script.
+- **A save never overwrites a newer file.** When the file changed on disk since you opened it, the save is refused and a banner offers **Reload**, **Compare** (the disk against your text) or **Keep mine**, which asks before it overwrites. A file that changes on disk while you have no unsaved changes simply follows. **Open in system app** opens a document, image or media file in its own program, never a program or a script.
 - **No save while an agent works** or a Freebuff hand-off is open, so a save is never taken for the agent's change. You can keep typing; save when it stops.
 - **Links that leave the folder are neither listed nor opened**, and every read and write checks the real path of the file it opens.
 
@@ -31,7 +31,7 @@ The desktop app gets Files: browse the open folder, edit files and send them to 
 
 **Security**
 
-- The desktop window's CSP allows its per-page nonce for style elements (the editor's), and nothing else changes. No new network access and no telemetry: files are read and written on your machine only. The VS Code extension and the CLI are unchanged.
+- The desktop window's CSP allows its per-page nonce for style elements (the editor's), and nothing else changes. No new network access and no telemetry: files are read and written on your machine only. The VS Code extension and the CLI gain no new network access or permissions.
 
 **Third-party**
 

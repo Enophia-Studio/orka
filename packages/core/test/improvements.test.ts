@@ -241,6 +241,46 @@ describe('change tracker: files the user edited by hand', () => {
     assert.equal(changes.isUserEdited(file()), false);
   });
 
+  it("a save after a later agent change forgets the agent's part, so neither Revert takes that change for the user's", async () => {
+    changes.startEpoch();
+    await agentWrites(agent);
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    // The next request changes another region; the user then saves again.
+    changes.startEpoch();
+    await agentWrites(agent.replace('l6\n', 'MINE6\n').replace('l9\n', 'AGENT9\n'));
+    userSaves(agent.replace('l6\n', 'MINE6\n').replace('l9\n', 'AGENT9\n').replace('l7\n', 'MINE7\n'));
+    const now = read();
+    assert.equal(await changes.revertAgentPart(file()), 'unavailable');
+    assert.equal(read(), now);
+    assert.equal(changes.isUserEdited(file()), true);
+    const hunks = await changes.hunks(file());
+    assert.ok(hunks.length >= 1);
+    for (let i = 0; i < hunks.length; i++) assert.equal(await changes.hunkTouchesUserEdit(file(), i), true);
+  });
+
+  it('a second save of what the user last saved keeps the agent part known', async () => {
+    await agentWrites(agent);
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    userSaves(agent.replace('l6\n', 'MINE6\n').replace('l7\n', 'MINE7\n'));
+    assert.equal(await changes.revertAgentPart(file()), 'reverted');
+    assert.equal(read(), original.replace('l6\n', 'MINE6\n').replace('l7\n', 'MINE7\n'));
+  });
+
+  it("plain Revert keeps an earlier save's record, so Go back still keeps the user's content", async () => {
+    changes.startEpoch();
+    await agentWrites(agent);
+    changes.accept(file());
+    const mine = agent.replace('l6\n', 'MINE6\n');
+    userSaves(mine);
+    changes.startEpoch();
+    await agentWrites(mine.replace('l9\n', 'AGENT9\n'));
+    assert.equal(changes.isUserEdited(file()), false);
+    assert.equal(await changes.revert(file()), true);
+    assert.equal(read(), mine);
+    assert.deepEqual(await changes.rewindTo(0), { restored: [], kept: ['app.txt'] });
+    assert.equal(read(), mine);
+  });
+
   it('counts a save that changes only line endings, not one that changes nothing; ignores untracked files', async () => {
     await agentWrites(agent);
     changes.noteUserEdit(file(), agent, agent);

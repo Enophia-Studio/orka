@@ -1,7 +1,7 @@
 import { applyEvent, customAgentEntry, emptySession, FileTaskStore, hunkHeader, type Orchestrator, programPath, VERSION } from '@orka/core';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -472,6 +472,58 @@ describe('desktop Files and editor', () => {
     assert.equal(shell.posted.filter((m) => m.type === 'saveRefused' && m.reason === 'running').length, 2);
     assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'before\n');
     (controller as unknown as { handoff?: unknown }).handoff = undefined;
+  });
+
+  it('refuses to save while a hand-off starts and until a closed one is collected', async () => {
+    const { shell, controller } = await start('desktop');
+    writeFileSync(path.join(folderA, 'a.txt'), 'before\n');
+    const inner = controller as unknown as { handoff?: unknown; handoffBusy: number; collectHandoff(ended: boolean): Promise<void> };
+    // Between the snapshot and the open terminal.
+    inner.handoffBusy = 1;
+    await save(controller, 'a.txt', 'mine\n');
+    assert.equal(shell.last('saveRefused')?.reason, 'running');
+    inner.handoffBusy = 0;
+    // The terminal closed; its changes are still being read.
+    let finish!: (changed: unknown[]) => void;
+    inner.handoff = { session: { agent: { label: 'Other' }, collect: () => new Promise((resolve) => (finish = resolve)) }, terminal: { show: () => undefined } };
+    const collecting = inner.collectHandoff(true);
+    assert.equal(inner.handoff, undefined);
+    await save(controller, 'a.txt', 'mine\n');
+    assert.equal(shell.posted.filter((m) => m.type === 'saveRefused').length, 2);
+    assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'before\n');
+    finish([]);
+    await collecting;
+    await save(controller, 'a.txt', 'mine\n');
+    assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'mine\n');
+  });
+
+  it("protects a save made through another path to a file the agent changed", async () => {
+    const { controller } = await start('desktop');
+    mkdirSync(path.join(folderA, 'src'));
+    symlinkSync(path.join(folderA, 'src'), path.join(folderA, 'lib'), process.platform === 'win32' ? 'junction' : 'dir');
+    // The agent wrote lib/a.txt; the user saves the same file as src/a.txt.
+    const viaLink = agentChanged(controller, 'lib/a.txt', 'original\n', 'agent\n');
+    await save(controller, 'src/a.txt', 'agent\nand mine\n');
+    assert.equal(orchestratorOf(controller).changes.isUserEdited(viaLink), true);
+    assert.deepEqual(await orchestratorOf(controller).changes.revertAll(), []);
+    assert.equal(readFileSync(path.join(folderA, 'src', 'a.txt'), 'utf8'), 'agent\nand mine\n');
+  });
+
+  it('opens only documents and media with the system app', async () => {
+    const { shell, controller } = await start('desktop');
+    for (const name of ['photo.png', 'notes.md', 'tools/setup.py', 'run.pyw', 'help.chm', 'x.settingcontent-ms', 'build', 'a.exe', 'page.html']) {
+      mkdirSync(path.dirname(path.join(folderA, name)), { recursive: true });
+      writeFileSync(path.join(folderA, name), 'x');
+    }
+    // On macOS and Linux a file marked executable is refused whatever its name.
+    writeFileSync(path.join(folderA, 'script.txt'), 'x');
+    const unix = process.platform !== 'win32';
+    if (unix) chmodSync(path.join(folderA, 'script.txt'), 0o755);
+    for (const name of ['photo.png', 'notes.md', 'tools/setup.py', 'run.pyw', 'help.chm', 'x.settingcontent-ms', 'build', 'a.exe', 'page.html', 'script.txt']) {
+      await controller.handleMessage({ type: 'openExternalFile', path: name });
+    }
+    assert.deepEqual(shell.openedFiles.map((f) => path.basename(f)), ['photo.png', 'notes.md', ...(unix ? [] : ['script.txt'])]);
+    assert.equal(shell.asked.filter((a) => a.text.startsWith('Orka opens only documents')).length, unix ? 8 : 7);
   });
 
   it("marks a saved file as the user's, so Revert All keeps it and says so", async () => {

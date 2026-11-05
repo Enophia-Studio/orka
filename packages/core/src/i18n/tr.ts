@@ -1093,7 +1093,8 @@ export const TR: Record<string, string> = {
   'This part includes lines you edited; it was left as is.': 'Bu kısım sizin düzenlediğiniz satırları içeriyor; olduğu gibi bırakıldı.',
   'Files you edited yourself are kept: {files}.': 'Kendi düzenlediğiniz dosyalar korunur: {files}.',
   'Not sent: the selection from the editor does not name a file and lines in this folder.': 'Gönderilmedi: editördeki seçim bu klasördeki bir dosyayı ve satırları göstermiyor.',
-  'Orka does not open programs or scripts with the system: {file}.': 'Orka programları ve betikleri sistemle açmaz: {file}.',
+  'Orka opens only documents, images and media with the system app, never programs or scripts: {file}.':
+    'Orka sistem uygulamasıyla yalnızca belgeleri, görselleri ve medya dosyalarını açar; programları ve betikleri asla açmaz: {file}.',
 
   // Desktop Files tab and editor (webview)
   Files: 'Dosyalar',

@@ -148,4 +148,21 @@ describe('safe workspace file reads and writes', () => {
     assert.ok('bytes' in read);
     assert.deepEqual(read.bytes, Buffer.from(content, 'utf8'));
   });
+
+  it('puts the earlier bytes back when the write fails partway', (t) => {
+    const abs = path.join(ws.root, 'a.txt');
+    const before = 'the user file\nwith two lines\n';
+    fs.writeFileSync(abs, before);
+    const writeSync = fs.writeSync as (fd: number, buffer: Buffer, offset: number, length: number, position: number) => number;
+    let calls = 0;
+    t.mock.method(fs, 'writeSync', (fd: number, buffer: Buffer, offset: number, length: number, position: number) => {
+      // The first call writes a few bytes, the second fails as on a full disk; the restore then succeeds.
+      calls++;
+      if (calls === 1) return writeSync(fd, buffer, offset, Math.min(length, 3), position);
+      if (calls === 2) throw Object.assign(new Error('no space left on device'), { code: 'ENOSPC' });
+      return writeSync(fd, buffer, offset, length, position);
+    });
+    assert.throws(() => replaceInsideWorkspace(ws.root, abs, sha(before), 'a much longer new text that does not fit\n'), /no space/);
+    assert.equal(fs.readFileSync(abs, 'utf8'), before);
+  });
 });

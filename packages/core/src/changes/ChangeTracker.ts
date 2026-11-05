@@ -174,6 +174,16 @@ export class ChangeTracker {
     return this.originals.has(normalize(absPath));
   }
 
+  /**
+   * Every path the tracker holds, as a change or in a rewind point (absolute). A host that can follow
+   * links uses it to note a user's save under each path that leads to the saved file.
+   */
+  trackedPaths(): string[] {
+    const keys = new Set(this.originals.keys());
+    for (const map of this.epochs) for (const key of map.keys()) keys.add(key);
+    return [...keys];
+  }
+
   /** The current rewind point already holds this file's earlier content (true when there is no rewind point). */
   capturedInEpoch(absPath: string): boolean {
     return this.epochs.at(-1)?.has(normalize(absPath)) ?? true;
@@ -190,8 +200,10 @@ export class ChangeTracker {
     const tracked = [...this.originals.keys()].some((k) => editKey(k) === key);
     if (!tracked && !this.epochs.some((map) => [...map.keys()].some((k) => editKey(k) === key))) return;
     const earlier = this.userEdits.get(key);
-    // Later saves keep the agent's content from before the first one, while the same change is open.
-    const aiContent = earlier?.guardsRevert ? earlier.aiContent : before;
+    // Later saves keep the agent's content from before the first one, while the same change is open
+    // and the file is still what the user last saved. When the agent (or a rewind) changed it since,
+    // the agent's part is no longer known: unknown, so Revert and hunk Revert keep away from it.
+    const aiContent = !earlier?.guardsRevert ? before : before === earlier.saved ? earlier.aiContent : undefined;
     this.userEdits.set(key, { epoch: this.epochs.length - 1, aiContent, saved: after, guardsRevert: tracked || !!earlier?.guardsRevert });
     this.notify();
   }
@@ -250,7 +262,9 @@ export class ChangeTracker {
     if (original === null) await this.host.deleteFile(key);
     else await this.host.writeFile(key, original);
     this.originals.delete(key);
-    this.userEdits.delete(editKey(key));
+    // A rewind point that still holds the file needs the record of an earlier save: Go back keeps it.
+    if (opts.force) this.userEdits.delete(editKey(key));
+    else this.unguard(key);
     this.notify();
     return true;
   }

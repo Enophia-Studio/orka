@@ -2042,7 +2042,12 @@ document.addEventListener('change', (e) => {
     return;
   }
   if (target instanceof HTMLSelectElement && target.id === 'folder') {
-    post({ type: 'selectFolder', path: target.value });
+    // Unsaved changes in the editor are asked about first; on Cancel the select shows the open folder again.
+    const folder = target.value;
+    void beforeFolderChange(folder).then((go) => {
+      if (go) post({ type: 'selectFolder', path: folder });
+      else target.value = config?.folder ?? '';
+    });
     return;
   }
   if (target instanceof HTMLInputElement && target.dataset.mcp) {

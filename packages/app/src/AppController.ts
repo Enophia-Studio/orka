@@ -78,7 +78,7 @@ import {
 } from '@orka/core';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, promises as fs, statSync } from 'node:fs';
+import { existsSync, promises as fs, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import type {
@@ -137,8 +137,13 @@ const MODEL_REFRESH_MS = 24 * 60 * 60 * 1000;
 /** The longest editor selection sent with a message (the context builder's own limit). */
 const MAX_SELECTION_CHARS = 8_000;
 const MAX_SELECTION_LINE = 10_000_000;
-/** Files "Open in system app" never opens: on Windows (and some Linux desktops) opening one runs it. */
-const LAUNCHABLE = /\.(exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|lnk|url|scr|pif|hta|cpl|reg|jar|appref-ms|msc|application|gadget|desktop|command|app|sh)$/i;
+/**
+ * The only files "Open in system app" opens: documents, images and media whose usual handlers
+ * show them. Anything else may be run by the system when opened (a script, an installer, a help
+ * file, a shortcut), and a name of a known type with a trailing dot or space does not match.
+ */
+const PASSIVE_FILE =
+  /\.(txt|md|markdown|log|csv|tsv|json|jsonc|xml|ya?ml|toml|ini|pdf|rtf|docx|xlsx|pptx|odt|ods|odp|epub|png|jpe?g|gif|bmp|webp|ico|tiff?|psd|tga|exr|hdr|avif|heic|mp3|wav|ogg|oga|flac|m4a|aac|opus|mp4|m4v|mov|webm|mkv|avi|wmv|ttf|otf|woff2?|fbx|obj|gltf|glb|stl|dae|3ds|ply|zip|7z|rar|tar|gz|tgz)$/i;
 const MAX_HUNKS = 40;
 const MAX_HUNK_LINES = 80;
 /** Tasks per folder in the desktop app's session list. */
@@ -206,6 +211,11 @@ export class AppController implements Disposable {
   private snapshots?: ShadowGit;
   /** An open hand-off to an external agent and the terminal it runs in. */
   private handoff?: { session: Handoff; terminal: TerminalHandle };
+  /**
+   * A hand-off is starting (its snapshot is taken) or being collected (its changes are read):
+   * Save stays refused, or the user's save would be taken for the external agent's change.
+   */
+  private handoffBusy = 0;
   /** The workspace .mcp.json as last read (for the settings view). */
   private workspaceMcpCache: { servers: Record<string, McpServerConfig>; hash: string } = { servers: {}, hash: '' };
   private appUpdateCheck?: Promise<void>;
@@ -558,7 +568,7 @@ export class AppController implements Disposable {
     const files = this.files;
     const orchestrator = this.orchestrator;
     if (!files || !orchestrator) return;
-    if (orchestrator.isRunning || this.handoff) {
+    if (orchestrator.isRunning || this.handoff || this.handoffBusy > 0) {
       this.shell.post({ type: 'saveRefused', path: rel, reason: 'running' });
       return;
     }
@@ -572,22 +582,35 @@ export class AppController implements Disposable {
       this.shell.post({ type: 'saveRefused', path: rel, reason: result.reason, ...(result.hash ? { hash: result.hash } : {}) });
       return;
     }
-    // The tracker knows a file by its path inside the folder; through a link, its target may be tracked too.
-    orchestrator.changes.noteUserEdit(file.abs, result.before, result.after);
-    if (!samePath(file.abs, file.real)) orchestrator.changes.noteUserEdit(file.real, result.before, result.after);
+    // The tracker knows a file by the path the agent used, which may be another link to the same
+    // file: note the save under each tracked path that leads to it (each path once).
+    const paths = [file.abs, file.real];
+    for (const tracked of orchestrator.changes.trackedPaths()) {
+      const real = realPathOf(tracked);
+      if (real && samePath(real, file.real)) paths.push(tracked);
+    }
+    const noted: string[] = [];
+    for (const p of paths) {
+      if (noted.some((n) => samePath(n, p))) continue;
+      noted.push(p);
+      orchestrator.changes.noteUserEdit(p, result.before, result.after);
+    }
     orchestrator.addNote(`The user edited ${rel} by hand in the editor; re-read it before editing it again.`);
     this.shell.post({ type: 'fileSaved', path: rel, hash: result.hash });
     // Changes and their hunks are published again, so hunk numbers match the saved file.
     orchestrator.changes.notify();
   }
 
-  /** "Open in system app" for a file of the folder (never a program or script, which that would run). */
+  /**
+   * "Open in system app" for a file of the folder: only a document, image or media file (never a
+   * program or script, which that would run), and on macOS and Linux never one marked executable.
+   */
   private async openExternalFile(rel: unknown): Promise<void> {
     if (!this.files || typeof rel !== 'string') return;
     const file = this.files.resolve(rel);
     if (!file) return;
-    if (LAUNCHABLE.test(file.real)) {
-      void this.shell.message('warning', t('Orka does not open programs or scripts with the system: {file}.', { file: rel }));
+    if (!PASSIVE_FILE.test(file.real) || (process.platform !== 'win32' && isExecutable(file.real))) {
+      void this.shell.message('warning', t('Orka opens only documents, images and media with the system app, never programs or scripts: {file}.', { file: rel }));
       return;
     }
     await this.shell.openFile(file.real);
@@ -2409,19 +2432,28 @@ export class AppController implements Disposable {
       return;
     }
     const session = new Handoff(agent, root, this.snapshots, orchestrator.changes);
-    const tracked = await session.begin();
-    const requests = [...userRequests(orchestrator.history), ...(text?.trim() ? [text.trim()] : [])];
-    const brief = handoffBrief({ requests, plan: orchestrator.currentPlan, changedFiles: (await orchestrator.changes.list()).map((c) => c.relPath) });
-    if (brief) await this.shell.writeClipboard(brief);
-    const terminal = this.shell.runInTerminal({
-      name: agent.label,
-      cwd: root,
-      command: agent.command,
-      onClose: () => {
-        if (this.handoff?.session === session) void this.collectHandoff(true);
-      },
-    });
-    this.handoff = { session, terminal };
+    // From the snapshot on, a save would count as the external agent's change.
+    this.handoffBusy++;
+    let tracked: boolean;
+    let brief: string | undefined;
+    let terminal: TerminalHandle;
+    try {
+      tracked = await session.begin();
+      const requests = [...userRequests(orchestrator.history), ...(text?.trim() ? [text.trim()] : [])];
+      brief = handoffBrief({ requests, plan: orchestrator.currentPlan, changedFiles: (await orchestrator.changes.list()).map((c) => c.relPath) });
+      if (brief) await this.shell.writeClipboard(brief);
+      terminal = this.shell.runInTerminal({
+        name: agent.label,
+        cwd: root,
+        command: agent.command,
+        onClose: () => {
+          if (this.handoff?.session === session) void this.collectHandoff(true);
+        },
+      });
+      this.handoff = { session, terminal };
+    } finally {
+      this.handoffBusy--;
+    }
     terminal.show();
     const parts = [t('{agent} is open in the terminal.', { agent: agent.label })];
     if (brief) parts.push(t('The task summary is on the clipboard: paste it there.'));
@@ -2440,7 +2472,14 @@ export class AppController implements Disposable {
     if (!handoff) return;
     if (ended) this.handoff = undefined;
     const label = handoff.session.agent.label;
-    const changed = await handoff.session.collect(!ended).catch(() => []);
+    // Save stays refused until the external agent's changes are read: a save meanwhile would count as theirs.
+    this.handoffBusy++;
+    let changed: Awaited<ReturnType<Handoff['collect']>>;
+    try {
+      changed = await handoff.session.collect(!ended).catch(() => []);
+    } finally {
+      this.handoffBusy--;
+    }
     if (changed.length) {
       const files = changed.map((c) => c.path);
       this.orchestrator?.addNote(
@@ -2811,6 +2850,24 @@ function samePath(a: string, b: string): boolean {
     return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
   };
   return norm(a) === norm(b);
+}
+
+/** Where a path really leads, or undefined when it cannot be resolved. */
+function realPathOf(p: string): string | undefined {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return undefined;
+  }
+}
+
+/** A file with an execute bit (macOS and Linux); one that cannot be read counts as executable. */
+function isExecutable(p: string): boolean {
+  try {
+    return (statSync(p).mode & 0o111) !== 0;
+  } catch {
+    return true;
+  }
 }
 
 /** Errors that mean the provider's quota or session limit is used up. */

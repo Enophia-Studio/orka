@@ -129,8 +129,20 @@ export function replaceInsideWorkspace(root: string, abs: string, expectHash: st
     const hash = createHash('sha256').update(before).digest('hex');
     if (hash !== expectHash) return { ok: false, reason: 'conflict', hash };
     const data = Buffer.from(content, 'utf8');
-    fs.ftruncateSync(fd, 0);
-    for (let written = 0; written < data.length; ) written += fs.writeSync(fd, data, written, data.length - written, written);
+    try {
+      // Written first, cut after: a failed write (a full disk, a locked range) then never leaves the file empty.
+      writeAllAt(fd, data);
+      fs.ftruncateSync(fd, data.length);
+    } catch (error) {
+      // Put the earlier bytes back through the same handle before reporting the failure.
+      try {
+        writeAllAt(fd, before);
+        fs.ftruncateSync(fd, before.length);
+      } catch {
+        // Nothing more can be done; the first error is the one reported.
+      }
+      throw error;
+    }
     return { ok: true, before };
   } finally {
     fs.closeSync(fd);
@@ -212,6 +224,11 @@ function readAll(fd: number, limit: number): Buffer {
     total += n;
   }
   return Buffer.concat(chunks, total);
+}
+
+/** All of `data` written to the open file from its start. */
+function writeAllAt(fd: number, data: Buffer): void {
+  for (let written = 0; written < data.length; ) written += fs.writeSync(fd, data, written, data.length - written, written);
 }
 
 /** Opening refused because the path became a link (ELOOP; EMLINK on some BSDs). */
