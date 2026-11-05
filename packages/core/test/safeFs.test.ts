@@ -136,20 +136,20 @@ describe('safe workspace file reads and writes', () => {
   it('writes exactly the given bytes, in place, and returns the bytes it replaced', () => {
     const abs = path.join(ws.root, 'a.txt');
     const before = Buffer.from('﻿old line\r\nsecond line that is longer\r\n', 'utf8');
-    const created = fs.openSync(abs, 'w');
-    fs.writeSync(created, before);
-    const ino = fs.fstatSync(created, { bigint: true }).ino;
-    fs.closeSync(created);
+    // One handle for the whole test: a write in place shows through it, a new file would not.
+    const handle = fs.openSync(abs, 'w+');
     const content = '﻿new\r\nçok güzel\r\n';
-    const result = replaceInsideWorkspace(ws.root, abs, sha(before), content);
-    assert.ok(result.ok);
-    assert.deepEqual(result.before, before);
-    const after = fs.openSync(abs, 'r');
     try {
-      assert.deepEqual(fs.readFileSync(after), Buffer.from(content, 'utf8'));
-      assert.equal(fs.fstatSync(after, { bigint: true }).ino, ino, 'the same file, not a new one');
+      fs.writeSync(handle, before);
+      const result = replaceInsideWorkspace(ws.root, abs, sha(before), content);
+      assert.ok(result.ok);
+      assert.deepEqual(result.before, before);
+      const size = Number(fs.fstatSync(handle).size);
+      const seen = Buffer.alloc(size);
+      fs.readSync(handle, seen, 0, size, 0);
+      assert.deepEqual(seen, Buffer.from(content, 'utf8'), 'the same file, written in place');
     } finally {
-      fs.closeSync(after);
+      fs.closeSync(handle);
     }
     const read = readInsideWorkspace(ws.root, abs, 1000);
     assert.ok('bytes' in read);
