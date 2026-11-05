@@ -5,8 +5,8 @@ import { AcpClient, type AcpLaunchSpec } from './AcpClient';
 export interface AcpAgentPoolOptions {
   /** Stop a process after this long without a running prompt. Default 15 minutes. */
   idleTimeoutMs?: number;
-  /** Processes kept at once. Default 4. */
-  max?: number;
+  /** Processes kept at once, or a function read on every acquire (a cap that follows a setting). Default 4. */
+  max?: number | (() => number);
   /** Tests start their fake agent here. */
   create?: (spec: AcpLaunchSpec) => AcpClient;
 }
@@ -50,7 +50,7 @@ export class AcpAgentPool {
     }
     if (!entry) {
       this.makeRoom();
-      if (this.entries.size >= (this.options.max ?? MAX_PROCESSES)) {
+      if (this.entries.size >= this.max()) {
         throw new Error(t('{n} agent processes are already working. Wait for one to finish or stop it, then try again.', { n: this.entries.size }));
       }
       const client = this.options.create ? this.options.create(spec) : new AcpClient(spec);
@@ -100,12 +100,17 @@ export class AcpAgentPool {
 
   /** Stop idle processes, oldest first, until one more fits under the cap. */
   private makeRoom(): void {
-    const max = this.options.max ?? MAX_PROCESSES;
+    const max = this.max();
     const idle = [...this.entries].filter(([, e]) => e.leases === 0).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
     while (this.entries.size >= max && idle.length) {
       const [key, entry] = idle.shift()!;
       this.drop(key, entry);
     }
+  }
+
+  private max(): number {
+    const max = this.options.max;
+    return (typeof max === 'function' ? max() : max) ?? MAX_PROCESSES;
   }
 
   private drop(key: string, entry: Entry): void {

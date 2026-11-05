@@ -81,6 +81,9 @@ export class FakeShell implements AppShell {
   inputAnswer?: string;
   private folder?: string;
   private readonly folderListeners = new Set<() => void>();
+  /** Desktop: each folder's own state (VS Code has workspaceState only). */
+  readonly stateFor?: (root: string) => MemoryState;
+  private readonly folderStates = new Map<string, MemoryState>();
 
   constructor(
     readonly kind: 'vscode' | 'desktop',
@@ -94,6 +97,14 @@ export class FakeShell implements AppShell {
     this.orkaHome = home;
     this.canOpenFolder = kind === 'desktop';
     this.folder = recent[0];
+    if (kind === 'desktop') {
+      this.stateFor = (root) => {
+        const key = path.resolve(root).toLowerCase();
+        let state = this.folderStates.get(key);
+        if (!state) this.folderStates.set(key, (state = new MemoryState()));
+        return state;
+      };
+    }
   }
 
   /** The newest message of this type sent to the UI. */
@@ -176,11 +187,21 @@ export class FakeShell implements AppShell {
 
   async openChangeDiff(): Promise<void> {}
 
-  setApprovalPreview(): void {}
+  /** Approval previews kept, by key, and the keys openApprovalPreview() was asked for. */
+  readonly previews = new Map<string, ApprovalRequest['preview']>();
+  readonly previewsOpened: string[] = [];
 
-  clearApprovalPreview(): void {}
+  setApprovalPreview(id: string, preview: ApprovalRequest['preview']): void {
+    if (preview) this.previews.set(id, preview);
+  }
 
-  async openApprovalPreview(): Promise<void> {}
+  clearApprovalPreview(id: string): void {
+    this.previews.delete(id);
+  }
+
+  async openApprovalPreview(id: string): Promise<void> {
+    this.previewsOpened.push(id);
+  }
 
   createHost(options: { root: string; approve: (request: ApprovalRequest) => Promise<ApprovalResponse> }): NodeHost {
     return new NodeHost({ workspaceRoot: options.root, approve: options.approve });

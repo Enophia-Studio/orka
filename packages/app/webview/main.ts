@@ -12,6 +12,7 @@ import type {
   FileReason,
   HunkView,
   ImageAttachment,
+  LiveSessionView,
   McpServerView,
   ProviderView,
   RadarReportView,
@@ -23,7 +24,7 @@ import type {
   SkillView,
   ToWebview,
 } from '../src/protocol';
-import { post, saveUiState, uiState } from './core/bridge';
+import { forShownSession, post, saveUiState, setSessionId, shownSessionId, uiState } from './core/bridge';
 import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
 import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
@@ -47,7 +48,7 @@ import {
   type EditorBanner,
 } from './ide/files';
 import { appSkeleton, layout } from './ide/layout';
-import { radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml } from './ide/sidebar';
+import { approvalsBadgeHtml, radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml, waitingSessions } from './ide/sidebar';
 
 let session: SessionView = emptySession();
 let config: ConfigView | undefined;
@@ -76,6 +77,8 @@ const ui: {
   asideTab: AsideTab;
   /** The task shown, as the app reported it with the session. */
   taskId?: string;
+  /** Desktop IDE layout: the open sessions as the app last reported them. */
+  live: LiveSessionView[];
 } = {
   planCollapsed: false,
   agentsOpen: false,
@@ -91,7 +94,14 @@ const ui: {
   collapsed: new Set((uiState().collapsedSections ?? []).filter((k) => typeof k === 'string').slice(0, 200)),
   showHidden: false,
   asideTab: uiState().asideTab === 'radar' || uiState().asideTab === 'files' ? uiState().asideTab! : 'task',
+  live: [],
 };
+
+/**
+ * Desktop IDE layout: the unsent text of each open session the page does not show, by session id
+ * (kept while the page is open; the session shown keeps its draft in the page's state).
+ */
+const drafts = new Map<string, string>();
 
 type AsideTab = 'task' | 'radar' | 'files';
 
@@ -193,10 +203,40 @@ function sessionTitle(): string {
   return text.length > 90 ? `${text.slice(0, 87)}…` : text;
 }
 
+/**
+ * The open sessions: as the app last reported them, with the one shown as this page sees it (its
+ * events arrive before the app's next report). Before the first report, the session shown alone.
+ */
+function liveSessions(): LiveSessionView[] {
+  const id = shownSessionId();
+  if (!id || !config?.folder) return ui.live;
+  const reported = ui.live.find((s) => s.id === id);
+  const shown: LiveSessionView = {
+    id,
+    folder: reported?.folder ?? config.folder,
+    name: reported?.name ?? '',
+    taskId: ui.taskId ?? reported?.taskId ?? '',
+    title: sessionTitle(),
+    state: session.running ? (reported?.state === 'approval' ? 'approval' : 'running') : 'idle',
+    approvals: session.running ? (reported?.approvals ?? 0) : 0,
+  };
+  return reported ? ui.live.map((s) => (s === reported ? shown : s)) : [...ui.live, shown];
+}
+
+/** The app reported the open sessions: drafts of sessions that closed go with them. */
+function setLive(sessions: LiveSessionView[]): void {
+  ui.live = sessions;
+  for (const id of drafts.keys()) if (!sessions.some((s) => s.id === id)) drafts.delete(id);
+}
+
+/** The window's title as the page loaded it; "(n) " goes before it while other sessions wait for approval. */
+const PAGE_TITLE = document.title;
+
 function renderSidebar(): void {
   if (!el.sidebar) return;
   // Closed, it is a narrow rail of icons.
   el.sidebar.classList.toggle('collapsed', ui.sidebarClosed);
+  const live = liveSessions();
   const list = document.getElementById('side-list');
   if (list) {
     closeSessionMenu();
@@ -205,17 +245,66 @@ function renderSidebar(): void {
       organizer: ui.organizer,
       collapsed: ui.collapsed,
       showHidden: ui.showHidden,
-      folder: config?.folder,
-      taskId: ui.taskId,
+      live,
+      activeId: shownSessionId(),
       draftTitle: sessionTitle(),
-      running: session.running,
       query: ui.sessionQuery,
     });
   }
+  for (const [id, where] of [
+    ['side-approvals', 'head'],
+    ['rail-approvals', 'rail'],
+  ] as const) {
+    const slot = document.getElementById(id);
+    const html = approvalsBadgeHtml(where, live, shownSessionId());
+    // Rebuilt only when it changed, so a focused badge keeps its focus.
+    if (slot && slot.dataset.html !== html) {
+      slot.dataset.html = html;
+      slot.innerHTML = html;
+    }
+  }
+  const waiting = waitingSessions(live, shownSessionId()).length;
+  document.title = waiting ? `(${waiting}) ${PAGE_TITLE}` : PAGE_TITLE;
   const themes = document.getElementById('theme-switch');
   if (themes) themes.innerHTML = config?.ui ? themeSwitchHtml(config.ui.theme) : '';
   renderRadarEntries();
   renderFilesEntries();
+}
+
+/**
+ * Show another open session (desktop IDE layout); nothing of either session stops. A file with
+ * unsaved changes in the editor is asked about first, as for any folder change.
+ */
+function switchToSession(id: string): void {
+  if (id === shownSessionId()) return;
+  const folder = liveSessions().find((s) => s.id === id)?.folder;
+  void beforeFolderChange(folder).then((go) => {
+    if (!go) return;
+    post({ type: 'switchSession', sessionId: id });
+    ui.view = 'chat';
+    saveFilesState();
+    renderView();
+  });
+}
+
+/**
+ * The page shows another session from now on: the message box keeps each session's unsent text,
+ * and files, images and lines picked for the one left are dropped (they belong to its folder).
+ */
+function swapDraft(from: string, to: string | undefined): void {
+  const text = el.input.value;
+  if (text.trim()) drafts.set(from, text);
+  else drafts.delete(from);
+  el.input.value = (to !== undefined && drafts.get(to)) || '';
+  if (to !== undefined) drafts.delete(to);
+  composer.attachments = [];
+  composer.images = [];
+  composer.editor = undefined;
+  composer.suggest = undefined;
+  renderChips();
+  renderSuggest();
+  saveUiState({ draft: el.input.value });
+  autoGrow();
 }
 
 /** Files in the session list's footer and in the rail, while a folder is open. */
@@ -417,12 +506,14 @@ let sessionMenu: HTMLElement | undefined;
 
 function openSessionMenu(button: HTMLElement): void {
   closeSessionMenu();
-  const { id, folder } = button.dataset;
+  const { id, folder, session: open, state, draft } = button.dataset;
   if (!id || !folder) return;
   sessionMenu = document.createElement('div');
   sessionMenu.className = 'composer-menu session-menu';
   sessionMenu.setAttribute('role', 'menu');
-  sessionMenu.innerHTML = sessionMenuHtml(id, folder, ui.organizer);
+  // An open session that is not shown: Stop while it runs, else Close.
+  const live = open ? { id: open, running: state === 'running' || state === 'approval', draft: draft === 'true' } : undefined;
+  sessionMenu.innerHTML = sessionMenuHtml(id, folder, ui.organizer, live);
   document.body.appendChild(sessionMenu);
   const at = button.getBoundingClientRect();
   const menu = sessionMenu.getBoundingClientRect();
@@ -1715,6 +1806,13 @@ document.addEventListener('click', (e) => {
       post({ type: 'setSetting', key: target.dataset.key!, value: target.dataset.value });
       break;
     case 'step-setting': {
+      if (target.dataset.key === 'sessions.maxRunning') {
+        // 1..8, as the app accepts it.
+        if (!config?.ui) break;
+        const next = Math.min(8, Math.max(1, config.ui.maxRunning + Number(target.dataset.delta)));
+        if (next !== config.ui.maxRunning) post({ type: 'setSetting', key: 'sessions.maxRunning', value: next });
+        break;
+      }
       const s = config?.settings.supervisor.maxInterventions ?? 5;
       const next = Math.min(50, Math.max(1, s + Number(target.dataset.delta)));
       post({ type: 'setSetting', key: 'supervisor.maxInterventions', value: next });
@@ -1822,6 +1920,18 @@ document.addEventListener('click', (e) => {
       break;
     case 'new-group':
       post({ type: 'organizeSessions', op: 'createGroup' });
+      break;
+    case 'switch-session':
+      if (target.dataset.session) switchToSession(target.dataset.session);
+      break;
+    case 'close-session':
+      closeSessionMenu();
+      if (target.dataset.session) post({ type: 'closeSession', sessionId: target.dataset.session });
+      break;
+    case 'stop-session':
+      // Stops that session's request only; the session shown goes on.
+      closeSessionMenu();
+      if (target.dataset.session) post({ type: 'stop', sessionId: target.dataset.session });
       break;
     case 'session-new-group':
       closeSessionMenu();
@@ -3030,6 +3140,7 @@ function controlTab(s: SettingsView): string {
       )}<br><span class="muted">${escapeHtml(t('After a task that changed code, up to 3 lasting lessons (working commands, pitfalls, conventions) are added to .project-ai/lessons.md.'))}</span></span></label>
     </div>
     ${config?.ui ? appearanceCard(config.ui) : ''}
+    ${config?.ui?.layout === 'ide' ? sessionsCard(config.ui.maxRunning) : ''}
     ${radarCard()}
     ${config ? aboutCard(config.app) : ''}
     <div class="card">
@@ -3073,6 +3184,22 @@ function appearanceCard(appearance: NonNullable<ConfigView['ui']>): string {
         appearance.layout,
         t('Layout'),
       )}</div>
+    </div>`;
+}
+
+/** Desktop IDE layout: how many open sessions may run at once. */
+function sessionsCard(maxRunning: number): string {
+  return `<div class="card">
+      <div class="card-head"><strong>${escapeHtml(t('Sessions'))}</strong></div>
+      <div class="row"><span class="grow">${escapeHtml(t('Sessions running at once'))}<br><span class="muted small">${escapeHtml(
+        t('Each running session may start an agent CLI or Claude Code process (more with parallel sub-agents).'),
+      )}</span></span>
+        <div class="stepper" role="group" aria-label="${attr(t('Sessions running at once'))}"><button data-action="step-setting" data-key="sessions.maxRunning" data-delta="-1" aria-label="${attr(t('Fewer'))}"${
+          maxRunning <= 1 ? ' disabled' : ''
+        }>−</button><span>${escapeHtml(String(maxRunning))}</span><button data-action="step-setting" data-key="sessions.maxRunning" data-delta="1" aria-label="${attr(t('More'))}"${
+          maxRunning >= 8 ? ' disabled' : ''
+        }>+</button></div>
+      </div>
     </div>`;
 }
 
@@ -3687,6 +3814,8 @@ function fromApp(e: MessageEvent): boolean {
 window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
   if (!fromApp(e)) return;
   const message = e.data;
+  // A late reply or event of a session the page no longer shows (init names the new one).
+  if (message.type !== 'init' && !forShownSession(message)) return;
   switch (message.type) {
     case 'dialog':
       showDialog(message.id, message.dialog);
@@ -3701,7 +3830,14 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       el.input.dispatchEvent(new Event('input'));
       el.input.focus();
       break;
-    case 'init':
+    case 'init': {
+      const before = shownSessionId();
+      // Another open session (desktop IDE layout); one that takes the place of the session shown in
+      // the same folder (new settings) keeps the message box as it is.
+      if (layout === 'ide' && before !== undefined && message.sessionId !== before && !sameFolder(config?.folder, message.config.folder)) {
+        swapDraft(before, message.sessionId);
+      }
+      setSessionId(message.sessionId);
       session = message.session;
       document.body.classList.toggle('busy', session.running);
       config = message.config;
@@ -3714,6 +3850,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       scrollToBottom();
       if (layout === 'ide') post({ type: 'listSessions' });
       break;
+    }
     case 'config': {
       // Don't clobber a settings field the user is typing into.
       const active = document.activeElement;
@@ -3748,7 +3885,16 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       ui.sessions = message.groups;
       ui.taskId = message.taskId;
       ui.organizer = message.organizer;
+      if (Array.isArray(message.live)) setLive(message.live);
       renderSidebar();
+      break;
+    case 'live':
+      if (!Array.isArray(message.sessions)) break;
+      setLive(message.sessions);
+      renderSidebar();
+      break;
+    case 'showSession':
+      if (layout === 'ide' && typeof message.id === 'string') switchToSession(message.id);
       break;
     case 'showAgents':
       if (!workView()) ui.view = 'chat';

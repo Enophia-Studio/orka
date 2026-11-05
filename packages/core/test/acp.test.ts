@@ -187,6 +187,23 @@ describe('ACP client (fake agent)', () => {
       pool.dispose();
     }
   });
+
+  it('reads a cap given as a function on every acquire', async () => {
+    let max = 1;
+    const pool = new AcpAgentPool({ max: () => max });
+    try {
+      const a = await pool.acquire(spec([]));
+      await assert.rejects(pool.acquire({ ...spec([]), cwd: path.dirname(ws.root) }), /agent processes are already working/);
+      max = 2;
+      const b = await pool.acquire({ ...spec([]), cwd: path.dirname(ws.root) });
+      assert.notEqual(b, a);
+      assert.equal(pool.size, 2);
+      pool.release(a);
+      pool.release(b);
+    } finally {
+      pool.dispose();
+    }
+  });
 });
 
 describe('ACP helpers', () => {

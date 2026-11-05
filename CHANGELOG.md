@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0
+
+The desktop app runs several sessions at once, one per folder. See [Parallel sessions (desktop)](README.md#parallel-sessions-desktop).
+
+**Parallel sessions (desktop app, "Sessions and panels" layout)**
+
+- **Switch without stopping.** Clicking another open session in the list shows it as it is, with everything it did in the background; the session you leave keeps working. A new session in another folder no longer ends the one you were in. One session is open per folder, up to 8 at a time; at 8, the least recently used idle session is closed (its task stays in the list).
+- **The list shows each open session's state:** a dot while it runs, a shield while it waits for your approval. An unsaved session is a draft at the top of its folder. The **…** menu of a background session offers **Stop** while it runs and **Close (keeps it in the list)** while it is idle.
+- **Approvals in the background:** a badge in the sidebar's head (and in its rail) counts the other sessions waiting for you, the window title starts with the count, and an in-app notice with **Show** tells you once per burst. Nothing is written into the waiting session's conversation.
+- **Each session keeps its own:** conversation, task, changes and their review, approvals, **Always allow** answers, hand-off, the `.mcp.json` servers of its folder (MCP servers from your settings are shared) and, while the window is open, the unsent text in the message box. The permission mode and per-category rules apply to every session.
+- **A limit on sessions running at once** (default 3, 1 to 8): **Settings → Control → Sessions running at once** (`sessions.maxRunning`). Each running session may start an agent CLI or Claude Code process. A request over the limit is refused with a notice; nothing is queued or started.
+- **One session at a time in a folder:** a request is refused while another session works in the same folder (also under another name, such as a link or other letter case) or in a folder inside it or around it. **+** in a folder whose session runs shows that session instead of starting a second one. A Freebuff hand-off holds its folder the same way. Saving in the editor waits while a session works in an overlapping folder.
+- **Leaving a file with unsaved changes asks first**, also when **Show** on a notice switches sessions.
+- Open sessions are not restored after a restart; their tasks are in the list and the history.
+
+**Unchanged**
+
+- The VS Code panel and the classic single-column window keep one session, as before: a folder change ends it and is refused while the agent runs. Revert, Revert all and Go back still keep the files you edited yourself.
+
+**Security and privacy**
+
+- No new network access and no telemetry: sessions, their states and drafts stay on your machine.
+
 ## 0.5.0
 
 The desktop app gets Files: browse the open folder, edit files and send them to the agent. See [Files (desktop)](README.md#files-desktop).

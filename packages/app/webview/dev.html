@@ -10,7 +10,9 @@
   Analyze, Stop, Start a session). With ?ide, ?files opens the Files tab on a small in-memory
   folder, ?editor also opens LobbyManager.cs in the editor, ?idle ends the sample run (so Save
   works), ?conflict makes the first save find the file changed on disk, and ?edited marks
-  LobbyManager.cs as edited by the user in Changes (whose hunks ?ide highlights).
+  LobbyManager.cs as edited by the user in Changes (whose hunks ?ide highlights). With ?ide, ?live
+  opens two sessions: LobbyDemo's, shown and running, and SharedLib's, waiting for an approval in the
+  background (its row, the badge and the window title show it).
 -->
 <html lang="en">
 <head>
@@ -145,7 +147,7 @@
             task('s-1', L('Write unit tests for the inventory system', 'Envanter sistemi için unit testler yaz'), 3 * 3600, 2),
             task('s-2', L('Upgrade the package to .NET 9', 'Paketi .NET 9\'a yükselt'), 6 * 86400),
           ] },
-        ] }), 0);
+        ], ...(liveSessions ? { live: liveSessions } : {}) }), 0);
         if (message.type === 'searchFiles') setTimeout(() => deliver({ type: 'fileMatches', query: message.query, files: ['Assets/Scripts/Net/LobbyManager.cs', 'Assets/Scripts/UI/LobbyView.cs'].filter((f) => f.toLowerCase().includes(message.query.toLowerCase())) }), 0);
         if (ide) radarMock(message);
         if (ide) filesMock(message);
@@ -160,6 +162,11 @@
     });
 
     const deliver = (message) => window.dispatchEvent(new MessageEvent('message', { data: message }));
+    // ?live: the open sessions (desktop IDE layout).
+    const liveSessions = ide && params.has('live') ? [
+      { id: 'live-lobby', folder: 'D:/game/LobbyDemo', name: 'LobbyDemo', taskId: 't-now', title: '', state: 'running', approvals: 0 },
+      { id: 'live-shared', folder: 'D:/game/SharedLib', name: 'SharedLib', taskId: 's-1', title: 'Write unit tests for the inventory system', state: 'approval', approvals: 1 },
+    ] : undefined;
     const ev = (event) => deliver({ type: 'event', event });
     const root = 'D:/game/LobbyDemo';
 
@@ -338,7 +345,7 @@
         folders: [{ name: 'LobbyDemo', path: root }, { name: 'SharedLib', path: 'D:/game/SharedLib' }],
         folder: root,
         canOpenFolder: ide,
-        app: { version: '0.5.0', checkUpdates: true, checkedAt: Date.now() - 3600e3 },
+        app: { version: '0.6.0', checkUpdates: true, checkedAt: Date.now() - 3600e3 },
         agentClis: [
           { id: 'gemini', label: 'Gemini CLI', vendor: 'Google', custom: false, enabled: true, status: { state: 'ready', version: '0.66.0', executable: 'C:/Users/you/AppData/Roaming/npm/gemini.cmd' }, path: '', note: "Runs your installed Gemini CLI in its ACP mode. Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it. Google moved unpaid and Google One accounts from Gemini CLI to Antigravity.", termsUrl: 'https://geminicli.com/docs/resources/tos-privacy/', docsUrl: 'https://geminicli.com/docs/cli/acp-mode/', installHint: 'npm install -g @google/gemini-cli', loginCommand: 'gemini', preview: false },
           { id: 'codex', label: 'Codex (codex-acp)', vendor: 'OpenAI', custom: false, enabled: true, status: { state: 'not_found' }, path: '', note: 'Runs the codex-acp adapter (Apache-2.0) you installed. Sign in with Codex itself, with a ChatGPT plan or an API key.', termsUrl: 'https://openai.com/policies/terms-of-use/', docsUrl: 'https://github.com/agentclientprotocol/codex-acp', installHint: 'npm install -g @agentclientprotocol/codex-acp', loginCommand: 'codex login', preview: false },
@@ -346,7 +353,7 @@
           { id: 'cursor', label: 'Cursor CLI', vendor: 'Cursor', custom: false, enabled: false, status: { state: 'unknown' }, path: '', note: 'Runs your installed Cursor CLI ("agent acp"), which Cursor documents for custom clients.', termsUrl: 'https://cursor.com/terms-of-service', docsUrl: 'https://cursor.com/docs/cli/acp', installHint: '', loginCommand: 'agent login', preview: false },
         ],
         agentClisLeftOut: [{ id: 'antigravity', reason: "Google's terms do not allow using Antigravity through third-party software on consumer plans." }, { id: 'claude-agent-acp', reason: "The Claude ACP adapter's licence is unclear. Claude stays available through the Claude API provider and the opt-in Claude Code provider." }],
-        ui: ide ? { layout: 'ide', theme } : undefined,
+        ui: ide ? { layout: 'ide', theme, maxRunning: 3 } : undefined,
         skillsEnabled: true,
         skills: [
           skill('code-review', 'Reviewing code or a diff for bugs, risks and quality.', 'builtin'),
@@ -405,7 +412,9 @@
         type: 'init',
         session: { items: [], running: false, phase: 'idle', changes: [] },
         config: makeConfig(empty),
+        ...(liveSessions ? { sessionId: 'live-lobby', taskId: 't-now' } : {}),
       });
+      if (liveSessions) deliver({ type: 'live', sessions: liveSessions, activeId: 'live-lobby', maxRunning: 3 });
       if (params.get('settings')) deliver({ type: 'showSettings', tab: params.get('settings') });
       if (empty) return;
 

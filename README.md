@@ -44,6 +44,7 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 - [Tasks, history and tokens](#tasks-history-and-tokens)
 - [Orka CLI](#orka-cli)
 - [Orka Desktop](#orka-desktop)
+  - [Parallel sessions (desktop)](#parallel-sessions-desktop)
   - [Files (desktop)](#files-desktop)
   - [Radar (desktop)](#radar-desktop)
 - [Configuration](#configuration)
@@ -62,6 +63,7 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 - **Learns your project:** after a task, lasting lessons (the command that works, a pitfall, a convention) are kept in `.project-ai/lessons.md` for the next task.
 - **Skills and MCP:** built-in playbooks (Unity, debugging, testing, security, ...), your own skills, and tools from MCP servers (Unity Editor, Blender, databases, ...).
 - **Long tasks that stay cheap:** append-only conversations for prompt caching, a token-friendly Supervisor, compaction with an exact handoff note, a token budget, a light model for simple questions and a fallback model when a provider hits its limit.
+- **Parallel sessions (desktop):** several sessions at once, one per folder; switch between them without stopping any, and approve what a background session asks when you get to it.
 - **Files (desktop):** browse the open folder, edit text files and send the selected lines or a whole file to the agent; what you edit yourself survives Revert all and Go back.
 - **Radar (desktop, off until you turn it on):** watches the public release notes of other AI coding tools and, when you ask, compares what they shipped with Orka and proposes what to add.
 - **English and Turkish** UI.
@@ -71,7 +73,7 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 **VS Code extension (quickest):** download `orka-vscode-<version>.vsix` from the [latest release](https://github.com/Enophia-Studio/orka/releases/latest), then run **Extensions: Install from VSIX…** in VS Code (1.101 or newer), or:
 
 ```bash
-code --install-extension orka-vscode-0.5.0.vsix
+code --install-extension orka-vscode-0.6.0.vsix
 ```
 
 **Desktop app for Windows:** download `orka-desktop.exe` from the same release and run it; it needs no Node.js, only Edge or Chrome for its window. Only the Orka window opens; closing it quits Orka. If it does not start, the reason is in `~/.orka/desktop/desktop.log`. The file is not code-signed yet, so Windows SmartScreen may ask you to confirm the first start (**More info → Run anyway**), and on PCs where Windows' Smart App Control is on, it is blocked; use the CLI or run it from source there.
@@ -79,7 +81,7 @@ code --install-extension orka-vscode-0.5.0.vsix
 **CLI:** with **Node.js 22+**, install the `orka` command from the release (it is not on npm yet):
 
 ```bash
-npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.5.0/orka-agent-0.5.0.tgz
+npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.6.0/orka-agent-0.6.0.tgz
 ```
 
 The extension, the desktop app and the CLI package each include a `THIRD_PARTY_NOTICES.txt` with the licenses of the open-source software inside them.
@@ -102,7 +104,7 @@ npm run package
 ```
 
 ```bash
-code --install-extension packages/vscode-extension/dist/orka-vscode-0.5.0.vsix
+code --install-extension packages/vscode-extension/dist/orka-vscode-0.6.0.vsix
 ```
 
 **Desktop app** — run it, or build the single executable yourself (`packages/desktop/dist/orka-desktop.exe`, or `orka-desktop` on Linux):
@@ -318,7 +320,7 @@ Orka in its own window, without VS Code: the same chat, Agents panel, settings, 
   <img src="docs/images/desktop.png" width="90%" alt="Orka Desktop: sessions on the left, the conversation in the middle, the plan and changes on the right">
 </p>
 
-- **Sessions on the left:** the tasks of your recent project folders, newest first, with a search box. **New session** starts one in the open folder (the **+** next to a folder starts one there), clicking a session opens it (switching folders when needed), and the bin deletes it.
+- **Sessions on the left:** the tasks of your recent project folders, newest first, with a search box. **New session** starts one in the open folder (the **+** next to a folder starts one there), clicking a session opens it (switching folders when needed), and the bin deletes it. Sessions in different folders run at the same time; see [Parallel sessions (desktop)](#parallel-sessions-desktop).
 - **The conversation in the middle**, in a readable column. Tool calls are quiet one-line entries that open to show their result; approvals, sub-agents and the Supervisor keep their cards.
 - **The message box holds its controls:** **+** attaches a file (`@`), adds an image or picks a skill or command (`/`); next to it the permission mode, on the right the main agent's model and the send button. A new session starts with the box in the middle of the window and a few suggestions under it.
 - **The plan and the changes on the right**, in their own panel while a task has them; keep or revert files and parts of files there. [Files](#files-desktop) and [Radar](#radar-desktop) have tabs next to them.
@@ -332,6 +334,17 @@ Orka in its own window, without VS Code: the same chat, Agents panel, settings, 
 - The UI is served by a local server bound to `127.0.0.1` on a random port, with a per-window secret cookie (the window gets it through a one-time start link, so the browser's command line holds nothing reusable); requests with another host name (DNS rebinding) or not coming from the page itself are rejected, and a strict CSP blocks external scripts and images.
 - **API keys are kept in the operating system's protected storage:** DPAPI on Windows (only your user account can decrypt them), Keychain on macOS, Secret Service on Linux.
 - Task history and snapshots are shared with the CLI (`~/.orka/tasks`), so `orka -c` can continue a task started in Desktop.
+
+### Parallel sessions (desktop)
+
+In the window's **Sessions and panels** layout, a session keeps working while you look at another one. Start a task in one folder, open a session in another folder with its **+**, and both run; click a session in the list to show it again, with everything it did meanwhile. Nothing stops or reloads when you switch. One session is open per folder, up to 8 at a time (at 8, the least recently used idle one is closed; its task stays in the list), and open sessions are not restored after a restart. The VS Code panel and the classic single-column window keep one session, as before.
+
+- **What the list shows:** a dot on a session that runs, a shield on one that waits for your approval, and a session not saved yet as a draft at the top of its folder. The **…** menu of a background session has **Stop** while it runs and **Close (keeps it in the list)** while it is idle.
+- **Approvals in the background:** the badge at the top of the list (and in its closed rail) counts the other sessions waiting for you and shows the first of them on a click; the window title starts with the same count, and an in-app notice with **Show** tells you once until those approvals are answered. Nothing is added to the waiting session's conversation.
+- **Each session has its own** conversation, changes, approvals and **Always allow** answers, hand-off, and the `.mcp.json` servers of its folder (MCP servers from your settings are shared by all). The permission mode and the per-category rules apply to every session. The message box keeps each session's unsent text while the window is open; files and editor lines picked for one session stay with that folder and are dropped when you switch.
+- **How many run at once:** at most 3 sessions run at the same time by default (**Settings → Control → Sessions running at once**, 1 to 8, setting `sessions.maxRunning`), because each running session may start an agent CLI or Claude Code process (more with parallel sub-agents). A request over the limit is refused with a notice; nothing is queued.
+- **One session at a time in a folder:** a request is refused while another session works in the same folder (also under another name, through a link or other letter case) or in a folder inside it or around it, and **+** in a folder whose session runs shows that session instead of starting another. A [Freebuff hand-off](#tasks-history-and-tokens) holds its folder the same way. The editor does not save while a session works in an overlapping folder.
+- Switching asks first when the editor has unsaved changes, also when **Show** on a notice switches.
 
 ### Files (desktop)
 
@@ -373,7 +386,7 @@ These are read from your own settings file only, and the VS Code extension and t
 | App | Where settings live |
 |---|---|
 | VS Code | `orka.*` in VS Code settings, or the extension's own **Settings** screen (gear icon in the chat) |
-| Desktop | `~/.orka/desktop/settings.json` (same keys without the `orka.` prefix, plus the desktop-only `desktop.*` and [`radar.*`](#radar-desktop) keys; edits apply immediately) |
+| Desktop | `~/.orka/desktop/settings.json` (same keys without the `orka.` prefix, plus the desktop-only `desktop.*`, [`sessions.maxRunning`](#parallel-sessions-desktop) and [`radar.*`](#radar-desktop) keys; edits apply immediately) |
 | CLI | `~/.orka/config.json` (`orka config` prints an example) |
 
 Example CLI config:
@@ -406,7 +419,7 @@ npm test
 
 - `npm test` runs the core tests and the end-to-end tests of the CLI and the desktop app (against fake model servers and a real headless Chrome/Edge).
 - `npm run test:e2e -w orka-vscode` runs the extension in an isolated VS Code instance against a fake Claude API.
-- `npm run preview -w @orka/app` opens the chat UI with a sample session at <http://localhost:5178> (`?light`, `?empty`, `?tr`, `?nocc`, `?settings=skills`).
+- `npm run preview -w @orka/app` opens the chat UI with a sample session at <http://localhost:5178> (`?light`, `?empty`, `?tr`, `?nocc`, `?settings=skills`; `?ide` for the desktop window, `?ide&live` with two open sessions, one waiting for approval).
 - In VS Code, **F5** (*Run Extension*) starts a development window.
 
 ```

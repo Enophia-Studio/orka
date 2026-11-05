@@ -308,13 +308,30 @@ describe('desktop appearance settings', () => {
     assert.equal(vscode.shell.last('init')?.config.ui, undefined);
 
     const desktop = await start('desktop');
-    assert.deepEqual(desktop.shell.last('init')?.config.ui, { layout: 'ide', theme: 'system' });
+    assert.deepEqual(desktop.shell.last('init')?.config.ui, { layout: 'ide', theme: 'system', maxRunning: 3 });
     await desktop.controller.handleMessage({ type: 'setSetting', key: 'desktop.theme', value: 'dark' });
     await desktop.controller.handleMessage({ type: 'setSetting', key: 'desktop.layout', value: 'sideways' });
     assert.equal(desktop.shell.settings.get('desktop.theme', ''), 'dark');
     assert.equal(desktop.shell.settings.isSet('desktop.layout'), false, 'invalid values are refused');
     await tick();
-    assert.deepEqual(desktop.shell.last('config')?.config.ui, { layout: 'ide', theme: 'dark' });
+    assert.deepEqual(desktop.shell.last('config')?.config.ui, { layout: 'ide', theme: 'dark', maxRunning: 3 });
+  });
+
+  it('takes sessions running at once from 1 to 8, in the desktop app only', async () => {
+    const vscode = await start('vscode');
+    await vscode.controller.handleMessage({ type: 'setSetting', key: 'sessions.maxRunning', value: 2 });
+    assert.equal(vscode.shell.settings.isSet('sessions.maxRunning'), false);
+
+    const desktop = await start('desktop');
+    for (const value of [0, 9, 2.5, '2']) await desktop.controller.handleMessage({ type: 'setSetting', key: 'sessions.maxRunning', value });
+    assert.equal(desktop.shell.settings.isSet('sessions.maxRunning'), false, 'invalid values are refused');
+    await desktop.controller.handleMessage({ type: 'setSetting', key: 'sessions.maxRunning', value: 5 });
+    await tick();
+    assert.equal(desktop.shell.last('config')?.config.ui?.maxRunning, 5);
+    // A value written by hand outside the range counts as the default.
+    await desktop.shell.settings.update('sessions.maxRunning', 50);
+    await tick();
+    assert.equal(desktop.shell.last('config')?.config.ui?.maxRunning, 3);
   });
 });
 
@@ -403,7 +420,8 @@ describe('Orka update check', () => {
 
 describe('desktop Files and editor', () => {
   const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
-  const orchestratorOf = (controller: AppController) => (controller as unknown as { orchestrator: Orchestrator }).orchestrator;
+  const sessionOf = (controller: AppController) => controller.activeSession!;
+  const orchestratorOf = (controller: AppController): Orchestrator => sessionOf(controller).orchestrator;
   const notesOf = (controller: AppController) => (orchestratorOf(controller) as unknown as { notes: string[] }).notes;
   const notices = (shell: FakeShell) => shell.posted.flatMap((m) => (m.type === 'event' && m.event.type === 'notice' ? [m.event.message] : []));
   const fakeAgent = path.resolve(__dirname, '..', '..', '..', 'core', 'test', 'fixtures', 'fake-acp.mjs');
@@ -438,23 +456,23 @@ describe('desktop Files and editor', () => {
     mkdirSync(path.join(folderA, 'src'));
     writeFileSync(path.join(folderA, 'src', 'hello.ts'), 'one\r\ntwo\r\n');
     await controller.handleMessage({ type: 'listDir', path: '' });
-    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '', entries: [{ name: 'src', kind: 'dir' }] });
+    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '', entries: [{ name: 'src', kind: 'dir' }], sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'listDir', path: '../beta' });
-    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '../beta', error: 'outside' });
+    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '../beta', error: 'outside', sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'readFile', path: 'src/hello.ts' });
     const hash = sha('one\r\ntwo\r\n');
-    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, text: 'one\ntwo\n', hash, size: 10, eol: 'crlf', bom: false });
+    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, text: 'one\ntwo\n', hash, size: 10, eol: 'crlf', bom: false, sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'readFile', path: 'src/hello.ts', knownHash: hash });
-    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, unchanged: true, hash });
+    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, unchanged: true, hash, sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'readFile', path: 'src/missing.ts' });
-    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/missing.ts', ok: false, reason: 'notFound' });
+    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/missing.ts', ok: false, reason: 'notFound', sessionId: sessionOf(controller).id });
     await controller.handleMessage({ type: 'saveFile', path: 'src/hello.ts', text: 'one\ntwo\nthree\n', baseHash: hash });
     assert.equal(readFileSync(path.join(folderA, 'src', 'hello.ts'), 'utf8'), 'one\r\ntwo\r\nthree\r\n');
-    assert.deepEqual(shell.last('fileSaved'), { type: 'fileSaved', path: 'src/hello.ts', hash: sha('one\r\ntwo\r\nthree\r\n') });
+    assert.deepEqual(shell.last('fileSaved'), { type: 'fileSaved', path: 'src/hello.ts', hash: sha('one\r\ntwo\r\nthree\r\n'), sessionId: sessionOf(controller).id });
     assert.ok(notesOf(controller).some((n) => n.includes('The user edited src/hello.ts by hand')));
     // The page's old hash no longer matches what is on disk.
     await controller.handleMessage({ type: 'saveFile', path: 'src/hello.ts', text: 'other\n', baseHash: hash });
-    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'src/hello.ts', reason: 'conflict', hash: sha('one\r\ntwo\r\nthree\r\n') });
+    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'src/hello.ts', reason: 'conflict', hash: sha('one\r\ntwo\r\nthree\r\n'), sessionId: sessionOf(controller).id });
   });
 
   it('refuses to save while the agent works or a hand-off is open', async () => {
@@ -464,20 +482,20 @@ describe('desktop Files and editor', () => {
     const sent = controller.send('Do something');
     await until(() => orchestratorOf(controller).isRunning && shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to work');
     await save(controller, 'a.txt', 'mine\n');
-    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'a.txt', reason: 'running' });
+    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'a.txt', reason: 'running', sessionId: sessionOf(controller).id });
     controller.stop();
     await sent;
-    (controller as unknown as { handoff?: unknown }).handoff = { session: {}, terminal: { show: () => undefined } };
+    (sessionOf(controller) as unknown as { handoff?: unknown }).handoff = { session: {}, terminal: { show: () => undefined }, release: () => undefined };
     await save(controller, 'a.txt', 'mine\n');
     assert.equal(shell.posted.filter((m) => m.type === 'saveRefused' && m.reason === 'running').length, 2);
     assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'before\n');
-    (controller as unknown as { handoff?: unknown }).handoff = undefined;
+    (sessionOf(controller) as unknown as { handoff?: unknown }).handoff = undefined;
   });
 
   it('refuses to save while a hand-off starts and until a closed one is collected', async () => {
     const { shell, controller } = await start('desktop');
     writeFileSync(path.join(folderA, 'a.txt'), 'before\n');
-    const inner = controller as unknown as { handoff?: unknown; handoffBusy: number; collectHandoff(ended: boolean): Promise<void> };
+    const inner = sessionOf(controller) as unknown as { handoff?: unknown; handoffBusy: number; collectHandoff(ended: boolean): Promise<void> };
     // Between the snapshot and the open terminal.
     inner.handoffBusy = 1;
     await save(controller, 'a.txt', 'mine\n');
@@ -485,7 +503,11 @@ describe('desktop Files and editor', () => {
     inner.handoffBusy = 0;
     // The terminal closed; its changes are still being read.
     let finish!: (changed: unknown[]) => void;
-    inner.handoff = { session: { agent: { label: 'Other' }, collect: () => new Promise((resolve) => (finish = resolve)) }, terminal: { show: () => undefined } };
+    inner.handoff = {
+      session: { agent: { label: 'Other' }, collect: () => new Promise((resolve) => (finish = resolve)) },
+      terminal: { show: () => undefined },
+      release: () => undefined,
+    };
     const collecting = inner.collectHandoff(true);
     assert.equal(inner.handoff, undefined);
     await save(controller, 'a.txt', 'mine\n');

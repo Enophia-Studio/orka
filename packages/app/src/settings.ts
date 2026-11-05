@@ -125,6 +125,11 @@ export interface AppSettings {
   /** The desktop app's window: sessions and side panels ("ide") or one column ("classic"), and its colors. */
   desktop: { layout: 'ide' | 'classic'; theme: 'system' | 'light' | 'dark' };
   /**
+   * Sessions that may run at once (desktop only, 1 to 8): each may start an agent CLI or a Claude
+   * Code process. The VS Code panel has one session.
+   */
+  sessions: { maxRunning: number };
+  /**
    * Radar (desktop only): off until the user turns it on. Its own model provider ('' = the main
    * agent's, when that is a plain model provider), never an agent CLI or Claude Code. Read from the
    * user's own settings only: a folder's settings can neither turn it on nor pick its provider.
@@ -243,6 +248,7 @@ export function readSettings(c: SettingsStore): AppSettings {
       layout: c.get<string>('desktop.layout', '') === 'classic' ? 'classic' : 'ide',
       theme: (['light', 'dark'] as const).find((v) => v === c.get<string>('desktop.theme', '')) ?? 'system',
     },
+    sessions: { maxRunning: maxRunning(c.get<unknown>('sessions.maxRunning', DEFAULT_MAX_RUNNING)) },
     radar: {
       enabled: userOnly('radar.enabled') === true,
       // A model provider only: valid() never returns an agent CLI, and Claude Code is left out here.
@@ -323,6 +329,15 @@ const MODEL_ID = /^[\w.:/@-]{1,160}$/;
 
 const int = (min: number, max: number) => (v: unknown) => Number.isInteger(v) && (v as number) >= min && (v as number) <= max;
 
+/** Sessions running at once by default, and the most the setting allows. */
+export const DEFAULT_MAX_RUNNING = 3;
+export const MAX_RUNNING_LIMIT = 8;
+
+/** The sessions.maxRunning setting: a whole number from 1 to 8, else the default. */
+function maxRunning(value: unknown): number {
+  return int(1, MAX_RUNNING_LIMIT)(value) ? (value as number) : DEFAULT_MAX_RUNNING;
+}
+
 /** Shells offered in the settings UI ('' = platform default). Other values only via the settings file. */
 export const SHELL_CHOICES = process.platform === 'win32' ? ['', 'powershell.exe', 'pwsh.exe', 'cmd.exe'] : ['', '/bin/bash', '/bin/zsh', '/bin/sh'];
 
@@ -367,6 +382,7 @@ export const WEBVIEW_SETTINGS: Record<string, (value: unknown) => boolean> = {
   // Desktop only (the VS Code extension ignores them).
   'desktop.layout': (v) => v === 'ide' || v === 'classic',
   'desktop.theme': (v) => v === 'system' || v === 'light' || v === 'dark',
+  'sessions.maxRunning': int(1, MAX_RUNNING_LIMIT),
   'radar.enabled': (v) => typeof v === 'boolean',
   'radar.autoAnalyze': (v) => typeof v === 'boolean',
   // '' = the main agent's provider. Never an agent CLI or Claude Code: Radar runs on a model API.
@@ -378,7 +394,7 @@ export const WEBVIEW_SETTINGS: Record<string, (value: unknown) => boolean> = {
 export const RADAR_SETTINGS = new Set(['radar.enabled', 'radar.provider', 'radar.model', 'radar.autoAnalyze']);
 
 /** Settings only the desktop app has. */
-export const DESKTOP_SETTINGS = new Set(['desktop.layout', 'desktop.theme', ...RADAR_SETTINGS]);
+export const DESKTOP_SETTINGS = new Set(['desktop.layout', 'desktop.theme', 'sessions.maxRunning', ...RADAR_SETTINGS]);
 
 /**
  * Settings a folder's own settings must not change: programs Orka starts, where API keys are sent,
