@@ -46,17 +46,17 @@ A coding agent CLI you installed and signed in to yourself can be the main agent
 
 ```bash
 orka agents                              # the agents, whether they are installed, their terms and install commands
-orka --provider agent:gemini             # Gemini CLI as the main agent (also agent:codex, agent:copilot, agent:cursor)
+orka --provider agent:antigravity        # Antigravity CLI as the main agent (also agent:codex, agent:copilot, agent:cursor, agent:gemini)
 orka --provider agent:custom:my-agent    # an ACP agent you added in the config
 ```
 
 ```json
 {
-  "provider": "agent:gemini",
+  "provider": "agent:antigravity",
   "supervisor": { "provider": "claude", "model": "claude-sonnet-5-5" },
   "agentClis": {
-    "enabled": ["gemini", "custom:my-agent"],
-    "paths": { "gemini": "/opt/tools/gemini" },
+    "enabled": ["antigravity", "custom:my-agent"],
+    "paths": { "antigravity": "/opt/tools/agy" },
     "custom": [{ "name": "My agent", "command": "my-agent", "args": ["--acp"] }]
   }
 }

@@ -176,7 +176,7 @@ Other modes: *On changes* (every file, command or plan step), *Every step* and *
 | **Gemini API** | API key / `GEMINI_API_KEY` | Official `@google/genai` SDK; thought signatures are preserved |
 | **Added providers** | API key or none | **Settings → Providers → Add a provider**: OpenRouter, DeepSeek, xAI (Grok), Mistral, Groq, Together AI, Ollama, LM Studio, or any OpenAI-compatible URL |
 | **Claude Code (local)** | Your Claude Code login | Optional and off by default, see below |
-| **Agent CLIs** | The agent's own login | Gemini CLI, Codex, GitHub Copilot CLI or Cursor CLI as the main agent, see [agent mode](#agent-clis-agent-mode) |
+| **Agent CLIs** | The agent's own login | Antigravity CLI, Codex, GitHub Copilot CLI, Cursor CLI or the legacy Gemini CLI as the main agent, see [agent mode](#agent-clis-agent-mode) |
 
 Model pickers group versions by family (e.g. **Opus** 5.5, 5, 4.8 · **GPT-6** Astra, Sol, Luna · **Gemini Flash** 3.8, 3.7, ...). **Load list** fetches the provider's own model list; models Orka does not know yet are added to the right family and marked "new". Lists are refreshed once a day in the background, and **Other…** lets you type any model id. The built-in catalog lives in `packages/core/src/providers/catalog.ts`.
 
@@ -194,9 +194,11 @@ How it works: each conversation opens one `claude -p --input-format stream-json`
 
 ### Agent CLIs (agent mode)
 
-A coding agent CLI you installed and signed in to yourself can be the main agent: **Gemini CLI**, **Codex** (through `codex-acp`), **GitHub Copilot CLI**, **Cursor CLI**, or an ACP agent you add on your own responsibility. Orka runs it over the [Agent Client Protocol](https://agentclientprotocol.com) and keeps its safety net around it: Orka's permission rules answer the agent's permission requests, the files it asks Orka for stay inside the workspace, the files it changes in the workspace (also with its own tools, but not ones git ignores) show up in Changes and can be reverted, and the Supervisor reviews the final result. What the agent does with its own tools follows its own sandbox and settings. The agent brings its own model and context, so the light model, fallback, compaction and lessons are off in agent mode, and its token use is not reported.
+A coding agent CLI you installed and signed in to yourself can be the main agent: **Antigravity CLI** (`agy acp`), **Codex** (through `codex-acp`), **GitHub Copilot CLI**, **Cursor CLI**, the legacy **Gemini CLI** (Gemini API key or Code Assist Standard/Enterprise only), or an ACP agent you add on your own responsibility. Orka runs it over the [Agent Client Protocol](https://agentclientprotocol.com) and keeps its safety net around it: Orka's permission rules answer the agent's permission requests, the files it asks Orka for stay inside the workspace, the files it changes in the workspace (also with its own tools, but not ones git ignores) show up in Changes and can be reverted, and the Supervisor reviews the final result. What the agent does with its own tools follows its own sandbox and settings. The agent brings its own model and context, so the light model, fallback, compaction and lessons are off in agent mode, and its token use is not reported.
 
-Orka never reads, stores or forwards an agent's sign-in, only runs the unmodified program you installed, never downloads one and never turns on an "approve everything" mode. Turn an agent on in `orka.agentClis.enabled` and choose it with `orka.provider` set to `agent:<id>` (CLI: `orka --provider agent:gemini`; `orka agents` lists them); agent mode needs git for its snapshots. Supported agents, their terms, what Orka keeps doing and how to add your own: **[docs/EXTERNAL_AGENTS.md](docs/EXTERNAL_AGENTS.md)**.
+Orka never reads, stores or forwards an agent's sign-in, only runs the unmodified program you installed, never downloads one and never turns on an "approve everything" mode. Turn an agent on in `orka.agentClis.enabled` and choose it with `orka.provider` set to `agent:<id>` (CLI: `orka --provider agent:antigravity`; `orka agents` lists them); agent mode needs git for its snapshots. Supported agents, their terms, what Orka keeps doing and how to add your own: **[docs/EXTERNAL_AGENTS.md](docs/EXTERNAL_AGENTS.md)**.
+
+**Antigravity CLI** needs agy 1.5.0 or newer (the first with `agy acp`, according to agy's own changelog; update with `agy update`). Google documents `agy acp` for any ACP client, while [its FAQ](https://antigravity.google/docs/faq) calls wrapping agy in third-party apps unsupported on consumer plans (free, AI Pro, AI Ultra). Orka links both on the agent's card and leaves the choice of sign-in to you; it never touches agy's sign-in or Google's files.
 
 ## Permissions and safety
 
@@ -306,7 +308,7 @@ The same core in the terminal: chat, Supervisor, sub-agents, Skills, MCP, permis
 - `orka` starts a session; `orka "fix the login bug"` starts with a request.
 - `orka -p "explain main.ts"` answers one request and exits; the reply goes to stdout and progress to stderr, so it works in scripts.
 - `orka -c` continues the last task in this folder; `orka models`, `orka agents`, `orka config`.
-- `orka --provider agent:gemini` makes an agent CLI the main agent ([agent mode](#agent-clis-agent-mode)).
+- `orka --provider agent:antigravity` makes an agent CLI the main agent ([agent mode](#agent-clis-agent-mode)).
 - Options: `--provider`, `-m/--model`, `--mode ask|balanced|autonomous`, `-y` (autonomous), `--supervisor claude:claude-sonnet-5-5`, `--no-supervisor`, `-C <folder>`, `--lang en|tr`.
 - In a session: `/help`, `/new`, `/diff`, `/undo`, `/rewind [n]`, `/compact`, `/mode`, `/model`, `/usage`, `/skills`, `/<skill> <request>`, `/freebuff`, `/exit`; `@file` attaches a file or image; Ctrl+C stops the running request.
 - Approvals are asked in the terminal (`y` yes · `a` always · `n` no · `d` diff · or type what to do instead). Without a terminal (piped input), anything that needs approval is **declined**, never approved silently.

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+**Agent CLIs**
+
+- **Antigravity CLI** (`agent:antigravity`) joins the catalog: Orka runs Google's `agy acp` (agy 1.5.0 or newer), which Google documents for any ACP client. You sign in by running `agy` in a terminal; Orka never touches that sign-in. The agent's card (and `orka agents`) links Google's ACP page, its terms and its FAQ, which calls wrapping agy in third-party apps unsupported on consumer plans: the choice of sign-in is yours. An older agy shows its version and `agy update` on **Check**.
+- **Gemini CLI** is now labelled **legacy** (Gemini API key or Code Assist Standard/Enterprise only; personal Google accounts moved to Antigravity CLI). Its id stays `gemini`, so existing settings keep working.
+
 ## 0.6.0
 
 The desktop app runs several sessions at once, one per folder. See [Parallel sessions (desktop)](README.md#parallel-sessions-desktop).

@@ -1,6 +1,6 @@
 # Agent CLIs (agent mode)
 
-In agent mode, a coding agent you installed yourself, such as Gemini CLI, Codex, GitHub Copilot CLI or Cursor CLI, is Orka's **main agent**. Orka talks to it over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP), the protocol these agents document for editors and other clients: Orka starts the program in your project folder in its ACP mode, sends it your requests, and answers what the agent asks for (permission for its tool calls, reading and writing files, running terminal commands).
+In agent mode, a coding agent you installed yourself, such as Antigravity CLI, Codex, GitHub Copilot CLI or Cursor CLI, is Orka's **main agent**. Orka talks to it over the [Agent Client Protocol](https://agentclientprotocol.com) (ACP), the protocol these agents document for editors and other clients: Orka starts the program in your project folder in its ACP mode, sends it your requests, and answers what the agent asks for (permission for its tool calls, reading and writing files, running terminal commands).
 
 The agent runs its own loop, with its own model and **its own sign-in**. Orka keeps its safety net around it: permissions, the Changes list with revert, Go back, hooks and the Supervisor's review of the result.
 
@@ -11,7 +11,7 @@ The agent runs its own loop, with its own model and **its own sign-in**. Orka ke
 - [Compliance rules](#compliance-rules)
 - [Agents that are not in the catalog](#agents-that-are-not-in-the-catalog)
 - [Adding your own ACP agent](#adding-your-own-acp-agent)
-- [A note on Gemini CLI](#a-note-on-gemini-cli)
+- [A note on Antigravity CLI and Gemini CLI](#a-note-on-antigravity-cli-and-gemini-cli)
 - [Troubleshooting](#troubleshooting)
 
 ## Turning it on
@@ -25,7 +25,7 @@ The agent runs its own loop, with its own model and **its own sign-in**. Orka ke
 | Desktop | The same keys without the `orka.` prefix (`agentClis.enabled`, `provider`) |
 | CLI | `orka --provider agent:<id>`, or `"provider": "agent:<id>"` with `"agentClis": { "enabled": ["<id>"] }` in `~/.orka/config.json`; `orka agents` lists the agents and whether they are installed. See the [CLI README](../packages/cli/README.md#agent-clis-agent-mode). |
 
-`<id>` is `gemini`, `codex`, `copilot`, `cursor`, or `custom:<name>` for an agent you added. Only the main agent can be an agent CLI: the Supervisor, the light model, the fallback and the sub-agents always run on a model provider.
+`<id>` is `antigravity`, `codex`, `copilot`, `cursor`, `gemini` (the legacy Gemini CLI), or `custom:<name>` for an agent you added. Only the main agent can be an agent CLI: the Supervisor, the light model, the fallback and the sub-agents always run on a model provider.
 
 Two more settings only come from your own settings on that machine (VS Code's *machine* scope: a repository's `.vscode/settings.json` cannot set them):
 
@@ -38,23 +38,25 @@ Agent mode needs git: Orka snapshots the folder around every request (see below)
 
 ## Supported agents
 
-The commands below are listed in Orka's source (`packages/core/src/acp/catalog.ts`) and were checked against each vendor's documentation in October 2026. Orka shows the install command; it never runs it.
+The commands below are listed in Orka's source (`packages/core/src/acp/catalog.ts`) and were checked against each vendor's documentation in October 2026 (Antigravity CLI: November 2026). Orka shows the install command; it never runs it.
 
 | Agent | id | Command Orka runs | Install | Sign in (the vendor's own login) |
 |---|---|---|---|---|
-| **Gemini CLI** (Google) | `gemini` | `gemini --acp` | `npm install -g @google/gemini-cli` | Run `gemini` in a terminal and choose how to sign in (Google account, Gemini API key or Vertex AI) |
+| **Antigravity CLI** (Google) | `antigravity` | `agy acp` (agy 1.5.0 or newer) | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` (Windows: `irm https://antigravity.google/cli/install.ps1 \| iex`) | Run `agy` in a terminal and sign in there; `agy acp` uses the sign-in that session cached |
 | **Codex** through the `codex-acp` adapter (OpenAI) | `codex` | `codex-acp` | `npm install -g @agentclientprotocol/codex-acp @openai/codex` (the adapter, and the Codex CLI whose sign-in it uses) | `codex login` (a ChatGPT plan or an API key; needs the Codex CLI) |
 | **GitHub Copilot CLI** (GitHub) | `copilot` | `copilot --acp --stdio` | `npm install -g @github/copilot` (Windows: `winget install GitHub.Copilot`) | `copilot login` |
 | **Cursor CLI** (Cursor) | `cursor` | `cursor-agent acp` (or `agent acp`, its newer name) | `curl https://cursor.com/install -fsS \| bash` (Windows: `irm 'https://cursor.com/install?win32=true' \| iex`) | `agent login` (or `cursor-agent login`, whichever program Orka found) |
+| **Gemini CLI (legacy)** (Google) | `gemini` | `gemini --acp` | `npm install -g @google/gemini-cli` | Run `gemini` in a terminal and choose how to sign in (Gemini API key, Vertex AI or a Code Assist Standard/Enterprise licence) |
 
 What Orka shows with each agent, and the terms it is used under (`packages/core/src/acp/policy.ts`):
 
 | Agent | Note | Terms | Status |
 |---|---|---|---|
-| Gemini CLI | Runs your installed Gemini CLI in its ACP mode. Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it. Google moved unpaid and Google One accounts from Gemini CLI to Antigravity. | [Gemini CLI terms and privacy](https://geminicli.com/docs/resources/tos-privacy/) · [ACP mode](https://geminicli.com/docs/cli/acp-mode/) | |
+| Antigravity CLI | Runs your installed Antigravity CLI ("agy acp"), which Google documents for any ACP client. Google's FAQ calls wrapping agy in third-party apps unsupported on consumer plans: read both and decide how you sign in. | [Antigravity terms](https://antigravity.google/terms) · [FAQ](https://antigravity.google/docs/faq) · [ACP](https://antigravity.google/docs/ide/extensions/acp/) | |
 | Codex | Runs the codex-acp adapter (Apache-2.0) you installed. Sign in with Codex itself, with a ChatGPT plan or an API key. | [OpenAI terms of use](https://openai.com/policies/terms-of-use/) · [codex-acp](https://github.com/agentclientprotocol/codex-acp) | |
 | GitHub Copilot CLI | Runs your installed GitHub Copilot CLI as an ACP server. GitHub documents this mode for other clients; it is a public preview and may change. | [GitHub terms for additional products and features](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features) · [ACP server](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server) | Public preview |
 | Cursor CLI | Runs your installed Cursor CLI (`agent acp`), which Cursor documents for custom clients. | [Cursor terms of service](https://cursor.com/terms-of-service) · [ACP](https://cursor.com/docs/cli/acp) | |
+| Gemini CLI (legacy) | Legacy: only for a Gemini API key or Code Assist Standard/Enterprise; personal Google accounts moved to Antigravity CLI. Runs your installed Gemini CLI in its ACP mode; Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it. | [Gemini CLI terms and privacy](https://geminicli.com/docs/resources/tos-privacy/) · [ACP mode](https://geminicli.com/docs/cli/acp-mode/) | Legacy |
 
 Signing in always happens in the vendor's own login command or app. **Sign in…** on an agent's card opens that command in a terminal, with the program Orka found (or the path you set) by its full path and in your home folder, so nothing in the open project can stand in for it. You sign in there; Orka never sees it. Whether an agent is signed in shows on the first request: if it is not, Orka names the vendor's login command to run in a terminal.
 
@@ -100,7 +102,6 @@ Your use of each agent is governed by that vendor's terms (linked above); Orka i
 
 | Agent | Why it is left out |
 |---|---|
-| **Antigravity** (Google) | Google's terms do not allow using Antigravity through third-party software on consumer plans. |
 | **Claude ACP adapter** (`claude-agent-acp`) | The Claude ACP adapter's licence is unclear. Claude stays available through the Claude API provider and the opt-in Claude Code provider. |
 
 ## Adding your own ACP agent
@@ -116,9 +117,13 @@ Any program that speaks ACP (protocol version 1) on stdio can be added as a cust
 
 (In VS Code: `orka.agentClis.custom` and `orka.agentClis.enabled`.) The agent's id is `custom:` followed by its name in lowercase, with every run of other characters turned into a dash: `My agent` becomes `custom:my-agent`. The part after `custom:` is cut to its first 40 characters. `command` is a program on `PATH` or a full path; `args` are the arguments that start its ACP server. An older Gemini CLI that only knows `--experimental-acp` can be added this way.
 
-## A note on Gemini CLI
+## A note on Antigravity CLI and Gemini CLI
 
-On 2026-06-18 Google moved unpaid and Google One users of Gemini CLI to Antigravity. If your Gemini CLI no longer works with your account, that comes from Google's change; check Gemini CLI's documentation for the sign-in options available to you. Antigravity itself cannot be used through Orka (see above).
+On 2026-06-18 Google moved unpaid and Google One users of Gemini CLI to Antigravity. Gemini CLI stays in the catalog as a legacy entry (same id, `gemini`) for a Gemini API key or a Code Assist Standard/Enterprise licence; if it no longer works with your account, that comes from Google's change.
+
+**Antigravity CLI** is an ordinary agent in the catalog. Google's [ACP page](https://antigravity.google/docs/ide/extensions/acp/) documents `agy acp` for "any ACP client", and lists its sign-in methods: Google login (personal or Gemini Enterprise), a Gemini API key, the Gemini Enterprise Agent Platform (Application Default Credentials) and terminal login. Google's [FAQ](https://antigravity.google/docs/faq), however, calls wrapping agy inside third-party apps unsupported on consumer plans (free, AI Pro, AI Ultra). Orka shows both links on the agent's card and in `orka agents`; which sign-in you use with Orka is your decision. Orka never touches agy's sign-in: you sign in by running `agy` in a terminal, and `agy acp` uses what that session cached.
+
+`agy acp` came with agy 1.5.0 (single source: agy's own changelog, `agy changelog`). With an older agy, **Check** reports the version and the update command (`agy update`); Orka never runs it.
 
 Orka never uses Gemini CLI's sign-in itself: it does not read Gemini CLI's credentials or call Google with them, because Google's terms forbid other software from using that sign-in. Orka only starts your installed Gemini CLI, which signs in on its own. Orka's own Gemini API provider, with a Gemini API key, is a separate option and is not affected.
 
