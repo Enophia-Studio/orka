@@ -25,7 +25,7 @@ import {
   type NodeHost,
   Orchestrator,
   type OrchestratorSettings,
-  type PermissionManager,
+  PermissionManager,
   readInsideWorkspace,
   type SessionView,
   ShadowGit,
@@ -69,10 +69,11 @@ export type LiveState = 'idle' | 'running' | 'approval';
 /** What a session needs from the app around it: settings, providers, skills, and the app-wide views it updates. */
 export interface SessionContext {
   readonly shell: AppShell;
-  readonly permissions: PermissionManager;
   settings(): AppSettings;
   /** The page shows this session (only that one may post to it). */
   isActive(session: SessionController): boolean;
+  /** Show this session (the user chose "Show" on its approval notice). */
+  show(session: SessionController): void;
   providerFor(name: string): AIProvider;
   /** The agent CLI that runs the main agent's turns in this folder, when the main agent is one. */
   externalAgent(root: string): ExternalAgentRuntime | undefined;
@@ -113,6 +114,7 @@ export class SessionController {
   /** Workspace snapshots around terminal commands and hand-offs (a private git dir). */
   readonly snapshots: ShadowGit;
   readonly store: FileTaskStore;
+  readonly permissions: PermissionManager;
   /** The desktop app's Files tree and editor (VS Code has its own editor). */
   readonly files?: WorkspaceFiles;
   private task = { id: newTaskId(), createdAt: new Date().toISOString() };
@@ -152,6 +154,8 @@ export class SessionController {
     const storage = shell.storage(folder);
     this.snapshots = new ShadowGit(folder, storage.snapshots);
     this.store = new FileTaskStore(storage.tasks);
+    // The mode and the per-action rules are the app's (it passes changes on); "always allow" is this session's.
+    this.permissions = new PermissionManager(settings.mode, settings.overrides);
     // eslint-disable-next-line @typescript-eslint/no-this-alias -- read by a getter below, so the setting applies at once
     const session = this;
     this.orchestrator = new Orchestrator({
@@ -164,7 +168,7 @@ export class SessionController {
         return ctx.settings().trackCommandChanges ? session.snapshots : undefined;
       },
       getFallbackProvider: () => (ctx.settings().fallback.provider === 'inherit' ? undefined : ctx.providerFor('fallback')),
-      permissions: ctx.permissions,
+      permissions: this.permissions,
       getSettings: () => this.orchestratorSettings(),
       subagents: {
         getProfiles: () => (ctx.settings().subagents.enabled ? DEFAULT_SUBAGENTS : []),
@@ -186,7 +190,7 @@ export class SessionController {
 
   /** What the session list shows for it. */
   get state(): LiveState {
-    return this.isRunning ? 'running' : 'idle';
+    return this.pendingApprovals.size ? 'approval' : this.isRunning ? 'running' : 'idle';
   }
 
   /** Approvals waiting for the user. */
@@ -253,7 +257,7 @@ export class SessionController {
         this.resolveApproval(message.id, { approved: message.approved, feedback: message.feedback, alwaysAllow: message.always });
         break;
       case 'previewApproval':
-        await shell.openApprovalPreview(message.id);
+        await shell.openApprovalPreview(this.previewKey(message.id));
         break;
       case 'openDiff':
         await shell.openChangeDiff(message.path);
@@ -804,32 +808,53 @@ export class SessionController {
 
   // ---------------------------------------------------------------- approvals
 
+  /**
+   * The shell keeps approval previews of every session: a tool call id is unique within a task only
+   * (two sessions can both wait on "call_1"), so the key names the session too.
+   */
+  private previewKey(id: string): string {
+    return `${this.id}:${id}`;
+  }
+
   private requestApproval(request: ApprovalRequest): Promise<ApprovalResponse> {
     const shell = this.ctx.shell;
-    shell.setApprovalPreview(request.id, request.preview);
-    if (!shell.visible) {
+    shell.setApprovalPreview(this.previewKey(request.id), request.preview);
+    const show = t('Show');
+    if (!this.ctx.isActive(this)) {
+      // A session in the background: one notice for its first waiting approval, none for the
+      // approvals that follow while that one is not answered. Nothing goes into a transcript.
+      if (!this.pendingApprovals.size) {
+        void shell
+          .message('info', t('A session in {folder} needs your approval: {title}', { folder: path.basename(this.root) || this.root, title: request.title }), {}, show)
+          .then((c) => c === show && this.ctx.show(this));
+      }
+    } else if (!shell.visible) {
       shell.reveal();
-      const show = t('Show');
       void shell.message('info', t('AI agent needs approval: {title}', { title: request.title }), {}, show).then((c) => c === show && shell.reveal());
     }
-    return new Promise((resolve) => this.pendingApprovals.set(request.id, resolve));
+    const answer = new Promise<ApprovalResponse>((resolve) => this.pendingApprovals.set(request.id, resolve));
+    this.ctx.changed(this);
+    return answer;
   }
 
   private resolveApproval(id: string, response: ApprovalResponse): void {
     const resolve = this.pendingApprovals.get(id);
     if (!resolve) return;
     this.pendingApprovals.delete(id);
-    this.ctx.shell.clearApprovalPreview(id);
+    this.ctx.shell.clearApprovalPreview(this.previewKey(id));
     resolve(response);
+    this.ctx.changed(this);
   }
 
   /** Every open approval is answered "no" (its run ended, or the session goes away). */
   private denyApprovals(): void {
+    if (!this.pendingApprovals.size) return;
     for (const [id, resolve] of this.pendingApprovals) {
       resolve({ approved: false });
-      this.ctx.shell.clearApprovalPreview(id);
+      this.ctx.shell.clearApprovalPreview(this.previewKey(id));
     }
     this.pendingApprovals.clear();
+    this.ctx.changed(this);
   }
 
   // ---------------------------------------------------------------- hand-off to external agents

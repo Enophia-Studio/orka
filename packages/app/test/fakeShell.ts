@@ -187,11 +187,21 @@ export class FakeShell implements AppShell {
 
   async openChangeDiff(): Promise<void> {}
 
-  setApprovalPreview(): void {}
+  /** Approval previews kept, by key, and the keys openApprovalPreview() was asked for. */
+  readonly previews = new Map<string, ApprovalRequest['preview']>();
+  readonly previewsOpened: string[] = [];
 
-  clearApprovalPreview(): void {}
+  setApprovalPreview(id: string, preview: ApprovalRequest['preview']): void {
+    if (preview) this.previews.set(id, preview);
+  }
 
-  async openApprovalPreview(): Promise<void> {}
+  clearApprovalPreview(id: string): void {
+    this.previews.delete(id);
+  }
+
+  async openApprovalPreview(id: string): Promise<void> {
+    this.previewsOpened.push(id);
+  }
 
   createHost(options: { root: string; approve: (request: ApprovalRequest) => Promise<ApprovalResponse> }): NodeHost {
     return new NodeHost({ workspaceRoot: options.root, approve: options.approve });

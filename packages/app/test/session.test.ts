@@ -1,4 +1,4 @@
-import { FileTaskStore } from '@orka/core';
+import { type ApprovalRequest, FileTaskStore } from '@orka/core';
 import assert from 'node:assert/strict';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -198,10 +198,10 @@ describe('parallel sessions (desktop IDE layout)', () => {
     const live = shell.last('live')!;
     assert.equal(live.activeId, b.id);
     assert.deepEqual(
-      live.sessions.map((s) => [s.id, s.state, s.title]),
+      live.sessions.map((s) => [s.id, s.state, s.title, s.approvals]),
       [
-        [a.id, 'running', 'Task in alpha'],
-        [b.id, 'running', 'Task in beta'],
+        [a.id, 'approval', 'Task in alpha', 1],
+        [b.id, 'running', 'Task in beta', 0],
       ],
     );
 
@@ -400,5 +400,152 @@ describe('parallel sessions (desktop IDE layout)', () => {
     await controller.handleMessage({ type: 'switchSession', sessionId: alpha.id });
     await until(() => shell.last('config')?.config.mcp.servers.length === 1, "alpha's settings view");
     assert.equal(shell.last('config')!.config.mcp.servers[0].enabled, true);
+  });
+});
+
+describe('approvals and permissions per session', () => {
+  /** A request as an agent's tool call makes it (the host asks the session). */
+  const request = (id: string, title: string, preview?: ApprovalRequest['preview']): ApprovalRequest => ({
+    id,
+    toolName: 'write_file',
+    category: 'edit',
+    risk: 'normal',
+    title,
+    preview,
+  });
+  const askingTurn = (text: string) => [{ permission: { id: 'p1', title: 'Run a command', kind: 'execute' } }, { chunk: text }, { stop: 'end_turn' }];
+
+  it('keeps approvals and their previews apart when two sessions wait on the same call id', async () => {
+    const { shell, controller } = await start('desktop');
+    const a = controller.activeSession!;
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    const answerA = a.host.requestApproval(request('call_1', 'Edit a.txt', { path: path.join(folderA, 'a.txt'), before: 'a\n', after: 'A\n' }));
+    const answerB = b.host.requestApproval(request('call_1', 'Edit a.txt', { path: path.join(folderB, 'a.txt'), before: 'b\n', after: 'B\n' }));
+    assert.deepEqual([...shell.previews.keys()], [`${a.id}:call_1`, `${b.id}:call_1`]);
+
+    // The diff of the approval shown, or of the session the page names.
+    await controller.handleMessage({ type: 'previewApproval', id: 'call_1' });
+    await controller.handleMessage({ type: 'previewApproval', id: 'call_1', sessionId: a.id });
+    assert.deepEqual(shell.previewsOpened, [`${b.id}:call_1`, `${a.id}:call_1`]);
+
+    await controller.handleMessage({ type: 'approve', id: 'call_1', approved: true });
+    assert.equal((await answerB).approved, true);
+    assert.equal(pendingOf(a).size, 1, "alpha's approval still waits");
+    assert.deepEqual([...shell.previews.keys()], [`${a.id}:call_1`]);
+    await controller.handleMessage({ type: 'approve', id: 'call_1', approved: false, sessionId: a.id });
+    assert.equal((await answerA).approved, false);
+    assert.equal(shell.previews.size, 0);
+  });
+
+  it('keeps "always allow" to the session that gave it', async () => {
+    const { shell, controller } = await start('desktop', { ...agentSettings, permissionMode: 'ask' });
+    const a = controller.activeSession!;
+    script(askingTurn('First.'), askingTurn('Second.'));
+    const first = controller.send('First request');
+    await until(() => pendingOf(a).size === 1, 'the approval');
+    await controller.handleMessage({ type: 'approve', id: [...pendingOf(a).keys()][0], approved: true, always: true });
+    await first;
+    const second = controller.send('Second request');
+    await until(() => said(shell, a, 'Second.') || pendingOf(a).size > 0, 'the second turn');
+    assert.equal(pendingOf(a).size, 0, 'alpha asks no more');
+    await second;
+
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    const sentB = controller.send('First request in beta');
+    await until(() => pendingOf(b).size === 1, 'beta to ask');
+    await controller.handleMessage({ type: 'approve', id: [...pendingOf(b).keys()][0], approved: false });
+    await sentB;
+  });
+
+  it('passes the permission mode and rules to every session', async () => {
+    const folderC = path.join(home, 'work', 'gamma');
+    mkdirSync(folderC);
+    const { shell, controller } = await start('desktop', {}, [folderA, folderB, folderC]);
+    const a = controller.activeSession!;
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    await controller.handleMessage({ type: 'setMode', mode: 'autonomous' });
+    await shell.settings.update('permissions.terminal', 'ask');
+    const command = { category: 'command' as const, risk: 'normal' as const };
+    const follows = (s: SessionController) => s.permissions.getMode() === 'autonomous' && s.permissions.decide(command) === 'ask';
+    await until(() => follows(a) && follows(b), 'both sessions to follow');
+    assert.equal(a.permissions.decide({ category: 'edit', risk: 'normal' }), 'allow');
+    // A session opened later starts with them.
+    await controller.handleMessage({ type: 'selectFolder', path: folderC });
+    assert.ok(follows(controller.activeSession!));
+  });
+
+  it('tells about a background session that waits for approval once per burst, and shows it on request', async () => {
+    const { shell, controller } = await start('desktop');
+    const a = controller.activeSession!;
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    const notices = () => shell.asked.filter((q) => q.text.startsWith('A session in alpha needs your approval'));
+
+    const first = a.host.requestApproval(request('c1', 'Edit one.txt'));
+    const second = a.host.requestApproval(request('c2', 'Edit two.txt'));
+    assert.deepEqual(
+      notices().map((q) => [q.level, q.text, q.actions]),
+      [['info', 'A session in alpha needs your approval: Edit one.txt', ['Show']]],
+      'one notice for the burst',
+    );
+    const live = shell.last('live')!;
+    assert.equal(live.activeId, b.id);
+    assert.deepEqual(
+      live.sessions.map((s) => [s.id, s.state, s.approvals]),
+      [
+        [a.id, 'approval', 2],
+        [b.id, 'idle', 0],
+      ],
+    );
+
+    // Both answered: the burst is over, and the next approval is told again. "Show" shows alpha.
+    await controller.handleMessage({ type: 'approve', id: 'c1', approved: true, sessionId: a.id });
+    await controller.handleMessage({ type: 'approve', id: 'c2', approved: true, sessionId: a.id });
+    await Promise.all([first, second]);
+    assert.deepEqual(
+      shell.last('live')!.sessions.map((s) => s.state),
+      ['idle', 'idle'],
+    );
+    shell.answer = 'Show';
+    const third = a.host.requestApproval(request('c3', 'Edit three.txt'));
+    await until(() => controller.activeSession === a, 'alpha to be shown');
+    assert.equal(notices().length, 2);
+    const init = shell.last('init')!;
+    assert.equal(init.sessionId, a.id);
+    assert.deepEqual(init.session.items, [], 'nothing was written into its transcript');
+    await controller.handleMessage({ type: 'approve', id: 'c3', approved: true });
+    assert.equal((await third).approved, true);
+  });
+
+  it("answers only the stopped session's approvals", async () => {
+    const { shell, controller } = await start('desktop', { ...agentSettings, permissionMode: 'ask' });
+    const a = controller.activeSession!;
+    script(askingTurn('Alpha went on.'));
+    const sentA = controller.send('Task in alpha');
+    await until(() => pendingOf(a).size === 1, "alpha's approval");
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    script(askingTurn('Beta went on.'));
+    const sentB = controller.send('Task in beta');
+    await until(() => pendingOf(b).size === 1, "beta's approval");
+
+    await controller.handleMessage({ type: 'stop', sessionId: a.id });
+    await sentA;
+    assert.equal(pendingOf(a).size, 0);
+    assert.equal(pendingOf(b).size, 1, "beta's approval still waits");
+    assert.ok(b.isRunning);
+    assert.deepEqual(
+      shell.last('live')!.sessions.map((s) => [s.id, s.state]),
+      [
+        [a.id, 'idle'],
+        [b.id, 'approval'],
+      ],
+    );
+    await controller.handleMessage({ type: 'approve', id: [...pendingOf(b).keys()][0], approved: true });
+    await sentB;
+    assert.ok(said(shell, b, 'Beta went on.'));
   });
 });

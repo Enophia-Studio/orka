@@ -857,6 +857,7 @@ export const TR: Record<string, string> = {
   '{n} hidden session': '{n} gizli oturum',
   '{n} hidden sessions': '{n} gizli oturum',
   'Too many open sessions. Close one first.': 'Çok fazla açık oturum var. Önce birini kapatın.',
+  'A session in {folder} needs your approval: {title}': '{folder} klasöründeki bir oturum onayınızı bekliyor: {title}',
   'A session is already running in {folder}. Orka runs one session at a time per folder; stop it or wait, then start a new one.':
     '{folder} klasöründe zaten çalışan bir oturum var. Orka her klasörde aynı anda tek oturum çalıştırır; onu durdurun ya da bitmesini bekleyin, sonra yenisini başlatın.',
 

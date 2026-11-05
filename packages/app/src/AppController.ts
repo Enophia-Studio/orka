@@ -36,7 +36,6 @@ import {
   type ModelInfo,
   newTaskId,
   normalizeLocale,
-  PermissionManager,
   type PermissionMode,
   type ProviderConfig,
   PROVIDER_KINDS,
@@ -151,7 +150,6 @@ export interface AppControllerOptions {
  */
 export class AppController implements Disposable {
   private settings: AppSettings;
-  private readonly permissions: PermissionManager;
   /** API keys by provider ref (built-in kind or "custom:<id>"). */
   private readonly apiKeys = new Map<string, string>();
   /** Models reported by a provider's own model list (built-in providers). */
@@ -189,7 +187,6 @@ export class AppController implements Disposable {
     options: AppControllerOptions = {},
   ) {
     this.settings = readSettings(shell.settings);
-    this.permissions = new PermissionManager(this.settings.mode, this.settings.overrides);
     this.sessionContext = this.createSessionContext();
     this.applyLocale();
     if (shell.kind === 'desktop' && shell.orkaHome) {
@@ -493,9 +490,9 @@ export class AppController implements Disposable {
   private createSessionContext(): SessionContext {
     return {
       shell: this.shell,
-      permissions: this.permissions,
       settings: () => this.settings,
       isActive: (session) => session.id === this.activeId,
+      show: (session) => void this.showSession(session),
       providerFor: (name) => this.providerFor(name),
       externalAgent: (root) => this.externalAgent(root),
       mcpTools: (session) => this.mcpTools(session),
@@ -642,6 +639,16 @@ export class AppController implements Disposable {
     if (!session || session.id === this.activeId) return;
     // The shell works in the session's folder; its change shows the session (onFolderChanged).
     if (!(await this.shell.selectFolder(session.root))) this.postConfig();
+  }
+
+  /**
+   * Show a session that waits in the background ("Show" on its approval notice). In the classic
+   * layout this is a folder change, which ends the session shown (refused while that one runs).
+   */
+  private async showSession(session: SessionController): Promise<void> {
+    if (this.sessions.get(session.id) !== session || session.id === this.activeId) return;
+    if (this.parallel()) await this.switchSession(session.id);
+    else await this.selectFolder(session.root);
   }
 
   /** Close an idle session that is not shown (desktop IDE layout); its task stays in the list. */
@@ -2167,8 +2174,11 @@ export class AppController implements Disposable {
     this.applyLocale();
     this.shell.settingsChanged?.(this.settings);
     await Promise.all(this.keyedProviders().filter((r) => !this.apiKeys.has(r)).map((r) => this.loadApiKey(r)));
-    this.permissions.setMode(this.settings.mode);
-    this.permissions.setOverrides(this.settings.overrides);
+    // Each session keeps its own "always allow" answers; the mode and the rules are the same for all.
+    for (const session of this.sessions.values()) {
+      session.permissions.setMode(this.settings.mode);
+      session.permissions.setOverrides(this.settings.overrides);
+    }
     // Provider settings may have changed: rebuild providers once nothing is using them.
     if (this.anyRunning()) this.providersStale = true;
     else this.disposeProviders();
