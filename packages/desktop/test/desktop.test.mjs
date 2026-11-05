@@ -336,6 +336,55 @@ globalThis.fetch = (input, init) => {
     }
   });
 
+  it('sends the selected lines, and the open file, to the agent', async () => {
+    const { outside } = filesFixture();
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      await browser.clickSelector('#side-files [data-action="open-files"]');
+      await until(() => browser.evaluate('!!document.querySelector("#files-panel:not([hidden]) [data-path=src]")'), 'the Files tree');
+      await browser.clickSelector('#files-panel [data-path="src"]');
+      await until(() => browser.evaluate('!!document.querySelector("#files-panel [data-path=\'src/hello.ts\']")'), 'the src folder');
+      await browser.clickSelector('#files-panel [data-path="src/hello.ts"]');
+      await until(() => browser.evaluate('!!document.querySelector("#editor-pane:not([hidden]) .cm-editor .tok-keyword")'), 'the editor with the file');
+
+      // Lines 2 and 3, selected with the keyboard.
+      await browser.evaluate(`(() => {
+        const content = document.querySelector('.cm-content');
+        content.focus();
+        const key = (key, shiftKey = false) => content.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, shiftKey, bubbles: true, cancelable: true }));
+        key('ArrowDown');
+        key('ArrowDown', true);
+        key('End', true);
+      })()`);
+      await until(() => browser.evaluate('!document.querySelector("[data-action=send-selection]").disabled'), 'a selection');
+      await browser.clickSelector('[data-action="send-selection"]');
+      await until(() => browser.evaluate('document.querySelector("#chips .editor-chip")?.textContent.includes("hello.ts:2–3")'), 'the selection chip');
+
+      script = [() => reply('Explained.'), () => reply('Read it.')];
+      const ask = async (message, count) => {
+        await browser.clickSelector('#input');
+        await browser.type(message);
+        await browser.clickSelector('#send');
+        await until(() => requests.length === count, 'the request');
+        await until(() => browser.evaluate('!document.body.classList.contains("busy")'), 'the end of the run');
+      };
+      await ask('Explain these lines', 1);
+      const first = JSON.stringify(requests[0].body.messages);
+      assert.match(first, /Selected lines 2-3/);
+      assert.ok(first.includes('export function greet(name: string): string {'), 'the selected text goes along');
+      assert.equal(await browser.evaluate('document.querySelectorAll("#chips .chip").length'), 0, 'the chip is used up');
+
+      await browser.clickSelector('[data-action="attach-open-file"]');
+      await until(() => browser.evaluate('[...document.querySelectorAll("#chips .chip")].some((c) => c.textContent.includes("src/hello.ts"))'), 'the file chip');
+      await ask('What does this file do?', 2);
+      assert.match(JSON.stringify(requests[1].body.messages), /<attached_file path=\\"src\/hello\.ts\\">/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
   it('only lets its own window in', async () => {
     const url = await launch();
     const { port } = new URL(url);

@@ -75,7 +75,14 @@ describe('Files tree', () => {
 });
 
 describe('editor pane', () => {
-  const head = { path: 'src/<x>/hello.ts', loaded: true, dirty: true, readOnly: false, running: false, saving: false };
+  const head = { path: 'src/<x>/hello.ts', loaded: true, dirty: true, readOnly: false, running: false, saving: false, hasSelection: false };
+
+  it('offers Send selection while text is selected, and Attach file', () => {
+    assert.match(editorHeadHtml(head), /data-action="send-selection" disabled/);
+    assert.match(editorHeadHtml({ ...head, hasSelection: true }), /data-action="send-selection" title="Send selection to Agent \(Ctrl\+L\)"/);
+    assert.match(editorHeadHtml(head), /data-action="attach-open-file"/);
+    assert.doesNotMatch(editorHeadHtml({ ...head, loaded: false }), /send-selection|attach-open-file/);
+  });
 
   it('offers Save only for unsaved changes, and says why not', () => {
     const save = (patch: Partial<typeof head>) => /<button class="btn small primary" data-action="save-file"([^>]*)>/.exec(editorHeadHtml({ ...head, ...patch }))?.[1] ?? '';

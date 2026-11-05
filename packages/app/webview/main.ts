@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentPhase, AgentUsage, FileChange, ModelInfo, Plan, SessionView, SubagentView, TaskSummary, ToolCallView, TranscriptItem, Usage } from '@orka/core';
 import { getLocale, setLocale, t, tn } from '@orka/core/src/i18n';
+import { isSecretFile } from '@orka/core/src/permissions/secrets';
 import { applyEvent, emptySession } from '@orka/core/src/ui/transcript';
 import { estimateCost } from '@orka/core/src/usage/pricing';
 import orkaLogo from '../media/orka-logo.svg';
@@ -24,7 +25,7 @@ import type {
 } from '../src/protocol';
 import { post, saveUiState, uiState } from './core/bridge';
 import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
-import type { EditorCursor, EditorHandle } from './core/editorApi';
+import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
@@ -508,8 +509,17 @@ function renderComposerMenu(open: boolean): void {
   if (!open) return;
   const item = (action: string, glyph: string, label: string, hint: string) =>
     `<button class="menu-item" role="menuitem" data-action="${action}">${icon(glyph)}<span>${escapeHtml(label)}</span><span class="menu-hint">${escapeHtml(hint)}</span></button>`;
+  // Desktop editor: its selection, or the whole file, while a file is open.
+  const fromEditor = editor?.handle
+    ? editor.cursor.selected
+      ? item('send-selection', 'edit', t('Selection from the editor'), 'Ctrl+L')
+      : item('attach-open-file', 'edit', t('The file open in the editor'), 'Ctrl+L')
+    : '';
   el.composerMenu.innerHTML =
-    item('attach-file', 'read', t('Attach a file'), '@') + item('attach-image', 'image', t('Add an image'), t('or paste')) + item('insert-command', 'skill', t('Use a skill or command'), '/');
+    item('attach-file', 'read', t('Attach a file'), '@') +
+    fromEditor +
+    item('attach-image', 'image', t('Add an image'), t('or paste')) +
+    item('insert-command', 'skill', t('Use a skill or command'), '/');
   el.composerMenu.querySelector<HTMLElement>('.menu-item')?.focus();
 }
 
@@ -613,6 +623,9 @@ if (layout === 'ide') {
     } else if (e.code === 'KeyN' && e.altKey) {
       e.preventDefault();
       post({ type: 'newTask' });
+    } else if (e.code === 'KeyL' && !e.altKey && editor?.handle) {
+      e.preventDefault();
+      void sendSelection();
     } else if (e.code === 'KeyS' && !e.altKey && editor && ui.view === 'editor') {
       // Ctrl+S with the focus on the editor's buttons or in the message box below it.
       e.preventDefault();
@@ -692,8 +705,13 @@ function syncFilesFolder(): void {
   const folder = filesAvailable() ? config!.folder : undefined;
   if (folder === tree.folder) return;
   const saved = uiState().editor;
-  // Its paths mean other files in another folder: the editor closes (the user was asked before a switch they made).
+  // Its paths mean other files in another folder: the editor closes (the user was asked before a switch they made),
+  // and lines picked from it are not sent.
   closeEditorNow();
+  if (composer.editor) {
+    composer.editor = undefined;
+    renderChips();
+  }
   tree.folder = folder;
   tree.dirs.clear();
   tree.expanded.clear();
@@ -963,6 +981,7 @@ function renderEditorHead(): void {
     readOnly: editor.readOnly,
     running: session.running,
     saving: editor.saving !== undefined,
+    hasSelection: editor.cursor.selected > 0,
   });
 }
 
@@ -1022,11 +1041,14 @@ function onFileContent(message: FileContent): void {
       phrases: editorPhrases(),
       onChange: editorChanged,
       onSave: () => void saveEditor(),
-      onSendSelection: () => undefined,
+      onSendSelection: () => void sendSelection(),
       onSelectionChange: (cursor) => {
         if (editor !== open) return;
+        const selected = !!cursor.selected !== !!open.cursor.selected;
         open.cursor = cursor;
         renderEditorStatus();
+        // Send selection is offered while there is one.
+        if (selected) renderEditorHead();
       },
       onEscape: () => el.input.focus(),
     });
@@ -1138,6 +1160,62 @@ async function overwriteEditor(): Promise<void> {
   if (answer === overwrite && editor === open) await saveEditor(hash);
 }
 
+/** A secret-looking file (.env, keys) goes to the agent only after the user confirms. */
+async function confirmSecret(path: string): Promise<boolean> {
+  if (!isSecretFile(path)) return true;
+  const add = t('Add');
+  const answer = await askInPage({
+    kind: 'message',
+    level: 'warning',
+    modal: true,
+    text: t('This looks like a secret file. Add it anyway?'),
+    detail: t('Once the agent has it, network tools ask you first for the rest of the task.'),
+    actions: [add],
+  });
+  return answer === add;
+}
+
+/** Send selection (Ctrl+L): the selected lines go with the next message, as shown in the buffer. Without a selection, the file is attached. */
+async function sendSelection(): Promise<void> {
+  const open = editor;
+  if (!open?.handle) return;
+  const range = open.handle.selection();
+  if (!range) {
+    await attachOpenFile();
+    return;
+  }
+  if (!(await confirmSecret(open.path)) || editor !== open) return;
+  composer.editor = { file: open.path, ...range, unsaved: open.dirty };
+  renderChips();
+  el.input.focus();
+}
+
+/** Attach file: the open file goes with the next message as it is on disk. */
+async function attachOpenFile(): Promise<void> {
+  const open = editor;
+  if (!open) return;
+  if (!(await confirmSecret(open.path)) || editor !== open) return;
+  if (!composer.attachments.includes(open.path)) composer.attachments.push(open.path);
+  renderChips();
+  if (open.dirty) {
+    onEvent({ type: 'notice', level: 'warning', message: t('{file} has unsaved changes; the agent gets the file as it is on disk.', { file: open.path }) });
+  }
+  el.input.focus();
+}
+
+/** The chip of the editor's lines in the message box. */
+function editorChipHtml(): string {
+  const picked = composer.editor;
+  if (!picked) return '';
+  const name = picked.file.split('/').pop() ?? picked.file;
+  const lines = picked.startLine === picked.endLine ? `${picked.startLine}` : `${picked.startLine}–${picked.endLine}`;
+  const where = t('Lines {a}–{b}', { a: picked.startLine, b: picked.endLine });
+  return `<span class="chip editor-chip" title="${attr(`${picked.file} · ${where}`)}">${icon('edit')}<span class="ellipsis">${escapeHtml(`${name}:${lines}`)}</span>${
+    picked.unsaved ? `<span class="muted">${escapeHtml(t('(unsaved)'))}</span>` : ''
+  }
+    <button class="chip-x" data-action="remove-editor-context" aria-label="${attr(t('Remove {file}', { file: `${name}:${lines}` }))}">${icon('x')}</button></span>`;
+}
+
 if (layout === 'ide') {
   // Unsaved changes are only in this page: closing or reloading it asks first.
   window.addEventListener('beforeunload', (e) => {
@@ -1191,13 +1269,16 @@ function commands(): Command[] {
 const composer = {
   attachments: [] as string[],
   images: [] as ImageAttachment[],
+  /** Desktop editor: the lines picked to send with the next message (one at a time). */
+  editor: undefined as undefined | (EditorRange & { file: string; unsaved: boolean }),
   suggest: undefined as undefined | { kind: 'command' | 'file'; items: Array<{ value: string; label: string; detail?: string; skill?: boolean }>; index: number; query: string },
   fileTimer: 0,
 };
 
 function renderChips(): void {
-  el.chips.hidden = !composer.attachments.length && !composer.images.length;
+  el.chips.hidden = !composer.attachments.length && !composer.images.length && !composer.editor;
   el.chips.innerHTML =
+    editorChipHtml() +
     composer.images
       .map(
         (img, i) => `<span class="chip image-chip" title="${attr(img.name)}">${img.thumb ? `<img src="${attr(img.thumb)}" alt="">` : icon('image')}
@@ -1421,15 +1502,19 @@ function runCommand(text: string): boolean {
 }
 
 function send(text: string, skills?: string[]): void {
+  const selection = layout === 'ide' ? composer.editor : undefined;
   post({
     type: 'send',
     text,
     files: composer.attachments.length ? [...composer.attachments] : undefined,
     skills,
     images: composer.images.length ? [...composer.images] : undefined,
+    // The desktop editor's lines become the request's active file and selection.
+    ...(selection ? { editor: { file: selection.file, selection: { startLine: selection.startLine, endLine: selection.endLine, text: selection.text } } } : {}),
   });
   composer.attachments = [];
   composer.images = [];
+  composer.editor = undefined;
   renderChips();
 }
 
@@ -1832,6 +1917,18 @@ document.addEventListener('click', (e) => {
       break;
     case 'editor-overwrite':
       void overwriteEditor();
+      break;
+    case 'send-selection':
+      renderComposerMenu(false);
+      void sendSelection();
+      break;
+    case 'attach-open-file':
+      renderComposerMenu(false);
+      void attachOpenFile();
+      break;
+    case 'remove-editor-context':
+      composer.editor = undefined;
+      renderChips();
       break;
     case 'dismiss-editor-banner':
       if (editor) editor.banner = undefined;

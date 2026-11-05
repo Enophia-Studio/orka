@@ -128,6 +128,8 @@ export interface EditorHeadView {
   /** An agent works: saving waits until it stops. */
   running: boolean;
   saving: boolean;
+  /** Text is selected: Send selection is offered. */
+  hasSelection: boolean;
 }
 
 export function editorHeadHtml(v: EditorHeadView): string {
@@ -152,6 +154,12 @@ export function editorHeadHtml(v: EditorHeadView): string {
     v.dirty ? `<span class="dirty-dot" title="${attr(t('Unsaved changes'))}"></span>` : ''
   }</div>
     <span class="spacer"></span>
+    ${
+      v.loaded
+        ? `<button class="btn small" data-action="send-selection"${v.hasSelection ? '' : ' disabled'} title="${attr(`${t('Send selection to Agent')} (Ctrl+L)`)}">${icon('send')}${escapeHtml(t('Send selection to Agent'))}</button>
+    <button class="icon-btn" data-action="attach-open-file" aria-label="${attr(t('Attach file'))}" title="${attr(t('Attach file'))}">${icon('plus')}</button>`
+        : ''
+    }
     ${save}
     <button class="icon-btn" data-action="open-external-file" aria-label="${attr(t('Open in system app'))}" title="${attr(t('Open in system app'))}">${icon('handoff')}</button>
     <button class="icon-btn" data-action="close-editor" aria-label="${attr(t('Close the file'))}" title="${attr(t('Close the file'))}">${icon('x')}</button>`;
