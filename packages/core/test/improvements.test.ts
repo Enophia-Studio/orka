@@ -3,7 +3,7 @@ import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'n
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { ChangeTracker } from '../src/changes/ChangeTracker';
-import { diffLines, hunksBetween, revertHunkIn, splitLines, unifiedDiff } from '../src/changes/diff';
+import { diffLines, hunkHeader, hunksBetween, revertHunkIn, splitLines, unifiedDiff } from '../src/changes/diff';
 import { NodeHost } from '../src/host/NodeHost';
 import { dictionaryKeys, setLocale, t, tn } from '../src/i18n';
 import { TR } from '../src/i18n/tr';
@@ -123,6 +123,218 @@ describe('change tracker: hunk revert and checkpoints', () => {
     changes.importCheckpoint([{ path: '../evil.txt', original: 'x' }, { path: 'ok.txt', original: null }]);
     assert.equal(changes.isTracked(path.join(ws.root, 'ok.txt')), true);
     assert.equal(changes.isTracked(path.join(ws.root, '..', 'evil.txt')), false);
+  });
+});
+
+describe('change tracker: files the user edited by hand', () => {
+  let ws: ReturnType<typeof tempWorkspace>;
+  let host: NodeHost;
+  let changes: ChangeTracker;
+  const file = (name = 'app.txt') => path.join(ws.root, name);
+  const read = (name = 'app.txt') => readFileSync(file(name), 'utf8');
+  const lines = (...values: string[]) => values.map((v) => `${v}\n`).join('');
+  // Twelve lines, far enough apart for separate hunks and a clean three-way merge.
+  const original = lines('l1', 'l2', 'l3', 'l4', 'l5', 'l6', 'l7', 'l8', 'l9', 'l10', 'l11', 'l12');
+  const agent = original.replace('l2\n', 'AGENT2\n').replace('l11\n', 'AGENT11\n');
+  const agentWrites = async (content: string, name?: string) => {
+    await changes.recordBefore(file(name));
+    writeFileSync(file(name), content);
+  };
+  const userSaves = (content: string, name?: string) => {
+    const before = read(name);
+    writeFileSync(file(name), content);
+    changes.noteUserEdit(file(name), before, content);
+  };
+
+  beforeEach(() => {
+    ws = tempWorkspace();
+    host = new NodeHost({ workspaceRoot: ws.root, approve: async () => ({ approved: true }) });
+    changes = new ChangeTracker(host);
+    writeFileSync(file(), original);
+    writeFileSync(file('other.txt'), 'other\n');
+  });
+  afterEach(() => ws.cleanup());
+
+  it('Revert leaves a user-edited file alone; forced, it reverts it', async () => {
+    await agentWrites(agent);
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    assert.equal(changes.isUserEdited(file()), true);
+    assert.equal(await changes.revert(file()), false);
+    assert.equal(read(), agent.replace('l6\n', 'MINE6\n'));
+    assert.equal(await changes.revert(file(), { force: true }), true);
+    assert.equal(read(), original);
+    assert.equal(changes.isUserEdited(file()), false);
+  });
+
+  it('Revert All skips user-edited files and returns only the files it reverted', async () => {
+    await agentWrites(agent);
+    await agentWrites('changed\n', 'other.txt');
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    assert.deepEqual(changes.skippedUserEdited(), ['app.txt']);
+    assert.deepEqual(await changes.revertAll(), ['other.txt']);
+    assert.equal(read('other.txt'), 'other\n');
+    assert.equal(read(), agent.replace('l6\n', 'MINE6\n'));
+    assert.deepEqual((await changes.list()).map((c) => [c.relPath, c.userEdited]), [['app.txt', true]]);
+  });
+
+  it("undoes only the agent's part with a clean merge, and writes nothing on a conflict", async () => {
+    await agentWrites(agent);
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    assert.equal(await changes.revertAgentPart(file()), 'reverted');
+    assert.equal(read(), original.replace('l6\n', 'MINE6\n'));
+    assert.equal(changes.isTracked(file()), false);
+    assert.equal(changes.isUserEdited(file()), false);
+
+    writeFileSync(file(), original);
+    await agentWrites(agent);
+    const mine = agent.replace('AGENT2\n', 'MINE2\n');
+    userSaves(mine);
+    assert.equal(await changes.revertAgentPart(file()), 'conflict');
+    assert.equal(read(), mine);
+    assert.equal(changes.isUserEdited(file()), true);
+  });
+
+  it("refuses to merge after someone else wrote the file, or without git; added files don't apply", async () => {
+    await agentWrites(agent);
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    writeFileSync(file(), 'someone else\n');
+    assert.equal(await changes.revertAgentPart(file()), 'changed');
+    assert.equal(read(), 'someone else\n');
+
+    writeFileSync(file(), agent.replace('l6\n', 'MINE6\n'));
+    const PATH = process.env.PATH;
+    process.env.PATH = path.join(ws.root, 'no-programs-here');
+    try {
+      assert.equal(await changes.revertAgentPart(file()), 'unavailable');
+    } finally {
+      process.env.PATH = PATH;
+    }
+    assert.equal(read(), agent.replace('l6\n', 'MINE6\n'));
+
+    await agentWrites('new\n', 'new.txt');
+    userSaves('new and mine\n', 'new.txt');
+    assert.equal(await changes.revertAgentPart(file('new.txt')), 'notApplicable');
+  });
+
+  it("refuses a hunk that includes the user's lines or whose header is stale; reverts the others", async () => {
+    const long = lines(...Array.from({ length: 24 }, (_, i) => `l${i + 1}`));
+    writeFileSync(file(), long);
+    const byAgent = long.replace('l2\n', 'AGENT2\n').replace('l12\n', 'AGENT12\n').replace('l22\n', 'AGENT22\n');
+    await agentWrites(byAgent);
+    // The user edits right next to the agent's first change.
+    const mine = byAgent.replace('l3\n', 'MINE3\n');
+    userSaves(mine);
+    const hunks = await changes.hunks(file());
+    assert.equal(hunks.length, 3);
+    assert.deepEqual(await Promise.all([0, 1, 2].map((i) => changes.hunkTouchesUserEdit(file(), i))), [true, false, false]);
+    assert.equal(await changes.revertHunk(file(), 0), false);
+    assert.equal(await changes.revertHunk(file(), 2, { header: hunkHeader(hunks[1]) }), false, 'a stale header');
+    assert.equal(read(), mine);
+    assert.equal(await changes.revertHunk(file(), 2, { header: hunkHeader(hunks[2]) }), true);
+    assert.equal(read(), mine.replace('AGENT22\n', 'l22\n'));
+    // After that write the user's lines are still told apart from the agent's.
+    assert.equal(await changes.hunkTouchesUserEdit(file(), 1), false);
+    assert.equal(await changes.revertHunk(file(), 1), true);
+    assert.equal(read(), long.replace('l2\n', 'AGENT2\n').replace('l3\n', 'MINE3\n'));
+    assert.equal(await changes.revertHunk(file(), 0, { force: true }), true);
+    assert.equal(read(), long);
+    assert.equal(changes.isUserEdited(file()), false);
+  });
+
+  it("a save after a later agent change forgets the agent's part, so neither Revert takes that change for the user's", async () => {
+    changes.startEpoch();
+    await agentWrites(agent);
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    // The next request changes another region; the user then saves again.
+    changes.startEpoch();
+    await agentWrites(agent.replace('l6\n', 'MINE6\n').replace('l9\n', 'AGENT9\n'));
+    userSaves(agent.replace('l6\n', 'MINE6\n').replace('l9\n', 'AGENT9\n').replace('l7\n', 'MINE7\n'));
+    const now = read();
+    assert.equal(await changes.revertAgentPart(file()), 'unavailable');
+    assert.equal(read(), now);
+    assert.equal(changes.isUserEdited(file()), true);
+    const hunks = await changes.hunks(file());
+    assert.ok(hunks.length >= 1);
+    for (let i = 0; i < hunks.length; i++) assert.equal(await changes.hunkTouchesUserEdit(file(), i), true);
+  });
+
+  it('a second save of what the user last saved keeps the agent part known', async () => {
+    await agentWrites(agent);
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    userSaves(agent.replace('l6\n', 'MINE6\n').replace('l7\n', 'MINE7\n'));
+    assert.equal(await changes.revertAgentPart(file()), 'reverted');
+    assert.equal(read(), original.replace('l6\n', 'MINE6\n').replace('l7\n', 'MINE7\n'));
+  });
+
+  it("plain Revert keeps an earlier save's record, so Go back still keeps the user's content", async () => {
+    changes.startEpoch();
+    await agentWrites(agent);
+    changes.accept(file());
+    const mine = agent.replace('l6\n', 'MINE6\n');
+    userSaves(mine);
+    changes.startEpoch();
+    await agentWrites(mine.replace('l9\n', 'AGENT9\n'));
+    assert.equal(changes.isUserEdited(file()), false);
+    assert.equal(await changes.revert(file()), true);
+    assert.equal(read(), mine);
+    assert.deepEqual(await changes.rewindTo(0), { restored: [], kept: ['app.txt'] });
+    assert.equal(read(), mine);
+  });
+
+  it('counts a save that changes only line endings, not one that changes nothing; ignores untracked files', async () => {
+    await agentWrites(agent);
+    changes.noteUserEdit(file(), agent, agent);
+    assert.equal(changes.isUserEdited(file()), false);
+    userSaves(agent.replace(/\n/g, '\r\n'));
+    assert.equal(changes.isUserEdited(file()), true);
+    userSaves('mine\n', 'other.txt');
+    assert.equal(changes.isUserEdited(file('other.txt')), false);
+  });
+
+  it('keeps the flag through a checkpoint, as a bare flag above the size cap', async () => {
+    await agentWrites(agent);
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    await agentWrites('x'.repeat(10) + '\n', 'other.txt');
+    userSaves('y'.repeat(1_000_001), 'other.txt');
+    const saved = JSON.parse(JSON.stringify(changes.exportCheckpoint()));
+    assert.deepEqual(
+      saved.map((e: { path: string; userEdited?: unknown }) => [e.path, e.userEdited === true ? true : typeof e.userEdited]),
+      [['app.txt', 'object'], ['other.txt', true]],
+    );
+    const reopened = new ChangeTracker(host);
+    reopened.importCheckpoint(saved);
+    assert.equal(reopened.isUserEdited(file()), true);
+    assert.equal(reopened.isUserEdited(file('other.txt')), true);
+    assert.equal(await reopened.revert(file('other.txt')), false);
+    assert.equal(await reopened.revertAgentPart(file('other.txt')), 'unavailable');
+    assert.equal(await reopened.revertAgentPart(file()), 'reverted');
+    assert.equal(read(), original.replace('l6\n', 'MINE6\n'));
+  });
+
+  it('Keep, a new task and an import drop the flag; Compact keeps it', async () => {
+    await agentWrites(agent);
+    userSaves(agent.replace('l6\n', 'MINE6\n'));
+    changes.clearEpochs();
+    assert.equal(changes.isUserEdited(file()), true);
+    changes.accept(file());
+    assert.equal(changes.isUserEdited(file()), false);
+
+    await agentWrites(agent + 'more\n');
+    userSaves('mine\n');
+    changes.clear();
+    assert.equal(changes.isUserEdited(file()), false);
+
+    await agentWrites('again\n');
+    userSaves('mine again\n');
+    changes.importCheckpoint([{ path: 'app.txt', original }]);
+    assert.equal(changes.isUserEdited(file()), false);
+
+    // A file edited back to its original leaves the list, and the flag with it.
+    await agentWrites('agent\n', 'other.txt');
+    userSaves('other\n', 'other.txt');
+    assert.equal(changes.isUserEdited(file('other.txt')), true);
+    await changes.list();
+    assert.equal(changes.isUserEdited(file('other.txt')), false);
   });
 });
 

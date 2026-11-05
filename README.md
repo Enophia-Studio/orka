@@ -44,6 +44,7 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 - [Tasks, history and tokens](#tasks-history-and-tokens)
 - [Orka CLI](#orka-cli)
 - [Orka Desktop](#orka-desktop)
+  - [Files (desktop)](#files-desktop)
   - [Radar (desktop)](#radar-desktop)
 - [Configuration](#configuration)
 - [Development](#development)
@@ -61,6 +62,7 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 - **Learns your project:** after a task, lasting lessons (the command that works, a pitfall, a convention) are kept in `.project-ai/lessons.md` for the next task.
 - **Skills and MCP:** built-in playbooks (Unity, debugging, testing, security, ...), your own skills, and tools from MCP servers (Unity Editor, Blender, databases, ...).
 - **Long tasks that stay cheap:** append-only conversations for prompt caching, a token-friendly Supervisor, compaction with an exact handoff note, a token budget, a light model for simple questions and a fallback model when a provider hits its limit.
+- **Files (desktop):** browse the open folder, edit text files and send the selected lines or a whole file to the agent; what you edit yourself survives Revert all and Go back.
 - **Radar (desktop, off until you turn it on):** watches the public release notes of other AI coding tools and, when you ask, compares what they shipped with Orka and proposes what to add.
 - **English and Turkish** UI.
 
@@ -69,7 +71,7 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 **VS Code extension (quickest):** download `orka-vscode-<version>.vsix` from the [latest release](https://github.com/Enophia-Studio/orka/releases/latest), then run **Extensions: Install from VSIX…** in VS Code (1.101 or newer), or:
 
 ```bash
-code --install-extension orka-vscode-0.4.0.vsix
+code --install-extension orka-vscode-0.5.0.vsix
 ```
 
 **Desktop app for Windows:** download `orka-desktop.exe` from the same release and run it; it needs no Node.js, only Edge or Chrome for its window. Only the Orka window opens; closing it quits Orka. If it does not start, the reason is in `~/.orka/desktop/desktop.log`. The file is not code-signed yet, so Windows SmartScreen may ask you to confirm the first start (**More info → Run anyway**), and on PCs where Windows' Smart App Control is on, it is blocked; use the CLI or run it from source there.
@@ -77,7 +79,7 @@ code --install-extension orka-vscode-0.4.0.vsix
 **CLI:** with **Node.js 22+**, install the `orka` command from the release (it is not on npm yet):
 
 ```bash
-npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.4.0/orka-agent-0.4.0.tgz
+npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.5.0/orka-agent-0.5.0.tgz
 ```
 
 The extension, the desktop app and the CLI package each include a `THIRD_PARTY_NOTICES.txt` with the licenses of the open-source software inside them.
@@ -100,7 +102,7 @@ npm run package
 ```
 
 ```bash
-code --install-extension packages/vscode-extension/dist/orka-vscode-0.4.0.vsix
+code --install-extension packages/vscode-extension/dist/orka-vscode-0.5.0.vsix
 ```
 
 **Desktop app** — run it, or build the single executable yourself (`packages/desktop/dist/orka-desktop.exe`, or `orka-desktop` on Linux):
@@ -214,10 +216,12 @@ Orka never reads, stores or forwards an agent's sign-in, only runs the unmodifie
 - A repository whose own git config makes git run programs (an `fsmonitor` hook, `core.hooksPath`, filters other than Git LFS, diff drivers, signature programs, pagers, includes; also in nested repositories) is detected: Orka then does not run `git status` on its own, and git commands ask. Orka's own git calls never use fsmonitor, external diff, textconv or signature programs.
 - **Windows:** Orka starts git, your shell and its other helpers by their full path from `PATH`, never from the open folder. In the desktop app and the CLI, nothing Orka starts (commands, background processes, MCP servers, agents, terminal windows) picks a program from its current folder by its bare name: use `.\name` or a full path, e.g. `.\gradlew`.
 - `open_browser` only hands web pages, images, PDFs and text files to the system, never scripts or executables.
+- **The desktop editor** reads and writes only existing files inside the open folder. Every read and save checks the real path of the file it opens, so a link or junction that leads out of the folder is neither listed nor followed, and `.git` is never shown. A save checks under the same open file that the file is still the one you opened; it never creates, renames or deletes a file.
 
 ## Reviewing changes
 
 - **Changes panel:** every changed file with a diff; keep or revert per file, per hunk (*Revert this part*) or all at once. The agent is told what you reverted.
+- **Your own edits stay (desktop):** a file you saved in the [editor](#files-desktop) after an agent changed it gets a pencil mark, **Edited by you**, in Changes and in the Files tree. **Revert all** and **Go back** keep it as you saved it and name it, a part (hunk) that touches lines you edited is not reverted, and **Revert** on the file offers only **Undo only the agent's part**: with Git, it takes out the agent's lines and keeps yours when they are apart, and otherwise changes nothing and says why. Nothing offers to throw your edits away.
 - **Inline review (VS Code):** added lines are highlighted, removed lines are marked, and each change has **Keep | Revert | Orka change 1/3** above it (`orka.inlineReview`).
 - **Terminal commands:** before and after a command that can change files, Orka takes a snapshot of the workspace in a **private git directory** (your own repository is never touched; `node_modules`, `Library`, `obj` and `.gitignore`d files are skipped). Files the command changed, added or deleted (`package-lock.json` from `npm install`, generators, formatters) show up in the Changes panel and can be reverted (`orka.trackCommandChanges`).
 - **Editor quick actions:** **Fix with Orka** in the lightbulb menu (Ctrl+.) of an error or warning; **Orka: Explain Selection** and **Orka: Ask About Selection…** in the editor's context menu.
@@ -317,8 +321,9 @@ Orka in its own window, without VS Code: the same chat, Agents panel, settings, 
 - **Sessions on the left:** the tasks of your recent project folders, newest first, with a search box. **New session** starts one in the open folder (the **+** next to a folder starts one there), clicking a session opens it (switching folders when needed), and the bin deletes it.
 - **The conversation in the middle**, in a readable column. Tool calls are quiet one-line entries that open to show their result; approvals, sub-agents and the Supervisor keep their cards.
 - **The message box holds its controls:** **+** attaches a file (`@`), adds an image or picks a skill or command (`/`); next to it the permission mode, on the right the main agent's model and the send button. A new session starts with the box in the middle of the window and a few suggestions under it.
-- **The plan and the changes on the right**, in their own panel while a task has them; keep or revert files and parts of files there. [Radar](#radar-desktop) has a tab next to them.
-- **Shortcuts:** Ctrl+B shows or hides the sessions (closed, they become a narrow rail of icons), Ctrl+K searches them, Ctrl+Alt+B shows or hides the panel on the right (plan, changes and Radar), Ctrl+Alt+N starts a new session. A finished reply has a copy button, and while you scroll back a button takes you to the newest message.
+- **The plan and the changes on the right**, in their own panel while a task has them; keep or revert files and parts of files there. [Files](#files-desktop) and [Radar](#radar-desktop) have tabs next to them.
+- **Files:** the open folder as a tree, and an editor that shows a file in place of the conversation; see [Files (desktop)](#files-desktop).
+- **Shortcuts:** Ctrl+B shows or hides the sessions (closed, they become a narrow rail of icons), Ctrl+K searches them, Ctrl+Alt+B shows or hides the panel on the right (plan, changes, Files and Radar), Ctrl+Shift+E opens Files, Ctrl+Alt+N starts a new session. In the editor, Ctrl+S saves, Ctrl+L sends the selection to the agent and Esc goes back to the message box. A finished reply has a copy button, and while you scroll back a button takes you to the newest message.
 - **Orka's own light and dark theme**: it follows the system, or pick one at the bottom of the session list or in **Settings → Control → Appearance** (setting `desktop.theme`). The single-column window of earlier versions is still there: **Layout → Single column** (`desktop.layout`).
 - Open a project with **Open folder…** (recent folders are listed), or start with a folder: `orka-desktop.exe D:\Projects\Game` (from source: `node packages/desktop/dist/orka-desktop.js D:\Projects\Game`).
 - `orka-desktop.exe` is a windowed program: only the Orka window opens. If it cannot start, it says why in a message box, and `~/.orka/desktop/desktop.log` has the details. Run from a terminal, it prints nothing (`--version`, `--help`) unless its output is redirected; `node packages/desktop/dist/orka-desktop.js` prints as usual.
@@ -327,6 +332,19 @@ Orka in its own window, without VS Code: the same chat, Agents panel, settings, 
 - The UI is served by a local server bound to `127.0.0.1` on a random port, with a per-window secret cookie (the window gets it through a one-time start link, so the browser's command line holds nothing reusable); requests with another host name (DNS rebinding) or not coming from the page itself are rejected, and a strict CSP blocks external scripts and images.
 - **API keys are kept in the operating system's protected storage:** DPAPI on Windows (only your user account can decrypt them), Keychain on macOS, Secret Service on Linux.
 - Task history and snapshots are shared with the CLI (`~/.orka/tasks`), so `orka -c` can continue a task started in Desktop.
+
+### Files (desktop)
+
+The window's **Files** tab (next to the plan and changes; **Files** at the bottom of the session list, its icon in the closed rail, or Ctrl+Shift+E) shows the open folder as a tree. Click a file to open it in the editor, which takes the place of the conversation; the message box stays below it, and the **Chat | file** switch in the title bar goes back and forth. The classic single-column window has no Files tab.
+
+- **The tree** lists a folder when you open it, with folders first. It marks the open file, unsaved changes, the agent's changes (A, M, D) and files you edited, and dims dependency and build folders such as `node_modules` and `Library`. `.git` and links that lead out of the folder are not listed.
+- **The editor** (CodeMirror 6) opens UTF-8 text files up to 2 MB, with syntax colours for JavaScript/TypeScript, JSON, CSS and Unity's USS, HTML, Markdown, Python, YAML (and Unity's text assets) and C# and other C-like languages; other text files open as plain text. Binary, non-UTF-8 and larger files are not opened (**Open in system app** hands them to their own program; only documents, images and media, never programs or scripts). Ctrl+F searches, the status line shows the line and column, the language, the line endings and the encoding.
+- **Saving (Ctrl+S)** keeps the file's line endings (LF or CRLF) and its UTF-8 BOM. A file with mixed line endings opens read-only, so it is never rewritten by accident. Orka saves only files that already exist.
+- **When the file changes on disk** (the agent, Unity, git), an editor without unsaved changes follows it. With unsaved changes, a banner offers **Reload**, **Compare** (the file on disk against your text) or **Keep mine**, which asks before it overwrites the newer file. A save that finds the file changed is refused the same way, so a save never silently overwrites someone else's change.
+- **No save while an agent works** or a [Freebuff hand-off](#tasks-history-and-tokens) is open: Orka would take your save for the agent's change. You can keep typing and save when it stops.
+- **Send to the agent:** **Send selection** (or Ctrl+L) adds the selected lines to the next message as a chip such as `hello.ts:2–3`; the agent gets the file, the line numbers and the text as the editor shows it. **Attach file** adds the whole file as it is on disk. A secret-looking file (`.env`, keys, certificates) is added only after you confirm, and web access and MCP tools then ask for approval for the rest of the task.
+- **Your edits are protected:** after you save a file the agent changed, Revert all, Go back and Revert keep your edits (see [Reviewing changes](#reviewing-changes)). The agent is told that you edited the file and re-reads it before editing it again.
+- Leaving a file with unsaved changes (another file, another folder, closing the window) asks first. Only the open file's path is remembered across a reload, never its text.
 
 ### Radar (desktop)
 

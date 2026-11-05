@@ -1,0 +1,234 @@
+/* The desktop app's file editor (CodeMirror 6, webview/editor). Loaded by the desktop page only,
+   after ide.css and before the theme. CodeMirror adds its own base styles at run time, after this
+   file, so these rules carry one more class (.editor-host) to win over them. Syntax colors are the
+   tok-* classes of @lezer/highlight's classHighlighter, from the theme's --tok-* tokens. */
+
+.editor-host .cm-editor {
+  height: 100%;
+  font-size: var(--fs-13, 13px);
+  color: var(--fg-strong, var(--fg));
+  background: var(--vscode-editor-background, var(--bg));
+}
+
+.editor-host .cm-editor.cm-focused {
+  outline: none;
+}
+
+.editor-host .cm-scroller {
+  font-family: var(--vscode-editor-font-family, monospace);
+  line-height: 1.55;
+}
+
+.editor-host .cm-content {
+  padding: 6px 0 40px;
+  caret-color: var(--fg-strong, var(--fg));
+}
+
+.editor-host .cm-gutters {
+  color: var(--muted);
+  background: var(--vscode-editor-background, var(--bg));
+  border-right: 1px solid var(--hairline, var(--border));
+}
+
+.editor-host .cm-lineNumbers .cm-gutterElement {
+  padding: 0 10px 0 14px;
+}
+
+.editor-host .cm-activeLine {
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+.editor-host .cm-activeLineGutter {
+  color: var(--fg-strong, var(--fg));
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+}
+
+.editor-host .cm-editor .cm-cursor {
+  border-left-color: var(--fg-strong, var(--fg));
+}
+
+.editor-host .cm-editor .cm-matchingBracket {
+  color: inherit;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.editor-host .cm-editor .cm-nonmatchingBracket {
+  color: var(--err);
+}
+
+.editor-host .cm-editor .cm-selectionMatch {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.editor-host .cm-editor .cm-searchMatch {
+  background: color-mix(in srgb, var(--warn) 25%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
+}
+
+.editor-host .cm-editor .cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.editor-host .cm-editor .cm-specialChar {
+  color: var(--err);
+}
+
+/* The search and go-to-line panels. */
+.editor-host .cm-editor .cm-panels {
+  color: var(--fg);
+  background: var(--surface);
+  border-color: var(--hairline, var(--border));
+}
+
+.editor-host .cm-editor .cm-panel.cm-search {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 6px 34px 6px 10px;
+  font-family: var(--vscode-font-family);
+  font-size: var(--fs-12-5, 12.5px);
+}
+
+.editor-host .cm-editor .cm-panel.cm-search br {
+  display: none;
+}
+
+.editor-host .cm-editor .cm-panel label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+}
+
+.editor-host .cm-editor .cm-textfield {
+  height: 26px;
+  margin: 0;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--vscode-input-foreground, var(--fg));
+  background: var(--input-bg, var(--bg));
+  border: 1px solid var(--input-border, var(--border));
+  border-radius: var(--radius-sm, 4px);
+}
+
+.editor-host .cm-editor .cm-textfield:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.editor-host .cm-editor .cm-button {
+  height: 26px;
+  margin: 0;
+  padding: 0 10px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--vscode-button-secondaryBackground, transparent);
+  background-image: none;
+  border: 1px solid var(--hairline, var(--border));
+  border-radius: var(--radius-sm, 4px);
+}
+
+.editor-host .cm-editor .cm-button:hover {
+  background: var(--vscode-button-secondaryHoverBackground, var(--hover));
+}
+
+.editor-host .cm-editor .cm-panel button[name='close'] {
+  top: 8px;
+  right: 10px;
+  font-size: 18px;
+  color: var(--muted);
+}
+
+/* ---------------------------------------------------------------- syntax colors */
+
+.tok-keyword,
+.tok-operatorKeyword,
+.tok-controlKeyword,
+.tok-modifier {
+  color: var(--tok-keyword, #7c3aed);
+}
+
+.tok-string,
+.tok-character,
+.tok-attributeValue {
+  color: var(--tok-string, #0f7b45);
+}
+
+.tok-comment,
+.tok-lineComment,
+.tok-blockComment,
+.tok-docComment {
+  font-style: italic;
+  color: var(--tok-comment, #8a8a83);
+}
+
+.tok-number,
+.tok-bool,
+.tok-atom,
+.tok-literal {
+  color: var(--tok-number, #b45309);
+}
+
+.tok-typeName,
+.tok-className,
+.tok-namespace {
+  color: var(--tok-type, #0e7490);
+}
+
+.tok-propertyName,
+.tok-function {
+  color: var(--tok-property, #1d4ed8);
+}
+
+.tok-definition {
+  color: var(--tok-definition, inherit);
+}
+
+.tok-meta,
+.tok-macroName,
+.tok-annotation {
+  color: var(--tok-meta, #a16207);
+}
+
+.tok-tagName {
+  color: var(--tok-tag, #b42318);
+}
+
+.tok-attributeName,
+.tok-labelName {
+  color: var(--tok-attribute, #9a6b00);
+}
+
+.tok-heading {
+  font-weight: 600;
+  color: var(--tok-keyword, #7c3aed);
+}
+
+.tok-link,
+.tok-url {
+  color: var(--link);
+  text-decoration: underline;
+}
+
+.tok-emphasis {
+  font-style: italic;
+}
+
+.tok-strong {
+  font-weight: 600;
+}
+
+.tok-strikethrough {
+  text-decoration: line-through;
+}
+
+.tok-invalid {
+  color: var(--err);
+}
+
+.tok-punctuation,
+.tok-operator {
+  color: var(--tok-punctuation, inherit);
+}

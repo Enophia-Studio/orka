@@ -152,7 +152,12 @@ export class FakeShell implements AppShell {
     return undefined;
   }
 
-  async openFile(): Promise<void> {}
+  /** Files openFile() was asked to open. */
+  readonly openedFiles: string[] = [];
+
+  async openFile(absPath: string): Promise<void> {
+    this.openedFiles.push(absPath);
+  }
 
   async openExternal(target: string): Promise<boolean> {
     this.opened.push(target);

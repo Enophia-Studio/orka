@@ -5,6 +5,9 @@ import { post } from '../core/bridge';
 import { attr, escapeHtml, icon } from '../core/dom';
 
 const dialogs = new Map<string, DialogView>();
+/** Questions the page asks itself (askInPage): their answers stay in the page. */
+const pageQuestions = new Map<string, (value: string | number | undefined) => void>();
+let pageQuestionId = 0;
 const dialogLayer = document.createElement('div');
 dialogLayer.className = 'dialogs';
 document.body.appendChild(dialogLayer);
@@ -18,13 +21,30 @@ export function showDialog(id: string, dialog: DialogView): void {
 
 export function answerDialog(id: string, value: string | number | undefined): void {
   if (!dialogs.delete(id)) return;
-  post({ type: 'dialogResult', id, value });
+  // Only ids this page made itself ("page-<n>") are its own questions; any other id is the app's.
+  const answer = id.startsWith('page-') ? pageQuestions.get(id) : undefined;
+  if (typeof answer === 'function') {
+    pageQuestions.delete(id);
+    answer(value);
+  } else post({ type: 'dialogResult', id, value });
   renderDialogs();
 }
 
 /** The app closed a question itself (e.g. it was answered elsewhere). */
 export function closeDialog(id: string): void {
   if (dialogs.delete(id)) renderDialogs();
+}
+
+/**
+ * A question the page asks without the app (the desktop editor's unsaved changes): resolves with
+ * the action, the text entered or the index picked; undefined when cancelled.
+ */
+export function askInPage(dialog: DialogView): Promise<string | number | undefined> {
+  const id = `page-${++pageQuestionId}`;
+  return new Promise((resolve) => {
+    pageQuestions.set(id, resolve);
+    showDialog(id, dialog);
+  });
 }
 
 /** A modal question is open: keyboard shortcuts of the page stay out of its way. */

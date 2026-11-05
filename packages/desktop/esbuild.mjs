@@ -33,8 +33,8 @@ const results = await Promise.all([
     minify: production,
     metafile: true,
   }),
-  // The chat UI is the same one the VS Code extension shows (packages/app).
-  ...webviewBuilds('dist', { production }).map((options) => esbuild.build(options)),
+  // The chat UI is the same one the VS Code extension shows (packages/app), plus the file editor.
+  ...webviewBuilds('dist', { production, editor: true }).map((options) => esbuild.build(options)),
 ]);
 chmodSync('dist/orka-desktop.js', 0o755);
 // scripts/build-exe.mjs adds the license of the Node runtime it builds in.

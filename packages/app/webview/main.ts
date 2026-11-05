@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentPhase, AgentUsage, FileChange, ModelInfo, Plan, SessionView, SubagentView, TaskSummary, ToolCallView, TranscriptItem, Usage } from '@orka/core';
 import { getLocale, setLocale, t, tn } from '@orka/core/src/i18n';
+import { isSecretFile } from '@orka/core/src/permissions/secrets';
 import { applyEvent, emptySession } from '@orka/core/src/ui/transcript';
 import { estimateCost } from '@orka/core/src/usage/pricing';
 import orkaLogo from '../media/orka-logo.svg';
@@ -7,6 +8,8 @@ import type {
   AgentCliView,
   AgentView,
   ConfigView,
+  Eol,
+  FileReason,
   HunkView,
   ImageAttachment,
   McpServerView,
@@ -22,9 +25,27 @@ import type {
 } from '../src/protocol';
 import { post, saveUiState, uiState } from './core/bridge';
 import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
+import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
-import { answerDialog, closeDialog, modalOpen, showDialog } from './features/dialogs';
+import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
+import { hunksHtml } from './features/hunks';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
+import {
+  changePath,
+  editorBannerHtml,
+  editorHeadHtml,
+  editorStatusHtml,
+  fileReasonText,
+  filesEntryHtml,
+  filesPanelHtml,
+  fileTreeHtml,
+  indentTree,
+  lineDiff,
+  saveRefusalText,
+  viewSwitchHtml,
+  type DirState,
+  type EditorBanner,
+} from './ide/files';
 import { appSkeleton, layout } from './ide/layout';
 import { radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml } from './ide/sidebar';
 
@@ -37,7 +58,8 @@ const ui: {
   planCollapsed: boolean;
   agentsOpen: boolean;
   usageOpen: boolean;
-  view: 'chat' | 'settings' | 'history';
+  /** "editor": the desktop app's open file in place of the conversation. */
+  view: 'chat' | 'editor' | 'settings' | 'history';
   tab: SettingsTab;
   /** Changed files whose hunks are shown, with the hunks last received. */
   hunks: Map<string, HunkView[] | undefined>;
@@ -50,8 +72,8 @@ const ui: {
   organizer: SessionOrganizerView;
   collapsed: Set<string>;
   showHidden: boolean;
-  /** The side panel's tab: the task's plan and changes, or Radar. */
-  asideTab: 'task' | 'radar';
+  /** The side panel's tab: the task's plan and changes, Files, or Radar. */
+  asideTab: AsideTab;
   /** The task shown, as the app reported it with the session. */
   taskId?: string;
 } = {
@@ -68,8 +90,15 @@ const ui: {
   organizer: { groups: [], assigned: {}, hidden: [] },
   collapsed: new Set((uiState().collapsedSections ?? []).filter((k) => typeof k === 'string').slice(0, 200)),
   showHidden: false,
-  asideTab: uiState().asideTab === 'radar' ? 'radar' : 'task',
+  asideTab: uiState().asideTab === 'radar' || uiState().asideTab === 'files' ? uiState().asideTab! : 'task',
 };
+
+type AsideTab = 'task' | 'radar' | 'files';
+
+/** The conversation or the open file: the views with the message box and the side panel. */
+function workView(): boolean {
+  return ui.view === 'chat' || ui.view === 'editor';
+}
 
 // ------------------------------------------------------------------ icons
 
@@ -118,6 +147,12 @@ const el = {
   asideTabs: document.getElementById('aside-tabs'),
   asideTask: document.getElementById('aside-task'),
   radarPanel: document.getElementById('radar-panel'),
+  filesPanel: document.getElementById('files-panel'),
+  editorPane: document.getElementById('editor-pane'),
+  editorHead: document.getElementById('editor-head'),
+  editorBanner: document.getElementById('editor-banner'),
+  editorHost: document.getElementById('editor-host'),
+  editorStatus: document.getElementById('editor-status'),
 };
 
 el.input.value = uiState().draft ?? '';
@@ -180,6 +215,22 @@ function renderSidebar(): void {
   const themes = document.getElementById('theme-switch');
   if (themes) themes.innerHTML = config?.ui ? themeSwitchHtml(config.ui.theme) : '';
   renderRadarEntries();
+  renderFilesEntries();
+}
+
+/** Files in the session list's footer and in the rail, while a folder is open. */
+function renderFilesEntries(): void {
+  for (const [id, where] of [
+    ['side-files', 'list'],
+    ['rail-files', 'rail'],
+  ] as const) {
+    const slot = document.getElementById(id);
+    const html = filesAvailable() ? filesEntryHtml(where) : '';
+    if (slot && slot.dataset.html !== html) {
+      slot.dataset.html = html;
+      slot.innerHTML = html;
+    }
+  }
 }
 
 /** Radar in the session list's footer and in the rail, with the count of new entries. */
@@ -208,14 +259,18 @@ function radarAvailable(): boolean {
   return !!el.radarPanel && !!radar;
 }
 
-/** The side panel shows while the task has a plan or changes, or while the user keeps Radar open in it. */
+/** The side panel shows while the task has a plan or changes, or while the user keeps Files or Radar open in it. */
 function asideOpen(): boolean {
-  return ui.view === 'chat' && !ui.asideClosed && (asideContent() || (radarAvailable() && ui.asideTab === 'radar'));
+  return (
+    workView() && !ui.asideClosed && (asideContent() || (radarAvailable() && ui.asideTab === 'radar') || (filesAvailable() && ui.asideTab === 'files'))
+  );
 }
 
-/** Its tab: Radar when chosen, or when the task has nothing to show. */
-function shownTab(): 'task' | 'radar' {
-  return radarAvailable() && (ui.asideTab === 'radar' || !asideContent()) ? 'radar' : 'task';
+/** Its tab: Files or Radar when chosen, or one of them when the task has nothing to show. */
+function shownTab(): AsideTab {
+  if (filesAvailable() && ui.asideTab === 'files') return 'files';
+  if (radarAvailable() && (ui.asideTab === 'radar' || !asideContent())) return 'radar';
+  return !asideContent() && filesAvailable() ? 'files' : 'task';
 }
 
 let asideHadContent = false;
@@ -236,6 +291,11 @@ function updateAside(): void {
     el.radarPanel.hidden = el.aside.hidden || tab !== 'radar';
     if (wasHidden && !el.radarPanel.hidden) renderRadar();
   }
+  if (el.filesPanel) {
+    const wasHidden = el.filesPanel.hidden;
+    el.filesPanel.hidden = el.aside.hidden || tab !== 'files';
+    if (wasHidden && !el.filesPanel.hidden) showFilesPanel();
+  }
   renderAsideTabs();
   // The top bar offers to show or hide it once there is something in it.
   if (asideContent() !== asideHadContent) {
@@ -246,18 +306,20 @@ function updateAside(): void {
 
 function renderAsideTabs(): void {
   if (!el.asideTabs) return;
-  el.asideTabs.hidden = !radarAvailable();
+  el.asideTabs.hidden = !radarAvailable() && !filesAvailable();
   if (el.asideTabs.hidden) return;
   el.asideTabs.setAttribute('aria-label', t('Side panel'));
   const current = shownTab();
-  const tab = (id: 'task' | 'radar', label: string, extra: string, disabled: boolean, name?: string) =>
-    `<button role="tab" id="aside-tab-${id}" aria-selected="${current === id}" aria-controls="${id === 'task' ? 'aside-task' : 'radar-panel'}" tabindex="${current === id ? 0 : -1}" class="${
+  const panels: Record<AsideTab, string> = { task: 'aside-task', files: 'files-panel', radar: 'radar-panel' };
+  const tab = (id: AsideTab, label: string, extra: string, disabled: boolean, name?: string) =>
+    `<button role="tab" id="aside-tab-${id}" aria-selected="${current === id}" aria-controls="${panels[id]}" tabindex="${current === id ? 0 : -1}" class="${
       current === id ? 'on' : ''
     }" data-action="aside-tab" data-tab="${id}"${disabled ? ' disabled' : ''}${name ? ` aria-label="${attr(name)}"` : ''}>${label}${extra}</button>`;
   const changes = Number(session.changes.length) || 0;
   const html =
     tab('task', escapeHtml(t('Plan and changes')), changes ? `<span class="count">${changes}</span>` : '', !asideContent()) +
-    tab('radar', `${icon('radar')}<span>Radar</span>`, radarBadge(radar), false, radar?.pending ? radarLabel('Radar', radar) : undefined);
+    (filesAvailable() ? tab('files', `${icon('files')}<span>${escapeHtml(t('Files'))}</span>`, '', false) : '') +
+    (radarAvailable() ? tab('radar', `${icon('radar')}<span>Radar</span>`, radarBadge(radar), false, radar?.pending ? radarLabel('Radar', radar) : undefined) : '');
   // Rebuilt only when it changed, so a focused tab keeps its focus.
   if (el.asideTabs.dataset.html !== html) {
     el.asideTabs.dataset.html = html;
@@ -266,10 +328,11 @@ function renderAsideTabs(): void {
 }
 
 /** Show a tab of the side panel (opening the panel). */
-function showAsideTab(tab: 'task' | 'radar', focus = false): void {
+function showAsideTab(tab: AsideTab, focus = false): void {
   if (tab === 'radar' && !radarAvailable()) return;
+  if (tab === 'files' && !filesAvailable()) return;
   if (tab === 'task' && !asideContent()) return;
-  if (ui.view !== 'chat') {
+  if (!workView()) {
     ui.view = 'chat';
     renderView();
   }
@@ -301,7 +364,7 @@ function focusSelector(node: HTMLElement): string | undefined {
   // A report section's <summary>, through its <details>.
   const details = node.tagName === 'SUMMARY' ? node.parentElement : undefined;
   if (details?.dataset.openKey) return `details[data-open-key="${CSS.escape(details.dataset.openKey)}"] > summary`;
-  const attrs = ['data-action', 'data-radar', 'data-setting', 'data-cluster', 'data-url'].filter((a) => node.hasAttribute(a));
+  const attrs = ['data-action', 'data-radar', 'data-setting', 'data-cluster', 'data-url', 'data-path'].filter((a) => node.hasAttribute(a));
   return attrs.length ? attrs.map((a) => `[${a}="${CSS.escape(node.getAttribute(a)!)}"]`).join('') : undefined;
 }
 
@@ -402,8 +465,11 @@ function toggleAside(): void {
   if (asideOpen()) ui.asideClosed = true;
   else {
     ui.asideClosed = false;
-    // Nothing of the task to show: open on Radar.
-    if (!asideContent() && radarAvailable()) ui.asideTab = 'radar';
+    // Nothing of the task to show: open on Radar, or on Files when that was the tab open last.
+    if (!asideContent() && !(ui.asideTab === 'files' && filesAvailable())) {
+      if (radarAvailable()) ui.asideTab = 'radar';
+      else if (filesAvailable()) ui.asideTab = 'files';
+    }
   }
   saveUiState({ asideClosed: ui.asideClosed, asideTab: ui.asideTab });
   updateAside();
@@ -418,8 +484,12 @@ el.asideTabs?.addEventListener('keydown', (e) => {
   e.preventDefault();
   const at = tabs.indexOf(document.activeElement as HTMLButtonElement);
   const next = e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : (at + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
-  showAsideTab(tabs[next].dataset.tab === 'radar' ? 'radar' : 'task', true);
+  showAsideTab(asideTabOf(tabs[next].dataset.tab), true);
 });
+
+function asideTabOf(value: string | undefined): AsideTab {
+  return value === 'radar' || value === 'files' ? value : 'task';
+}
 
 /** IDE layout: the permission mode and the main agent's model sit in the message box. */
 function renderComposerTools(): void {
@@ -440,8 +510,17 @@ function renderComposerMenu(open: boolean): void {
   if (!open) return;
   const item = (action: string, glyph: string, label: string, hint: string) =>
     `<button class="menu-item" role="menuitem" data-action="${action}">${icon(glyph)}<span>${escapeHtml(label)}</span><span class="menu-hint">${escapeHtml(hint)}</span></button>`;
+  // Desktop editor: its selection, or the whole file, while a file is open.
+  const fromEditor = editor?.handle
+    ? editor.cursor.selected
+      ? item('send-selection', 'edit', t('Selection from the editor'), 'Ctrl+L')
+      : item('attach-open-file', 'edit', t('The file open in the editor'), 'Ctrl+L')
+    : '';
   el.composerMenu.innerHTML =
-    item('attach-file', 'read', t('Attach a file'), '@') + item('attach-image', 'image', t('Add an image'), t('or paste')) + item('insert-command', 'skill', t('Use a skill or command'), '/');
+    item('attach-file', 'read', t('Attach a file'), '@') +
+    fromEditor +
+    item('attach-image', 'image', t('Add an image'), t('or paste')) +
+    item('insert-command', 'skill', t('Use a skill or command'), '/');
   el.composerMenu.querySelector<HTMLElement>('.menu-item')?.focus();
 }
 
@@ -523,8 +602,18 @@ if (layout === 'ide') {
       }
       return;
     }
-    if (modalOpen() || !(e.ctrlKey || e.metaKey) || e.shiftKey) return;
+    if (modalOpen() || !(e.ctrlKey || e.metaKey)) return;
     // Physical keys: Ctrl+Alt is AltGr on many keyboards, which changes e.key.
+    if (e.shiftKey) {
+      if (e.code === 'KeyE' && !e.altKey && filesAvailable()) {
+        e.preventDefault();
+        showAsideTab('files', true);
+      }
+      return;
+    }
+    // The editor keeps its own keys (it handled them, or they are typing); only the panel switches work there.
+    const inEditor = e.target instanceof Element && !!e.target.closest('.cm-editor');
+    if ((e.defaultPrevented || inEditor) && e.code !== 'KeyB') return;
     if (e.code === 'KeyB') {
       e.preventDefault();
       if (e.altKey) toggleAside();
@@ -535,6 +624,13 @@ if (layout === 'ide') {
     } else if (e.code === 'KeyN' && e.altKey) {
       e.preventDefault();
       post({ type: 'newTask' });
+    } else if (e.code === 'KeyL' && !e.altKey && editor?.handle) {
+      e.preventDefault();
+      void sendSelection();
+    } else if (e.code === 'KeyS' && !e.altKey && editor && ui.view === 'editor') {
+      // Ctrl+S with the focus on the editor's buttons or in the message box below it.
+      e.preventDefault();
+      void saveEditor();
     }
   });
   document.addEventListener('input', (e) => {
@@ -542,6 +638,597 @@ if (layout === 'ide') {
     if (target.id !== 'side-search') return;
     ui.sessionQuery = (target as HTMLInputElement).value;
     renderSidebar();
+  });
+}
+
+// ------------------------------------------------------------------ Files and the editor (desktop)
+
+/**
+ * The file open in the editor (one at a time). Its text lives in the editor only: it is never
+ * saved with the page's state, and a reloaded page reads the file again.
+ */
+interface OpenFile {
+  path: string;
+  /** Asked for; the text has not come yet. */
+  loading: boolean;
+  /** Why it did not open. */
+  error?: FileReason;
+  handle?: EditorHandle;
+  /** sha256 of the file on disk as the buffer last matched it. */
+  hash: string;
+  eol: Eol;
+  bom: boolean;
+  readOnly: boolean;
+  dirty: boolean;
+  cursor: EditorCursor;
+  banner?: EditorBanner;
+  /** The text being saved, until the app answers. */
+  saving?: string;
+  /** Reload was asked for: the next text from disk replaces the buffer. */
+  reloading?: boolean;
+  /** A short note in the status line ("Saved"). */
+  note?: string;
+  noteTimer?: number;
+}
+
+let editor: OpenFile | undefined;
+/** Callers waiting for the save that runs now (leaving a file with unsaved changes). */
+let saveAnswers: Array<(saved: boolean) => void> = [];
+
+/** The Files tree of the open folder: listed folders, the open ones, and the row that keeps the focus. */
+const tree = {
+  folder: undefined as string | undefined,
+  dirs: new Map<string, DirState>(),
+  expanded: new Set<string>(),
+  focus: undefined as string | undefined,
+  /** The tree as last rendered (it re-renders only when it changed). */
+  html: '',
+};
+
+/** Files and the editor: the desktop app's IDE layout with its editor loaded, and a folder open. */
+function filesAvailable(): boolean {
+  return layout === 'ide' && !!window.orkaEditor && !!el.filesPanel && !!config?.workspaceOpen && !!config.folder;
+}
+
+function sameFolder(a: string | undefined, b: string | undefined): boolean {
+  const norm = (p: string | undefined) => (p ?? '').replace(/[\\/]+$/, '').toLowerCase();
+  return norm(a) === norm(b);
+}
+
+/** What the page remembers across reloads: paths only. */
+function saveFilesState(): void {
+  if (!tree.folder) return;
+  saveUiState({ editor: { folder: tree.folder, path: editor?.path, shown: ui.view === 'editor' || undefined, expanded: [...tree.expanded].slice(0, 200) } });
+}
+
+/** The app's folder changed (or came with the first config): a fresh tree, and the file open in that folder before a reload. */
+function syncFilesFolder(): void {
+  const folder = filesAvailable() ? config!.folder : undefined;
+  if (folder === tree.folder) return;
+  const saved = uiState().editor;
+  // Its paths mean other files in another folder: the editor closes (the user was asked before a switch they made),
+  // and lines picked from it are not sent.
+  closeEditorNow();
+  if (composer.editor) {
+    composer.editor = undefined;
+    renderChips();
+  }
+  tree.folder = folder;
+  tree.dirs.clear();
+  tree.expanded.clear();
+  tree.focus = undefined;
+  tree.html = '';
+  if (!folder) return;
+  if (saved && typeof saved === 'object' && sameFolder(saved.folder, folder)) {
+    for (const path of Array.isArray(saved.expanded) ? saved.expanded.slice(0, 200) : []) if (typeof path === 'string') tree.expanded.add(path);
+    if (typeof saved.path === 'string' && saved.path) void openFile(saved.path, !!saved.shown);
+  }
+  saveFilesState();
+  if (el.filesPanel && !el.filesPanel.hidden) showFilesPanel();
+}
+
+/** The Files tab came into view: its folders are listed (once) and drawn. */
+function showFilesPanel(): void {
+  if (!filesAvailable()) return;
+  for (const path of ['', ...tree.expanded]) {
+    if (tree.dirs.has(path)) continue;
+    tree.dirs.set(path, 'loading');
+    post({ type: 'listDir', path });
+  }
+  renderFilesPanel();
+}
+
+/** List the shown folders again (after a run, on Refresh, when the window gets the focus); the old rows stay until the answers come. */
+function refreshTree(): void {
+  if (!filesAvailable()) return;
+  for (const path of tree.dirs.keys()) if (path === '' || tree.expanded.has(path)) post({ type: 'listDir', path });
+}
+
+function renderFilesPanel(): void {
+  const panel = el.filesPanel;
+  if (!panel || panel.hidden || !tree.folder) return;
+  const changes = new Map(session.changes.map((c) => [changePath(c), c] as const));
+  const name = tree.folder.split(/[\\/]/).filter(Boolean).pop() ?? tree.folder;
+  const html = filesPanelHtml(name, fileTreeHtml({ dirs: tree.dirs, expanded: tree.expanded, changes, open: editor?.path, dirty: !!editor?.dirty, focus: tree.focus }));
+  if (html === tree.html) return;
+  // The focused control keeps the focus across the re-render.
+  const active = document.activeElement;
+  const focused = active instanceof HTMLElement && panel.contains(active) ? focusSelector(active) : undefined;
+  tree.html = html;
+  panel.setAttribute('aria-labelledby', 'aside-tab-files');
+  panel.innerHTML = html;
+  indentTree(panel);
+  if (focused) panel.querySelector<HTMLElement>(focused)?.focus();
+}
+
+function toggleDir(path: string): void {
+  if (tree.expanded.has(path)) tree.expanded.delete(path);
+  else {
+    tree.expanded.add(path);
+    if (!tree.dirs.has(path)) {
+      tree.dirs.set(path, 'loading');
+      post({ type: 'listDir', path });
+    }
+  }
+  tree.focus = path;
+  saveFilesState();
+  renderFilesPanel();
+}
+
+// The tree's keys, as in any tree view: arrows move and open or close folders, Enter opens.
+el.filesPanel?.addEventListener('keydown', (e) => {
+  const row = e.target instanceof HTMLElement ? e.target.closest<HTMLElement>('[role="treeitem"]') : null;
+  if (!row || modalOpen()) return;
+  const rows = [...el.filesPanel!.querySelectorAll<HTMLElement>('[role="treeitem"]')];
+  const at = rows.indexOf(row);
+  const path = row.dataset.path ?? '';
+  const dir = row.dataset.action === 'toggle-dir';
+  const go = (next: HTMLElement | undefined) => {
+    e.preventDefault();
+    if (!next) return;
+    rows.forEach((r) => (r.tabIndex = -1));
+    next.tabIndex = 0;
+    next.focus();
+    tree.focus = next.dataset.path;
+  };
+  switch (e.key) {
+    case 'ArrowDown':
+      go(rows[at + 1]);
+      break;
+    case 'ArrowUp':
+      go(rows[at - 1]);
+      break;
+    case 'Home':
+      go(rows[0]);
+      break;
+    case 'End':
+      go(rows[rows.length - 1]);
+      break;
+    case 'ArrowRight':
+      if (!dir) break;
+      if (!tree.expanded.has(path)) {
+        e.preventDefault();
+        toggleDir(path);
+      } else go(rows[at + 1]?.dataset.path?.startsWith(`${path}/`) ? rows[at + 1] : undefined);
+      break;
+    case 'ArrowLeft':
+      if (dir && tree.expanded.has(path)) {
+        e.preventDefault();
+        toggleDir(path);
+      } else go(rows.find((r) => r.dataset.path === path.slice(0, Math.max(0, path.lastIndexOf('/')))));
+      break;
+    case 'Enter':
+    case ' ':
+      e.preventDefault();
+      row.click();
+      break;
+  }
+});
+
+/** CodeMirror's own texts (the search panel), in the UI's language. */
+function editorPhrases(): Record<string, string> {
+  const phrases: Record<string, string> = {
+    Find: t('Find'),
+    Replace: t('Replace'),
+    next: t('next'),
+    previous: t('previous'),
+    all: t('all'),
+    'match case': t('match case'),
+    regexp: t('regexp'),
+    'by word': t('by word'),
+    replace: t('replace'),
+    'replace all': t('replace all'),
+    close: t('close'),
+    'Go to line': t('Go to line'),
+    go: t('go'),
+  };
+  return phrases;
+}
+
+/** Open a file of the folder in the editor; with show, in place of the conversation. */
+async function openFile(path: string, show = true): Promise<void> {
+  if (!filesAvailable()) return;
+  if (editor?.path === path) {
+    if (show) showEditor();
+    return;
+  }
+  if (!(await leaveEditor())) return;
+  closeEditorNow();
+  editor = { path, loading: true, hash: '', eol: 'lf', bom: false, readOnly: false, dirty: false, cursor: { line: 1, col: 1, selected: 0 } };
+  post({ type: 'readFile', path });
+  if (show) ui.view = 'editor';
+  saveFilesState();
+  renderView();
+  renderFilesPanel();
+}
+
+function showEditor(): void {
+  if (!editor) return;
+  ui.view = 'editor';
+  saveFilesState();
+  renderView();
+  editor.handle?.focus();
+}
+
+/** Leaving a file with unsaved changes asks first: save, don't save, or stay. True when it may go. */
+async function leaveEditor(): Promise<boolean> {
+  if (!editor?.dirty) return true;
+  const save = t('Save');
+  const discard = t("Don't save");
+  const answer = await askInPage({ kind: 'message', level: 'warning', modal: true, text: t('Unsaved changes in {file}', { file: editor.path }), actions: [save, discard] });
+  if (answer === discard) return true;
+  return answer === save ? saveEditor() : false;
+}
+
+/** Close the file without asking. */
+function closeEditorNow(): void {
+  if (!editor) return;
+  editor.handle?.destroy();
+  clearTimeout(editor.noteTimer);
+  editor = undefined;
+  answerSaves(false);
+  if (el.editorHost) el.editorHost.innerHTML = '';
+  if (ui.view === 'editor') ui.view = 'chat';
+  saveFilesState();
+}
+
+/** A folder switch the user asked for: with unsaved changes, first ask. */
+async function beforeFolderChange(folder?: string): Promise<boolean> {
+  if (!editor?.dirty || (folder && sameFolder(folder, tree.folder))) return true;
+  return leaveEditor();
+}
+
+function answerSaves(saved: boolean): void {
+  const answers = saveAnswers;
+  saveAnswers = [];
+  for (const answer of answers) answer(saved);
+}
+
+/**
+ * Save the buffer. The app refuses while an agent works or a hand-off is open, and when the file
+ * changed on disk since it was read; overwriteHash (Keep mine) is the disk's hash the user chose
+ * to overwrite. Resolves true once saved.
+ */
+function saveEditor(overwriteHash?: string): Promise<boolean> {
+  const open = editor;
+  if (!open?.handle || open.readOnly) return Promise.resolve(false);
+  if (open.saving === undefined) {
+    if (!open.dirty && !overwriteHash) return Promise.resolve(true);
+    if (session.running) {
+      open.banner = { kind: 'notice', level: 'info', text: t('The Agent is working; save when it stops.') };
+      renderEditorBanner();
+      return Promise.resolve(false);
+    }
+    open.saving = open.handle.getText();
+    post({ type: 'saveFile', path: open.path, text: open.saving, baseHash: overwriteHash ?? open.hash });
+    renderEditorHead();
+  }
+  return new Promise((resolve) => saveAnswers.push(resolve));
+}
+
+/** Ask whether the open file changed on disk (an unchanged file comes back without its text). */
+function recheckEditor(): void {
+  if (!editor || editor.loading || editor.error || editor.saving !== undefined || !editor.hash) return;
+  post({ type: 'readFile', path: editor.path, knownHash: editor.hash });
+}
+
+function editorChanged(): void {
+  if (!editor?.handle) return;
+  const dirty = editor.handle.isDirty();
+  if (dirty === editor.dirty) return;
+  editor.dirty = dirty;
+  renderEditorHead();
+  renderTopbar();
+  renderFilesPanel();
+}
+
+function flashNote(text: string): void {
+  if (!editor) return;
+  const open = editor;
+  open.note = text;
+  clearTimeout(open.noteTimer);
+  open.noteTimer = window.setTimeout(() => {
+    open.note = undefined;
+    if (editor === open) renderEditorStatus();
+  }, 2500);
+  renderEditorStatus();
+}
+
+/** The middle pane while a file shows: its head, banner, the editor (or why the file did not open) and the status line. */
+function renderEditorPane(): void {
+  const pane = el.editorPane;
+  if (!pane) return;
+  if (ui.view === 'editor' && !editor) ui.view = 'chat';
+  pane.hidden = ui.view !== 'editor';
+  if (pane.hidden || !editor) return;
+  renderEditorHead();
+  renderEditorBanner();
+  renderEditorStatus();
+  if (!editor.handle && el.editorHost) {
+    el.editorHost.innerHTML = editor.loading
+      ? `<div class="editor-message"><span class="spinner small"></span></div>`
+      : editor.error
+        ? `<div class="editor-message">${icon('warn')}<span>${escapeHtml(fileReasonText(editor.error))}</span></div>`
+        : '';
+  }
+}
+
+function renderEditorHead(): void {
+  if (!el.editorHead || !editor) return;
+  el.editorHead.innerHTML = editorHeadHtml({
+    path: editor.path,
+    loaded: !!editor.handle,
+    dirty: editor.dirty,
+    readOnly: editor.readOnly,
+    running: session.running,
+    saving: editor.saving !== undefined,
+    hasSelection: editor.cursor.selected > 0,
+  });
+}
+
+function renderEditorBanner(): void {
+  if (!el.editorBanner) return;
+  const html = editorBannerHtml(editor?.banner);
+  el.editorBanner.hidden = !html;
+  el.editorBanner.innerHTML = html;
+}
+
+function renderEditorStatus(): void {
+  if (!el.editorStatus) return;
+  el.editorStatus.innerHTML =
+    editor?.handle
+      ? editorStatusHtml({ ...editor.cursor, language: window.orkaEditor?.languageName(editor.path), eol: editor.eol, bom: editor.bom, readOnly: editor.readOnly, note: editor.note })
+      : '';
+}
+
+type FileContent = Extract<ToWebview, { type: 'fileContent' }>;
+
+function onFileContent(message: FileContent): void {
+  const open = editor;
+  if (!open || message.path !== open.path) return;
+  if (!message.ok) {
+    if (open.loading) {
+      open.loading = false;
+      open.error = message.reason;
+      renderEditorPane();
+      return;
+    }
+    open.banner = message.reason === 'notFound' ? { kind: 'gone' } : { kind: 'notice', level: 'warning', text: fileReasonText(message.reason) };
+    renderEditorBanner();
+    return;
+  }
+  if ('unchanged' in message) {
+    // The disk has what the editor read: a conflict or a missing file it showed is over.
+    if (open.banner?.kind === 'conflict' || open.banner?.kind === 'gone') {
+      open.banner = undefined;
+      renderEditorBanner();
+    }
+    return;
+  }
+  const take = () => {
+    open.hash = message.hash;
+    open.eol = message.eol;
+    open.bom = message.bom;
+    open.readOnly = !!message.readOnly;
+  };
+  if (open.loading) {
+    take();
+    open.loading = false;
+    if (el.editorHost) el.editorHost.innerHTML = '';
+    open.handle = window.orkaEditor!.open(el.editorHost!, {
+      path: open.path,
+      text: message.text,
+      readOnly: open.readOnly,
+      phrases: editorPhrases(),
+      onChange: editorChanged,
+      onSave: () => void saveEditor(),
+      onSendSelection: () => void sendSelection(),
+      onSelectionChange: (cursor) => {
+        if (editor !== open) return;
+        const selected = !!cursor.selected !== !!open.cursor.selected;
+        open.cursor = cursor;
+        renderEditorStatus();
+        // Send selection is offered while there is one.
+        if (selected) renderEditorHead();
+      },
+      onEscape: () => el.input.focus(),
+    });
+    renderEditorPane();
+    if (ui.view === 'editor') open.handle.focus();
+    return;
+  }
+  // A save of its own is on the way; its answer settles the state.
+  if (open.saving !== undefined && !open.reloading) return;
+  if (message.hash === open.hash && !open.reloading) {
+    if (open.banner?.kind === 'conflict' || open.banner?.kind === 'gone') open.banner = undefined;
+    renderEditorBanner();
+    return;
+  }
+  if (open.reloading || !open.dirty) {
+    // A clean buffer follows the disk; the cursor and the scroll stay.
+    const reloaded = open.reloading;
+    open.reloading = false;
+    take();
+    open.banner = undefined;
+    open.handle?.setReadOnly(open.readOnly);
+    open.handle?.replaceText(message.text);
+    open.dirty = false;
+    renderEditorHead();
+    renderEditorBanner();
+    renderTopbar();
+    renderFilesPanel();
+    flashNote(reloaded ? t('Reloaded') : t('Updated on disk'));
+    return;
+  }
+  // Unsaved changes and a new file on disk: the user decides.
+  open.banner = { kind: 'conflict', hash: message.hash, text: message.text };
+  renderEditorBanner();
+}
+
+function onFileSaved(path: string, hash: string): void {
+  const open = editor;
+  if (!open || open.path !== path || open.saving === undefined) return;
+  open.hash = hash;
+  open.handle?.markClean(open.saving);
+  open.saving = undefined;
+  open.banner = undefined;
+  open.dirty = open.handle?.isDirty() ?? false;
+  answerSaves(true);
+  renderEditorHead();
+  renderEditorBanner();
+  renderTopbar();
+  renderFilesPanel();
+  flashNote(t('Saved'));
+}
+
+function onSaveRefused(message: Extract<ToWebview, { type: 'saveRefused' }>): void {
+  const open = editor;
+  if (!open || open.path !== message.path) return;
+  open.saving = undefined;
+  answerSaves(false);
+  if (message.reason === 'conflict' && message.hash) {
+    open.banner = { kind: 'conflict', hash: message.hash };
+    // Its text, for Reload and Compare.
+    post({ type: 'readFile', path: open.path });
+  } else if (message.reason === 'gone') open.banner = { kind: 'gone' };
+  else open.banner = { kind: 'notice', level: message.reason === 'running' ? 'info' : 'warning', text: saveRefusalText(message.reason) };
+  renderEditorHead();
+  renderEditorBanner();
+}
+
+/** The banner's Reload: the disk's text replaces the buffer. */
+function reloadEditor(): void {
+  const open = editor;
+  if (!open?.handle) return;
+  if (open.banner?.kind === 'conflict' && open.banner.text !== undefined) {
+    open.handle.replaceText(open.banner.text);
+    open.hash = open.banner.hash;
+    open.banner = undefined;
+    open.dirty = false;
+    renderEditorHead();
+    renderEditorBanner();
+    renderTopbar();
+    renderFilesPanel();
+    flashNote(t('Reloaded'));
+    return;
+  }
+  open.reloading = true;
+  post({ type: 'readFile', path: open.path });
+}
+
+/** The banner's Compare: the file on disk against the buffer. */
+function compareEditor(): void {
+  const open = editor;
+  if (!open?.handle || open.banner?.kind !== 'conflict') return;
+  if (open.banner.text === undefined) {
+    post({ type: 'readFile', path: open.path });
+    return;
+  }
+  void askInPage({
+    kind: 'diff',
+    title: t('{file}: on disk (−) and in the editor (+)', { file: open.path }),
+    diff: lineDiff(open.banner.text, open.handle.getText(), { before: t('On disk'), after: t('In the editor') }),
+  });
+}
+
+/** The banner's Keep mine: overwrite the file on disk, after a confirmation. */
+async function overwriteEditor(): Promise<void> {
+  const open = editor;
+  if (!open?.handle || open.banner?.kind !== 'conflict') return;
+  const hash = open.banner.hash;
+  const overwrite = t('Overwrite');
+  const answer = await askInPage({ kind: 'message', level: 'warning', modal: true, text: t('Overwrite the file on disk with your version?'), actions: [overwrite] });
+  if (answer === overwrite && editor === open) await saveEditor(hash);
+}
+
+/** A secret-looking file (.env, keys) goes to the agent only after the user confirms. */
+async function confirmSecret(path: string): Promise<boolean> {
+  if (!isSecretFile(path)) return true;
+  const add = t('Add');
+  const answer = await askInPage({
+    kind: 'message',
+    level: 'warning',
+    modal: true,
+    text: t('This looks like a secret file. Add it anyway?'),
+    detail: t('Once the agent has it, network tools ask you first for the rest of the task.'),
+    actions: [add],
+  });
+  return answer === add;
+}
+
+/** Send selection (Ctrl+L): the selected lines go with the next message, as shown in the buffer. Without a selection, the file is attached. */
+async function sendSelection(): Promise<void> {
+  const open = editor;
+  if (!open?.handle) return;
+  const range = open.handle.selection();
+  if (!range) {
+    await attachOpenFile();
+    return;
+  }
+  if (!(await confirmSecret(open.path)) || editor !== open) return;
+  composer.editor = { file: open.path, ...range, unsaved: open.dirty };
+  renderChips();
+  el.input.focus();
+}
+
+/** Attach file: the open file goes with the next message as it is on disk. */
+async function attachOpenFile(): Promise<void> {
+  const open = editor;
+  if (!open) return;
+  if (!(await confirmSecret(open.path)) || editor !== open) return;
+  if (!composer.attachments.includes(open.path)) composer.attachments.push(open.path);
+  renderChips();
+  if (open.dirty) {
+    onEvent({ type: 'notice', level: 'warning', message: t('{file} has unsaved changes; the agent gets the file as it is on disk.', { file: open.path }) });
+  }
+  el.input.focus();
+}
+
+/** The chip of the editor's lines in the message box. */
+function editorChipHtml(): string {
+  const picked = composer.editor;
+  if (!picked) return '';
+  const name = picked.file.split('/').pop() ?? picked.file;
+  const lines = picked.startLine === picked.endLine ? `${picked.startLine}` : `${picked.startLine}–${picked.endLine}`;
+  const where = t('Lines {a}–{b}', { a: picked.startLine, b: picked.endLine });
+  return `<span class="chip editor-chip" title="${attr(`${picked.file} · ${where}`)}">${icon('edit')}<span class="ellipsis">${escapeHtml(`${name}:${lines}`)}</span>${
+    picked.unsaved ? `<span class="muted">${escapeHtml(t('(unsaved)'))}</span>` : ''
+  }
+    <button class="chip-x" data-action="remove-editor-context" aria-label="${attr(t('Remove {file}', { file: `${name}:${lines}` }))}">${icon('x')}</button></span>`;
+}
+
+if (layout === 'ide') {
+  // Unsaved changes are only in this page: closing or reloading it asks first.
+  window.addEventListener('beforeunload', (e) => {
+    if (!editor?.dirty) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+  // Back from another program (Unity, a terminal): the open file and the tree may have changed.
+  window.addEventListener('focus', () => {
+    if (!filesAvailable()) return;
+    recheckEditor();
+    refreshTree();
   });
 }
 
@@ -583,13 +1270,16 @@ function commands(): Command[] {
 const composer = {
   attachments: [] as string[],
   images: [] as ImageAttachment[],
+  /** Desktop editor: the lines picked to send with the next message (one at a time). */
+  editor: undefined as undefined | (EditorRange & { file: string; unsaved: boolean }),
   suggest: undefined as undefined | { kind: 'command' | 'file'; items: Array<{ value: string; label: string; detail?: string; skill?: boolean }>; index: number; query: string },
   fileTimer: 0,
 };
 
 function renderChips(): void {
-  el.chips.hidden = !composer.attachments.length && !composer.images.length;
+  el.chips.hidden = !composer.attachments.length && !composer.images.length && !composer.editor;
   el.chips.innerHTML =
+    editorChipHtml() +
     composer.images
       .map(
         (img, i) => `<span class="chip image-chip" title="${attr(img.name)}">${img.thumb ? `<img src="${attr(img.thumb)}" alt="">` : icon('image')}
@@ -759,7 +1449,7 @@ function runCommand(text: string): boolean {
       openHistory();
       return true;
     case 'agents':
-      ui.view = 'chat';
+      if (!workView()) ui.view = 'chat';
       ui.agentsOpen = true;
       renderView();
       return true;
@@ -813,15 +1503,19 @@ function runCommand(text: string): boolean {
 }
 
 function send(text: string, skills?: string[]): void {
+  const selection = layout === 'ide' ? composer.editor : undefined;
   post({
     type: 'send',
     text,
     files: composer.attachments.length ? [...composer.attachments] : undefined,
     skills,
     images: composer.images.length ? [...composer.images] : undefined,
+    // The desktop editor's lines become the request's active file and selection.
+    ...(selection ? { editor: { file: selection.file, selection: { startLine: selection.startLine, endLine: selection.endLine, text: selection.text } } } : {}),
   });
   composer.attachments = [];
   composer.images = [];
+  composer.editor = undefined;
   renderChips();
 }
 
@@ -933,11 +1627,11 @@ document.addEventListener('click', (e) => {
       break;
     case 'keep-hunk':
       target.setAttribute('disabled', '');
-      post({ type: 'keepHunk', path: path!, index: Number(target.dataset.index) });
+      post({ type: 'keepHunk', path: path!, index: Number(target.dataset.index), ...hunkHeader(target) });
       break;
     case 'revert-hunk':
       target.setAttribute('disabled', '');
-      post({ type: 'revertHunk', path: path!, index: Number(target.dataset.index) });
+      post({ type: 'revertHunk', path: path!, index: Number(target.dataset.index), ...hunkHeader(target) });
       break;
     case 'accept-all':
       post({ type: 'acceptAll' });
@@ -983,7 +1677,8 @@ document.addEventListener('click', (e) => {
       post({ type: 'handoff', agent: target.dataset.agent ?? '', text: el.input.value });
       break;
     case 'open-folder':
-      post({ type: 'openFolder', path: path || undefined });
+      // Unsaved changes in the editor are asked about before the folder changes under it.
+      void beforeFolderChange(path || undefined).then((go) => go && post({ type: 'openFolder', path: path || undefined }));
       break;
     case 'dialog-action':
     case 'dialog-pick':
@@ -1080,7 +1775,7 @@ document.addEventListener('click', (e) => {
       toggleAside();
       break;
     case 'aside-tab':
-      showAsideTab(target.dataset.tab === 'radar' ? 'radar' : 'task');
+      showAsideTab(asideTabOf(target.dataset.tab));
       break;
     case 'open-radar':
       showAsideTab('radar', true);
@@ -1166,14 +1861,79 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'new-session':
-      post({ type: 'newTask', folder: target.dataset.folder || undefined });
+    case 'open-session': {
+      const folder = target.dataset.folder || undefined;
+      void beforeFolderChange(folder).then((go) => {
+        if (!go) return;
+        post(action === 'new-session' ? { type: 'newTask', folder } : { type: 'openTask', id: id!, folder });
+        ui.view = 'chat';
+        saveFilesState();
+        renderView();
+      });
+      break;
+    }
+    case 'open-files':
+      showAsideTab('files', true);
+      break;
+    case 'refresh-files':
+      refreshTree();
+      break;
+    case 'toggle-dir':
+      if (path !== undefined) toggleDir(path);
+      break;
+    case 'open-file-node':
+    case 'open-in-editor':
+      if (path) {
+        if (action === 'open-file-node') tree.focus = path;
+        void openFile(path);
+      }
+      break;
+    case 'show-chat':
       ui.view = 'chat';
+      saveFilesState();
       renderView();
       break;
-    case 'open-session':
-      post({ type: 'openTask', id: id!, folder: target.dataset.folder || undefined });
-      ui.view = 'chat';
-      renderView();
+    case 'show-editor':
+      showEditor();
+      break;
+    case 'close-editor':
+      void leaveEditor().then((go) => {
+        if (!go) return;
+        closeEditorNow();
+        renderView();
+        renderFilesPanel();
+      });
+      break;
+    case 'save-file':
+      void saveEditor();
+      break;
+    case 'open-external-file':
+      if (editor) post({ type: 'openExternalFile', path: editor.path });
+      break;
+    case 'editor-reload':
+      reloadEditor();
+      break;
+    case 'editor-compare':
+      compareEditor();
+      break;
+    case 'editor-overwrite':
+      void overwriteEditor();
+      break;
+    case 'send-selection':
+      renderComposerMenu(false);
+      void sendSelection();
+      break;
+    case 'attach-open-file':
+      renderComposerMenu(false);
+      void attachOpenFile();
+      break;
+    case 'remove-editor-context':
+      composer.editor = undefined;
+      renderChips();
+      break;
+    case 'dismiss-editor-banner':
+      if (editor) editor.banner = undefined;
+      renderEditorBanner();
       break;
     case 'delete-session':
       closeSessionMenu();
@@ -1282,7 +2042,12 @@ document.addEventListener('change', (e) => {
     return;
   }
   if (target instanceof HTMLSelectElement && target.id === 'folder') {
-    post({ type: 'selectFolder', path: target.value });
+    // Unsaved changes in the editor are asked about first; on Cancel the select shows the open folder again.
+    const folder = target.value;
+    void beforeFolderChange(folder).then((go) => {
+      if (go) post({ type: 'selectFolder', path: folder });
+      else target.value = config?.folder ?? '';
+    });
     return;
   }
   if (target instanceof HTMLInputElement && target.dataset.mcp) {
@@ -1484,7 +2249,7 @@ function ideTopbar(phase: AgentPhase, folderButton: string): string {
     ? `<button class="usage-btn${ui.usageOpen ? ' open' : ''}" data-action="toggle-usage" title="${attr(t('Token usage per agent'))}">${escapeHtml(t('{n} tokens', { n: fmt(tokens) }))}</button>`
     : '';
   const open = asideOpen();
-  const asideLabel = radarAvailable()
+  const asideLabel = radarAvailable() || filesAvailable()
     ? open
       ? t('Hide the side panel')
       : t('Show the side panel')
@@ -1495,14 +2260,16 @@ function ideTopbar(phase: AgentPhase, folderButton: string): string {
   const radarNew = !!radar?.pending && !(open && shownTab() === 'radar');
   const radarDot = radarNew ? `<span class="radar-dot" aria-hidden="true"></span>` : '';
   const aside =
-    asideContent() || radarAvailable()
+    asideContent() || radarAvailable() || filesAvailable()
       ? `<button class="icon-btn aside-btn${open ? ' on' : ''}" data-action="toggle-aside" aria-label="${attr(radarNew ? radarLabel(asideLabel, radar) : asideLabel)}" aria-expanded="${open}" title="${attr(`${asideLabel} (Ctrl+Alt+B)`)}">${icon('aside')}${
           session.changes.length ? `<span class="count">${Number(session.changes.length) || 0}</span>` : ''
         }${radarDot}</button>`
       : '';
+  // An open file: a switch between it and the conversation.
+  const views = editor ? viewSwitchHtml({ editorShown: ui.view === 'editor', path: editor.path, dirty: editor.dirty }) : '';
   return `<div class="phase session-head" data-phase="${attr(phase)}"><span class="dot"></span><span class="session-title" title="${attr(title)}">${escapeHtml(title)}</span>${
     session.running ? `<span class="phase-label">${escapeHtml(phaseLabel(phase))}</span>` : ''
-  }</div>${folderButton}${usage}${aside}`;
+  }</div>${views}${folderButton}${usage}${aside}`;
 }
 
 function renderMeta(): void {
@@ -1566,7 +2333,7 @@ function agentUsageLine(agent: string): string {
 function renderUsage(): void {
   el.meta.classList.toggle('open', ui.usageOpen);
   const entries = session.usageByAgent ?? [];
-  el.usage.hidden = ui.view !== 'chat' || !ui.usageOpen;
+  el.usage.hidden = !workView() || !ui.usageOpen;
   if (el.usage.hidden) return;
   const close = `<button class="icon-btn" data-action="toggle-usage" aria-label="${attr(t('Close'))}" title="${attr(t('Close'))}">${icon('x')}</button>`;
   if (!entries.length) {
@@ -1832,7 +2599,7 @@ function externalAgentsCard(): string {
 function renderAgentsPanel(): void {
   renderTopbar();
   renderComposerTools();
-  el.agents.hidden = ui.view !== 'chat' || !ui.agentsOpen || !config;
+  el.agents.hidden = !workView() || !ui.agentsOpen || !config;
   if (el.agents.hidden) return;
   el.agents.innerHTML = `
     <div class="panel-head"><strong>Agents</strong><span class="muted">${escapeHtml(t('who does what, on which model'))}</span><span class="spacer"></span>
@@ -2359,17 +3126,18 @@ function renderSettings(): void {
 }
 
 function renderView(): void {
-  const chat = ui.view === 'chat';
+  const work = workView();
   renderHistory();
-  el.plan.hidden = !chat || !session.plan?.steps.length;
-  el.changes.hidden = !chat || !session.changes.length;
-  el.transcript.hidden = !chat;
-  el.composer.hidden = !chat;
+  el.plan.hidden = !work || !session.plan?.steps.length;
+  el.changes.hidden = !work || !session.changes.length;
+  el.transcript.hidden = ui.view !== 'chat';
+  el.composer.hidden = !work;
+  renderEditorPane();
   renderTopbar();
   renderAgentsPanel();
   renderSettings();
   renderUsage();
-  if (chat) {
+  if (work) {
     renderPlan();
     renderChanges();
   }
@@ -2381,7 +3149,7 @@ function renderView(): void {
 
 function renderPlan(): void {
   const plan: Plan | undefined = session.plan;
-  el.plan.hidden = ui.view !== 'chat' || !plan?.steps.length;
+  el.plan.hidden = !workView() || !plan?.steps.length;
   updateAside();
   if (el.plan.hidden || !plan) return;
   const done = plan.steps.filter((s) => s.status === 'completed').length;
@@ -2403,27 +3171,16 @@ function renderPlan(): void {
   applyWidths(el.plan);
 }
 
-function hunksHtml(change: FileChange): string {
-  const hunks = ui.hunks.get(change.absPath);
-  if (!hunks) return `<div class="hunks"><span class="spinner small"></span></div>`;
-  if (!hunks.length) return `<div class="hunks muted small">${escapeHtml(t('No differences.'))}</div>`;
-  return `<div class="hunks">${hunks
-    .map(
-      (h, i) => `<div class="hunk">
-      <div class="hunk-head"><span class="mono muted">${escapeHtml(h.header)}</span><span class="spacer"></span>
-        <button class="link" data-action="keep-hunk" data-path="${attr(change.absPath)}" data-index="${i}" title="${attr(t('Keep this change'))}">${icon('check')}${escapeHtml(t('Keep'))}</button>
-        <button class="link" data-action="revert-hunk" data-path="${attr(change.absPath)}" data-index="${i}" title="${attr(t('Undo only this part of the change'))}">${icon('undo')}${escapeHtml(t('Revert part'))}</button></div>
-      <pre class="hunk-body mono">${h.lines.map((l) => `<span class="hl ${l.type === '+' ? 'add' : l.type === '-' ? 'del' : ''}">${escapeHtml(l.type)}${escapeHtml(l.text)}</span>`).join('\n')}${
-        h.hidden ? `\n<span class="muted">${escapeHtml(t('… {n} more lines', { n: h.hidden }))}</span>` : ''
-      }</pre>
-    </div>`,
-    )
-    .join('')}</div>`;
+/** In the desktop app's IDE layout the hunks are highlighted and their buttons carry the header; elsewhere they are plain, as always. */
+function changeHunksHtml(change: FileChange): string {
+  const ide = layout === 'ide';
+  const highlight = ide && window.orkaEditor ? (path: string, lines: string[]) => window.orkaEditor?.highlightLines(path, lines) : undefined;
+  return hunksHtml(change, ui.hunks.get(change.absPath), { highlight, withHeader: ide });
 }
 
 function renderChanges(): void {
   const changes: FileChange[] = session.changes;
-  el.changes.hidden = ui.view !== 'chat' || !changes.length;
+  el.changes.hidden = !workView() || !changes.length;
   updateAside();
   if (el.changes.hidden) return;
   const badge = { added: 'A', modified: 'M', deleted: 'D' } as const;
@@ -2446,14 +3203,25 @@ function renderChanges(): void {
           }
           <span class="badge ${attr(c.status)}">${escapeHtml(badge[c.status] ?? '')}</span>
           <button class="file" data-action="diff" data-path="${attr(c.absPath)}" title="${attr(t('Show diff'))}">${escapeHtml(c.relPath)}</button>
+          ${c.userEdited ? `<span class="change-mark" role="img" aria-label="${attr(t('Edited by you'))}" title="${attr(t('You edited this file after the agent. Undoing keeps your edits.'))}">${icon('edit')}</span>` : ''}
           ${c.added ? `<span class="stat add">+${Number(c.added) || 0}</span>` : ''}${c.removed ? `<span class="stat del">−${Number(c.removed) || 0}</span>` : ''}
+          ${
+            filesAvailable() && c.status !== 'deleted'
+              ? `<button class="icon-btn" data-action="open-in-editor" data-path="${attr(changePath(c))}" aria-label="${attr(t('Open in editor'))}" title="${attr(t('Open in editor'))}">${icon('read')}</button>`
+              : ''
+          }
           <button class="icon-btn" data-action="accept" data-path="${attr(c.absPath)}" aria-label="${attr(t('Accept'))}" title="${attr(t('Accept'))}">${icon('check')}</button>
           <button class="icon-btn" data-action="revert" data-path="${attr(c.absPath)}" aria-label="${attr(t('Revert'))}" title="${attr(t('Revert'))}">${icon('undo')}</button>
           </div>
-          ${open && canSplit ? hunksHtml(c) : ''}
+          ${open && canSplit ? changeHunksHtml(c) : ''}
         </li>`;
       })
       .join('')}</ul>`;
+}
+
+/** The header a hunk's button carries (IDE layout only), so the app leaves alone a part that changed since it was shown. */
+function hunkHeader(button: HTMLElement): { header?: string } {
+  return layout === 'ide' && button.dataset.header !== undefined ? { header: button.dataset.header } : {};
 }
 
 /** After the change list moves, refresh the hunks of expanded files (and forget files that left the list). */
@@ -2866,12 +3634,19 @@ function onEvent(event: AgentEvent): void {
     case 'changes':
       refreshHunks();
       renderChanges();
+      // The agent wrote the open file, or a hunk of it was kept or reverted.
+      if (editor && event.changes.some((c) => changePath(c) === editor!.path)) recheckEditor();
+      renderFilesPanel();
       break;
     case 'phase':
     case 'run_started':
       renderTopbar();
       renderMeta();
-      if (event.type === 'run_started') renderSidebar();
+      if (event.type === 'run_started') {
+        renderSidebar();
+        // Saving waits while the agent works.
+        renderEditorHead();
+      }
       break;
     case 'usage':
       renderMeta();
@@ -2883,6 +3658,10 @@ function onEvent(event: AgentEvent): void {
     case 'reset':
     case 'rewound':
       schedule();
+      if (event.type !== 'reset' && filesAvailable()) {
+        recheckEditor();
+        refreshTree();
+      }
       break;
     case 'user_message':
       // The first request names the session (header and session list).
@@ -2930,6 +3709,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       setLocale(config.locale);
       applyAppearance();
       ui.hunks.clear();
+      syncFilesFolder();
       renderAll();
       scrollToBottom();
       if (layout === 'ide') post({ type: 'listSessions' });
@@ -2942,6 +3722,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       config = message.config;
       setLocale(config.locale);
       applyAppearance();
+      syncFilesFolder();
       if (languageChanged) {
         renderAll();
         break;
@@ -2970,7 +3751,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       renderSidebar();
       break;
     case 'showAgents':
-      ui.view = 'chat';
+      if (!workView()) ui.view = 'chat';
       ui.agentsOpen = true;
       renderView();
       break;
@@ -2987,6 +3768,20 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
         composer.suggest.index = 0;
         renderSuggest();
       }
+      break;
+    case 'dirEntries':
+      if (!filesAvailable() || typeof message.path !== 'string') break;
+      tree.dirs.set(message.path, 'error' in message ? { error: message.error } : { entries: message.entries, truncated: message.truncated });
+      renderFilesPanel();
+      break;
+    case 'fileContent':
+      onFileContent(message);
+      break;
+    case 'fileSaved':
+      onFileSaved(message.path, message.hash);
+      break;
+    case 'saveRefused':
+      onSaveRefused(message);
       break;
     case 'hunks':
       if (ui.hunks.has(message.path)) {

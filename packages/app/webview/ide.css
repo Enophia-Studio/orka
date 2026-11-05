@@ -1516,6 +1516,304 @@
   border-color: var(--hairline);
 }
 
+/* ---------------------------------------------------------------- Files and the editor */
+
+/* An unsaved buffer: in the tree, the editor's head and the title bar's switch. */
+.dirty-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg);
+}
+
+:root[data-layout='ide'] .aside .files-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 8px;
+  padding-right: 8px;
+  font-size: var(--fs-13);
+}
+
+.files-panel .panel-head {
+  padding: 0 4px 0 10px;
+}
+
+.file-tree {
+  display: flex;
+  flex-direction: column;
+}
+
+.tree-row,
+.tree-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 8px 0 calc(6px + (var(--level, 1) - 1) * 14px);
+  border-radius: var(--radius-sm);
+}
+
+.tree-row {
+  color: var(--fg);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tree-row:hover {
+  background: var(--hover);
+}
+
+.tree-row:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.tree-row.current {
+  color: var(--fg-strong);
+  background: var(--selected);
+}
+
+.tree-row.ignored {
+  color: var(--muted);
+}
+
+.tree-row .icon {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.tree-row .tree-chevron {
+  width: 12px;
+  height: 12px;
+  transform: rotate(-90deg);
+  transition: transform 0.12s;
+}
+
+.tree-row[aria-expanded='true'] .tree-chevron {
+  transform: none;
+}
+
+.tree-chevron-space {
+  flex: none;
+  width: 12px;
+}
+
+.tree-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-row .badge {
+  margin-left: auto;
+}
+
+.tree-row .dirty-dot {
+  margin-left: auto;
+}
+
+.tree-row .dirty-dot + .tree-mark,
+.tree-row .dirty-dot + .badge,
+.tree-row .tree-mark + .badge {
+  margin-left: 0;
+}
+
+.tree-mark {
+  display: inline-flex;
+  margin-left: auto;
+}
+
+/* The same mark on a Changes row: a file the user edited after the agent. */
+.change-mark {
+  display: inline-flex;
+  flex: none;
+  color: var(--muted);
+}
+
+.tree-mark .icon,
+.tree-link .icon,
+.change-mark .icon {
+  width: 12px;
+  height: 12px;
+}
+
+.tree-link {
+  display: inline-flex;
+  color: var(--muted);
+}
+
+.tree-note {
+  font-size: var(--fs-12-5);
+}
+
+/* The title bar's switch between the conversation and the open file. */
+.view-switch {
+  flex: none;
+  max-width: 45%;
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--hover);
+  border-radius: var(--radius-sm);
+}
+
+.view-switch button {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  max-width: 220px;
+  padding: 0 10px;
+  font-size: var(--fs-12-5);
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-radius: calc(var(--radius-sm) - 2px);
+}
+
+.view-switch button.on {
+  color: var(--fg-strong);
+  background: var(--bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.view-switch .icon {
+  flex: none;
+  width: 13px;
+  height: 13px;
+}
+
+/* The open file, in place of the conversation; the message box stays below it. */
+.editor-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0 12px 12px;
+  overflow: hidden;
+  background: var(--vscode-editor-background, var(--bg));
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+
+.editor-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 6px 0 14px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.editor-path {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  font-size: var(--fs-13);
+}
+
+.editor-path strong {
+  margin-right: 8px;
+  font-weight: 600;
+  color: var(--fg-strong);
+  white-space: nowrap;
+}
+
+.editor-head .btn.small {
+  margin-right: 4px;
+}
+
+.editor-banner .banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  font-size: var(--fs-12-5);
+  line-height: 1.45;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.editor-banner .banner.warn {
+  background: color-mix(in srgb, var(--warn) 12%, var(--bg));
+}
+
+.editor-banner .banner.info {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+
+.editor-banner .banner > .icon {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+
+.editor-banner .banner.warn > .icon {
+  color: var(--warn);
+}
+
+.editor-banner .grow {
+  flex: 1;
+  min-width: 200px;
+}
+
+.editor-host {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.editor-message {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.editor-message .icon {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--warn);
+}
+
+.editor-status {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  height: 26px;
+  padding: 0 14px;
+  font-size: var(--fs-11-5);
+  color: var(--muted);
+  white-space: nowrap;
+  border-top: 1px solid var(--hairline);
+}
+
+.editor-status .spacer {
+  flex: 1;
+}
+
+.editor-status .warn {
+  color: var(--warn);
+}
+
+.editor-status .editor-note {
+  color: var(--fg);
+}
+
 /* ---------------------------------------------------------------- narrow windows */
 
 @media (max-width: 1100px) {

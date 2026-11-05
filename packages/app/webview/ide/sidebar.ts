@@ -42,6 +42,7 @@ export function sidebarFrame(logo: string): string {
     </div>
     <nav class="side-list" id="side-list" aria-label="${attr(t('Sessions'))}"></nav>
     <div class="side-foot">
+      <div class="side-files" id="side-files"></div>
       <div class="side-radar" id="side-radar"></div>
       <button class="side-link" data-action="open-folder">${icon('folder')}<span>${escapeHtml(t('Open folder…'))}</span></button>
       <div class="side-foot-row">
@@ -55,6 +56,7 @@ export function sidebarFrame(logo: string): string {
       <span class="rail-new">${railButton('new-session', 'plus', t('New session'), 'Ctrl+Alt+N')}</span>
       ${railButton('search-sessions', 'search', t('Search sessions'), 'Ctrl+K')}
       <span class="spacer"></span>
+      <span class="rail-files" id="rail-files"></span>
       <span class="rail-radar" id="rail-radar"></span>
       ${railButton('open-folder', 'folder', t('Open folder…'))}
       ${railButton('open-settings', 'gear', t('Settings'))}

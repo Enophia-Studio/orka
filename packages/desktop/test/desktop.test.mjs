@@ -4,7 +4,7 @@
 // in-app dialogs, file writes, task history and (on Windows) DPAPI-protected API keys.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -262,6 +262,233 @@ globalThis.fetch = (input, init) => {
     await until(() => browser.evaluate('!document.querySelector("#aside-task").hidden'), 'the plan and changes');
     assert.equal(await browser.evaluate('document.querySelector("#radar-panel").hidden'), true);
     assert.equal(await browser.evaluate('document.querySelector("#aside-tab-task").getAttribute("aria-selected")'), 'true');
+  });
+
+  /** A TypeScript file with Windows line endings, and a junction that leads out of the folder. */
+  function filesFixture() {
+    const outside = mkdtempSync(path.join(tmpdir(), 'orka-desktop-outside-'));
+    writeFileSync(path.join(outside, 'secret.txt'), 'outside\n');
+    mkdirSync(path.join(work, 'src'));
+    const hello = "export const greeting = 'hello';\r\nexport function greet(name: string): string {\r\n  return `${greeting}, ${name}`;\r\n}\r\n";
+    writeFileSync(path.join(work, 'src', 'hello.ts'), hello);
+    symlinkSync(outside, path.join(work, 'out'), process.platform === 'win32' ? 'junction' : 'dir');
+    return { hello, outside };
+  }
+
+  /** Put the editor's cursor at the start of a line (1-based), as a click there would. */
+  const cursorAtLine = (line) =>
+    browser.evaluate(`(() => {
+      document.querySelector('.cm-content').focus();
+      const at = document.querySelectorAll('.cm-line')[${line - 1}];
+      const range = document.createRange();
+      range.setStart(at, 0);
+      range.collapse(true);
+      getSelection().removeAllRanges();
+      getSelection().addRange(range);
+    })()`);
+  const ctrlS = () =>
+    browser.evaluate(`document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown', { key: 's', code: 'KeyS', ctrlKey: true, bubbles: true, cancelable: true }))`);
+
+  it('opens a file from the Files tab in the editor and saves it with its own line endings', async () => {
+    const { hello, outside } = filesFixture();
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      // CodeMirror's styles must pass the page's CSP (they carry its nonce).
+      await browser.evaluate(`window.cspViolations = []; document.addEventListener('securitypolicyviolation', (e) => window.cspViolations.push(e.violatedDirective + ' ' + e.blockedURI))`);
+      assert.equal(await browser.evaluate('document.querySelector("#aside").hidden'), true, 'the side panel is closed');
+
+      await browser.clickSelector('#side-files [data-action="open-files"]');
+      await until(() => browser.evaluate('!!document.querySelector("#files-panel:not([hidden]) [data-path=src]")'), 'the Files tree');
+      assert.equal(await browser.evaluate('document.querySelector("#aside-tab-files").getAttribute("aria-selected")'), 'true');
+      assert.equal(await browser.evaluate('!!document.querySelector("#files-panel [data-path=out]")'), false, 'a junction out of the folder is not listed');
+
+      await browser.clickSelector('#files-panel [data-path="src"]');
+      await until(() => browser.evaluate('!!document.querySelector("#files-panel [data-path=\'src/hello.ts\']")'), 'the src folder');
+      await browser.clickSelector('#files-panel [data-path="src/hello.ts"]');
+      await until(() => browser.evaluate('!!document.querySelector("#editor-pane:not([hidden]) .cm-editor .tok-keyword")'), 'the editor with the file');
+      assert.equal(await browser.evaluate('getComputedStyle(document.querySelector(".cm-editor")).display'), 'flex', "CodeMirror's base styles apply");
+      assert.equal(await browser.evaluate('document.querySelector("#transcript").hidden'), true, 'the file shows in place of the conversation');
+      assert.match(await browser.evaluate('document.querySelector("#editor-status").textContent'), /CRLF/);
+      assert.deepEqual(await browser.evaluate('window.cspViolations'), []);
+
+      await cursorAtLine(1);
+      await browser.type('// typed ');
+      await until(() => browser.evaluate('!!document.querySelector("#editor-head .dirty-dot")'), 'the unsaved mark');
+      await ctrlS();
+      const saved = `// typed ${hello}`;
+      await until(() => readFileSync(path.join(work, 'src', 'hello.ts'), 'utf8') === saved, 'the save, with CRLF kept');
+      await until(() => browser.evaluate('!document.querySelector("#editor-head .dirty-dot")'), 'a clean buffer');
+
+      // Another program writes the file meanwhile: the next save is refused and the disk keeps its text.
+      const external = hello.replace('hello', 'hi there');
+      writeFileSync(path.join(work, 'src', 'hello.ts'), external);
+      await cursorAtLine(2);
+      await browser.type('// mine ');
+      await until(() => browser.evaluate('!!document.querySelector("#editor-head .dirty-dot")'), 'the unsaved mark');
+      await ctrlS();
+      await until(async () => /Changed on disk/.test(await browser.evaluate('document.querySelector("#editor-banner").textContent')), 'the conflict banner');
+      assert.equal(readFileSync(path.join(work, 'src', 'hello.ts'), 'utf8'), external);
+      assert.deepEqual(await browser.evaluate('window.cspViolations'), []);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it('sends the selected lines, and the open file, to the agent', async () => {
+    const { outside } = filesFixture();
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      await browser.clickSelector('#side-files [data-action="open-files"]');
+      await until(() => browser.evaluate('!!document.querySelector("#files-panel:not([hidden]) [data-path=src]")'), 'the Files tree');
+      await browser.clickSelector('#files-panel [data-path="src"]');
+      await until(() => browser.evaluate('!!document.querySelector("#files-panel [data-path=\'src/hello.ts\']")'), 'the src folder');
+      await browser.clickSelector('#files-panel [data-path="src/hello.ts"]');
+      await until(() => browser.evaluate('!!document.querySelector("#editor-pane:not([hidden]) .cm-editor .tok-keyword")'), 'the editor with the file');
+
+      // Lines 2 and 3, selected with the keyboard.
+      await browser.evaluate(`(() => {
+        const content = document.querySelector('.cm-content');
+        content.focus();
+        const key = (key, shiftKey = false) => content.dispatchEvent(new KeyboardEvent('keydown', { key, code: key, shiftKey, bubbles: true, cancelable: true }));
+        key('ArrowDown');
+        key('ArrowDown', true);
+        key('End', true);
+      })()`);
+      await until(() => browser.evaluate('!document.querySelector("[data-action=send-selection]").disabled'), 'a selection');
+      await browser.clickSelector('[data-action="send-selection"]');
+      await until(() => browser.evaluate('document.querySelector("#chips .editor-chip")?.textContent.includes("hello.ts:2–3")'), 'the selection chip');
+
+      script = [() => reply('Explained.'), () => reply('Read it.')];
+      const ask = async (message, count) => {
+        await browser.clickSelector('#input');
+        await browser.type(message);
+        await browser.clickSelector('#send');
+        await until(() => requests.length === count, 'the request');
+        await until(() => browser.evaluate('!document.body.classList.contains("busy")'), 'the end of the run');
+      };
+      await ask('Explain these lines', 1);
+      const first = JSON.stringify(requests[0].body.messages);
+      assert.match(first, /Selected lines 2-3/);
+      assert.ok(first.includes('export function greet(name: string): string {'), 'the selected text goes along');
+      assert.equal(await browser.evaluate('document.querySelectorAll("#chips .chip").length'), 0, 'the chip is used up');
+
+      await browser.clickSelector('[data-action="attach-open-file"]');
+      await until(() => browser.evaluate('[...document.querySelectorAll("#chips .chip")].some((c) => c.textContent.includes("src/hello.ts"))'), 'the file chip');
+      await ask('What does this file do?', 2);
+      assert.match(JSON.stringify(requests[1].body.messages), /<attached_file path=\\"src\/hello\.ts\\">/);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  /** Every message the page posts to the app, as sent (window.posted). */
+  const recordPosts = () =>
+    browser.evaluate(`(() => {
+      window.posted = [];
+      const real = window.fetch;
+      window.fetch = (url, init) => {
+        if (url === '/message') window.posted.push(JSON.parse(init.body));
+        return real(url, init);
+      };
+    })()`);
+
+  /** Type a message and send it; resolves when the run has ended. */
+  const ask = async (message, reply) => {
+    await browser.clickSelector('#input');
+    await browser.type(message);
+    await browser.clickSelector('#send');
+    await until(async () => (await text()).includes(reply), 'the reply');
+    await until(() => browser.evaluate('!document.body.classList.contains("busy")'), 'the end of the run');
+  };
+
+  /** Show the plan and changes in the side panel. */
+  const showChanges = async () => {
+    if (await browser.evaluate('document.querySelector("#aside").hidden')) await browser.clickSelector('.topbar .aside-btn');
+    if ((await browser.evaluate('document.querySelector("#aside-tab-task").getAttribute("aria-selected")')) !== 'true') await browser.clickSelector('#aside-tab-task');
+    await until(() => browser.evaluate('!document.querySelector("#aside-task").hidden && !!document.querySelector(".changes li")'), 'the changes');
+  };
+
+  it('shows the changed parts of a file highlighted, and keeps one by its header', async () => {
+    mkdirSync(path.join(work, 'src'));
+    const before = 'export function add(a: number, b: number): number {\n  return a + b;\n}\n';
+    const after = 'export function add(a: number, b: number): number {\n  // Sum.\n  return b + a;\n}\n';
+    writeFileSync(path.join(work, 'src', 'calc.ts'), before);
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    // The app asks once more for a build or test after unverified changes.
+    script = [() => toolUse('toolu_w', 'write_file', { path: 'src/calc.ts', content: after }), () => reply('Swapped the operands.'), () => reply('Nothing to build.')];
+    await ask('Swap the operands', 'Nothing to build.');
+    await recordPosts();
+    await showChanges();
+
+    await browser.clickSelector('[data-action="toggle-hunks"]');
+    await until(() => browser.evaluate('!!document.querySelector(".hunk-body .hl.add .tok-comment")'), 'the highlighted hunk');
+    assert.equal(await browser.evaluate('!!document.querySelector(".hunk-body .hl.del .tok-keyword")'), true, 'removed lines are highlighted too');
+    assert.equal(await browser.evaluate('!!document.querySelector(".hunk-body [style]")'), false, 'classes only');
+    assert.ok((await browser.evaluate('document.querySelector(".hunk-body").textContent.split("\\n")')).includes('+  // Sum.'), 'the text is unchanged');
+
+    await browser.clickSelector('[data-action="keep-hunk"]');
+    await until(() => browser.evaluate('document.querySelector("#changes-panel").hidden'), 'the change kept');
+    const keep = await browser.evaluate('window.posted.find((m) => m.type === "keepHunk")');
+    assert.equal(keep?.index, 0);
+    assert.equal(keep?.header, '@@ -1,3 +1,4 @@', 'the header goes along');
+    assert.equal(readFileSync(path.join(work, 'src', 'calc.ts'), 'utf8'), after);
+  });
+
+  it('keeps a file the user edited after the agent: Revert all, Go back, then undoes only the agent part', async () => {
+    const notes = path.join(work, 'notes', 'hello.txt');
+    mkdirSync(path.join(work, 'notes'));
+    writeFileSync(notes, 'one\ntwo\nthree\nfour\nfive\nsix\n');
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    script = [() => toolUse('toolu_w', 'write_file', { path: 'notes/hello.txt', content: 'ONE\ntwo\nthree\nfour\nfive\nsix\n' }), () => reply('Shouted the first line.')];
+    await ask('Shout the first line', 'Shouted the first line.');
+
+    // The user opens the file and changes its last line.
+    await browser.clickSelector('#side-files [data-action="open-files"]');
+    await until(() => browser.evaluate('!!document.querySelector("#files-panel:not([hidden]) [data-path=notes]")'), 'the Files tree');
+    await browser.clickSelector('#files-panel [data-path="notes"]');
+    await until(() => browser.evaluate('!!document.querySelector("#files-panel [data-path=\'notes/hello.txt\']")'), 'the notes folder');
+    await browser.clickSelector('#files-panel [data-path="notes/hello.txt"]');
+    await until(() => browser.evaluate('!!document.querySelector("#editor-pane:not([hidden]) .cm-editor")'), 'the editor with the file');
+    await cursorAtLine(6);
+    await browser.type('mine ');
+    await until(() => browser.evaluate('!!document.querySelector("#editor-head .dirty-dot")'), 'the unsaved mark');
+    await ctrlS();
+    const mine = 'ONE\ntwo\nthree\nfour\nfive\nmine six\n';
+    await until(() => readFileSync(notes, 'utf8') === mine, 'the save');
+    await browser.clickSelector('[data-action="show-chat"]');
+    await showChanges();
+    await until(() => browser.evaluate('document.querySelector(".changes .change-mark")?.getAttribute("aria-label") === "Edited by you"'), 'the Edited by you mark');
+
+    // Revert all leaves it alone (no question: nothing else to revert) and says so.
+    await browser.clickSelector('[data-action="revert-all"]');
+    await until(async () => (await text()).includes('Kept 1 file(s) you edited: notes/hello.txt.'), 'the notice');
+    assert.equal(readFileSync(notes, 'utf8'), mine);
+
+    // Going back to before the request keeps it too, and the question names it first.
+    await browser.clickSelector('[data-action="rewind"]');
+    await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog")'), 'the confirmation dialog');
+    assert.match(await text(), /Files you edited yourself are kept: notes\/hello\.txt\./);
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-action"][data-value="Go back"]');
+    await until(async () => /Went back\..*Kept 1 file\(s\) you edited: notes\/hello\.txt\./.test(await text()), 'the notice');
+    assert.equal(readFileSync(notes, 'utf8'), mine);
+
+    // Revert offers only to undo the agent's part, which needs Git.
+    if (spawnSync('git', ['--version']).status !== 0) return;
+    await showChanges();
+    await browser.clickSelector('.changes [data-action="revert"]');
+    await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog")'), 'the Revert dialog');
+    assert.match(await text(), /You edited notes\/hello\.txt after the agent\./);
+    assert.deepEqual(await browser.evaluate('[...document.querySelectorAll(".modal-backdrop [data-action=dialog-action]")].map((b) => b.dataset.value)'), ["Undo only the agent's part"]);
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-action"]');
+    await until(() => readFileSync(notes, 'utf8') === 'one\ntwo\nthree\nfour\nfive\nmine six\n', "only the agent's part undone");
   });
 
   it('only lets its own window in', async () => {

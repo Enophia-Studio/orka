@@ -160,6 +160,28 @@ describe('web tools', () => {
     assert.match(asked[0].detail ?? '', /may contain secrets \(\.env\)/);
   });
 
+  it('a secret file the user put into the context by hand also makes web access ask', async () => {
+    const asked: string[] = [];
+    const approvingHost = new RecordingHost({
+      workspaceRoot: ws.root,
+      approve: async (request) => {
+        asked.push(request.detail ?? '');
+        return { approved: false, feedback: 'no' };
+      },
+    });
+    const main = new ScriptedProvider([() => [call('web_fetch', { url: `${base}/page` })], () => [text('ok')]]);
+    const orchestrator = new Orchestrator({
+      host: approvingHost,
+      getProvider: () => main,
+      permissions: new PermissionManager('balanced'),
+      getSettings: () => ({ maxIterations: 6, autoVerify: false, commandTimeoutMs: 10_000 }),
+    });
+    orchestrator.noteSecretContext('config/.env');
+    await orchestrator.run('check the docs');
+    assert.equal(asked.length, 1);
+    assert.match(asked[0], /may contain secrets \(config\/\.env\)/);
+  });
+
   it('open_browser opens URLs and workspace files; local pages need no approval', async () => {
     writeFileSync(path.join(ws.root, 'index.html'), '<h1>hi</h1>');
     const local = await openBrowserTool.describe({ target: 'http://localhost:5173/' }, ctx());

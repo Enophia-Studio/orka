@@ -12,9 +12,10 @@ import { isSecretFile, secretInCommand } from '../permissions/secrets';
 import type { Plan } from '../planning/Plan';
 import { JsonRpcError, RPC_INTERNAL_ERROR, RPC_INVALID_PARAMS } from '../rpc/JsonRpcStdio';
 import { gitConfigRisk } from '../tools/GitTools';
+import { insideWorkspace, writeInsideWorkspace } from '../tools/safeFs';
 import { toRelative } from '../tools/workspace';
 import type { AcpClient, AcpSessionHandlers } from './AcpClient';
-import { AcpTurnMapper, isInside, safeId } from './mapping';
+import { AcpTurnMapper, safeId } from './mapping';
 import { AcpTerminals, commandLine } from './terminals';
 import {
   ACP_RESOURCE_NOT_FOUND,
@@ -28,7 +29,11 @@ import {
   type WriteTextFileParams,
 } from './types';
 
+/** Moved to tools/safeFs; still exported here for existing importers. */
+export { writeInsideWorkspace };
+
 /** What a session needs from the task it belongs to (the orchestrator provides it). */
+
 export interface AcpSessionContext {
   host: Host;
   permissions: PermissionManager;
@@ -434,103 +439,13 @@ export class AcpAgentSession {
    */
   private workspacePath(input: string): string {
     const abs = path.resolve(this.root, input);
-    if (!isInside(this.root, abs)) throw this.outside(input);
-    let real: string | undefined;
-    try {
-      real = realTarget(abs);
-    } catch {
-      real = undefined;
-    }
-    if (!real || !isInside(realPath(this.root), real)) throw this.outside(input);
+    if (!insideWorkspace(this.root, abs)) throw this.outside(input);
     return abs;
   }
 
   private outside(input: string): JsonRpcError {
     return new JsonRpcError(`Orka only lets agents use files inside the workspace (${this.root}); ${input} is outside it.`, RPC_INVALID_PARAMS);
   }
-}
-
-/**
- * Write a file inside the workspace, never through a link that leads out of it. The path is
- * resolved first (a link inside the workspace, such as GEMINI.md -> AGENTS.md, is written through
- * to its target) and the target and its folder must lie inside the workspace right before it is
- * opened. The target is opened without following a link where the system can (O_NOFOLLOW; a FIFO
- * is not waited for), and before anything is written the opened file must be the one the target
- * names (on Windows, which cannot refuse links when opening, not a link or junction) and lie
- * inside the workspace. Synchronous, so nothing else in Orka runs between the checks and the
- * write. False when it was refused: nothing was written (a file that did not exist may be left
- * empty where a folder of its path was swapped for a link between the last check and the open).
- */
-export function writeInsideWorkspace(root: string, abs: string, content: string): boolean {
-  const { O_WRONLY, O_CREAT, O_NOFOLLOW = 0, O_NONBLOCK = 0 } = fs.constants;
-  const realRoot = realPath(root);
-  let target: string;
-  try {
-    target = realTarget(abs);
-  } catch {
-    return false; // a link loop
-  }
-  if (!isInside(realRoot, target) || !isInside(realRoot, realPath(path.dirname(target)))) return false;
-  let fd: number;
-  try {
-    fd = fs.openSync(target, O_WRONLY | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o666);
-  } catch (error) {
-    // The target became a link (ELOOP; EMLINK on some BSDs).
-    if (['ELOOP', 'EMLINK'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
-    throw error;
-  }
-  try {
-    const opened = fs.fstatSync(fd, { bigint: true });
-    const named = fs.lstatSync(target, { bigint: true });
-    if (!opened.isFile() || named.isSymbolicLink() || named.dev !== opened.dev || named.ino !== opened.ino) return false;
-    if (!isInside(realRoot, fs.realpathSync.native(target))) return false;
-    // Linux tells which file was opened, whatever happened to the path meanwhile.
-    if (process.platform === 'linux' && !isInside(realRoot, readLink(`/proc/self/fd/${fd}`) ?? realRoot)) return false;
-    fs.ftruncateSync(fd, 0);
-    fs.writeFileSync(fd, content, 'utf8');
-    return true;
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-function realPath(p: string): string {
-  try {
-    return fs.realpathSync.native(p);
-  } catch {
-    return p;
-  }
-}
-
-function readLink(p: string): string | undefined {
-  try {
-    return fs.readlinkSync(p);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Where a path really leads, also when it does not exist yet: the nearest part of it that exists
- * (a link counts, even one whose target is missing) resolved, the rest appended. A dangling link
- * is followed to its target, as writing through it would. Throws on a link loop.
- */
-function realTarget(target: string, depth = 0): string {
-  if (depth > 40) throw new Error(`Too many links: ${target}`);
-  let probe = target;
-  while (!lexists(probe) && path.dirname(probe) !== probe) probe = path.dirname(probe);
-  const rest = path.relative(probe, target);
-  let real: string | undefined;
-  try {
-    real = fs.realpathSync.native(probe);
-  } catch {
-    real = undefined;
-  }
-  if (real !== undefined) return path.join(real, rest);
-  // It exists but does not resolve: a link to something missing. Its target counts, relative to the link's real folder.
-  const link = fs.readlinkSync(probe);
-  const next = path.resolve(fs.realpathSync.native(path.dirname(probe)), link);
-  return realTarget(path.join(next, rest), depth + 1);
 }
 
 /** Orka answers "once" so the next request asks Orka again; without such an option, the request is cancelled. */
@@ -565,16 +480,6 @@ function approveWrite(turn: Turn, file: string, hash: string | 'any'): void {
   const current = turn.approvedWrites.get(key);
   if (current === 'any' || hash === 'any') turn.approvedWrites.set(key, 'any');
   else turn.approvedWrites.set(key, new Set([...(current ?? []), hash]));
-}
-
-/** The path exists, as a file, a folder or a link (even one whose target is missing). */
-function lexists(p: string): boolean {
-  try {
-    fs.lstatSync(p);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function abortPromise(signal: AbortSignal): Promise<undefined> {
