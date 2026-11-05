@@ -504,7 +504,7 @@ describe('Radar fetch', () => {
     requests.length = 0;
     const elsewhere = await fetchSource(feed('/elsewhere'), { fetchImpl: local });
     assert.equal(elsewhere.status, 'error');
-    assert.ok((elsewhere.status === 'error' ? elsewhere.error : '').includes('evil.example.net'));
+    assert.equal(elsewhere.status === 'error' ? elsewhere.error : '', 'Refused a redirect to evil.example.net: not one of the hosts allowed for this source.');
     assert.deepEqual(
       requests.map((r) => r.host),
       ['feeds.example.com'],
