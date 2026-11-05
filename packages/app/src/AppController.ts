@@ -14,43 +14,28 @@ import {
   pooledAgent,
   type AgentEvent,
   type AIProvider,
-  type ApprovalRequest,
-  type ApprovalResponse,
   applyEvent,
   checkAppUpdate,
   createProvider,
   DEFAULT_SUBAGENTS,
   describeModel,
-  type EditorContext,
   emptySession,
   EXTERNAL_AGENTS,
   externalAgent,
   FileTaskStore,
   findExecutable,
   getLocale,
-  Handoff,
-  handoffBrief,
-  hunkHeader,
   inferModel,
-  initProjectMemory,
   isChatModelId,
   isNewerVersion,
-  isSecretFile,
-  lineText,
   listModels,
   loadSkills,
-  hasHooks,
-  type HooksConfig,
   McpManager,
   type McpServerConfig,
   MODEL_CATALOG,
   type ModelInfo,
-  type NodeHost,
   newTaskId,
-  NO_HOOKS,
-  type OrchestratorSettings,
   normalizeLocale,
-  Orchestrator,
   PermissionManager,
   type PermissionMode,
   type ProviderConfig,
@@ -58,27 +43,20 @@ import {
   PROVIDER_PRESETS,
   PROVIDERS,
   type ProviderKind,
-  readInsideWorkspace,
   releasePageUrl,
   resolveClaudeExecutable,
   type SessionView,
   setLocale,
-  ShadowGit,
   type Skill,
   SKILL_NAME,
   skillTemplate,
-  slimSession,
   systemLocale,
   t,
-  type TaskSnapshot,
-  tn,
   type Tool,
-  userRequests,
   VERSION,
 } from '@orka/core';
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { existsSync, promises as fs, realpathSync, statSync } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import type {
@@ -90,7 +68,6 @@ import type {
   EditorSelection,
   ExternalAgentView,
   FromWebview,
-  HunkView,
   ImageAttachment,
   McpServerView,
   ProviderView,
@@ -116,8 +93,8 @@ import {
   SHELL_CHOICES,
   WEBVIEW_SETTINGS,
 } from './settings';
-import type { AppShell, PickItem, TerminalHandle } from './shell';
-import { WorkspaceFiles } from './workspaceFiles';
+import { dropNotices, samePath, type SessionContext, SessionController, type SessionMessage } from './SessionController';
+import type { AppShell, PickItem } from './shell';
 
 const isModelId = (value: unknown): value is string => typeof value === 'string' && /^[\w.:/@-]{1,160}$/.test(value);
 const secretKey = (ref: string) => `orka.apiKey.${ref}`;
@@ -126,26 +103,11 @@ const ENV_KEYS: Partial<Record<ProviderKind, string[]>> = {
   openai: ['OPENAI_API_KEY'],
   gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
 };
-const MAX_ATTACHMENTS = 10;
-const MAX_ATTACHMENT_BYTES = 200_000;
 const MCP_TRUST_STATE = 'orka.mcpTrust';
 const MODEL_CACHE_STATE = 'orka.modelCache';
 const CLAUDE_UPDATE_STATE = 'orka.claudeCodeUpdatedAt';
-const HOOKS_TRUST_STATE = 'orka.hooksTrust';
 /** How often model lists and Claude Code are refreshed in the background. */
 const MODEL_REFRESH_MS = 24 * 60 * 60 * 1000;
-/** The longest editor selection sent with a message (the context builder's own limit). */
-const MAX_SELECTION_CHARS = 8_000;
-const MAX_SELECTION_LINE = 10_000_000;
-/**
- * The only files "Open in system app" opens: documents, images and media whose usual handlers
- * show them. Anything else may be run by the system when opened (a script, an installer, a help
- * file, a shortcut), and a name of a known type with a trailing dot or space does not match.
- */
-const PASSIVE_FILE =
-  /\.(txt|md|markdown|log|csv|tsv|json|jsonc|xml|ya?ml|toml|ini|pdf|rtf|docx|xlsx|pptx|odt|ods|odp|epub|png|jpe?g|gif|bmp|webp|ico|tiff?|psd|tga|exr|hdr|avif|heic|mp3|wav|ogg|oga|flac|m4a|aac|opus|mp4|m4v|mov|webm|mkv|avi|wmv|ttf|otf|woff2?|fbx|obj|gltf|glb|stl|dae|3ds|ply|zip|7z|rar|tar|gz|tgz)$/i;
-const MAX_HUNKS = 40;
-const MAX_HUNK_LINES = 80;
 /** Tasks per folder in the desktop app's session list. */
 const MAX_SESSION_TASKS = 30;
 /** The user's own groups of sessions and the sessions they hid (desktop session list). */
@@ -155,8 +117,6 @@ const ORGANIZER_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const APP_UPDATE_STATE = 'orka.appUpdate';
 /** How often a running app looks again whether the daily update check is due. */
 const APP_UPDATE_POLL_MS = 6 * 60 * 60 * 1000;
-/** How long a new task waits for a stopped request to end (an agent CLI is stopped after 5 s). */
-const STOP_WAIT_MS = 8_000;
 
 /** The last answer about Orka releases, and the version the user was already told about. */
 interface AppUpdateState {
@@ -178,9 +138,10 @@ export interface AppControllerOptions {
 }
 
 /**
- * Owns the orchestrator for the current folder and connects it to the chat UI, settings, secret
- * storage, task history and diffs. The same controller runs in the VS Code extension and in the
- * desktop app; everything platform-specific goes through the AppShell. The main agent, the
+ * Connects the chat UI to the session of the current folder (its orchestrator, task, changes and
+ * files: a SessionController), and owns what all sessions share: settings, secret storage,
+ * providers, skills, MCP servers and Radar. The same controller runs in the VS Code extension and
+ * in the desktop app; everything platform-specific goes through the AppShell. The main agent, the
  * supervisor and each sub-agent can run on any provider and model.
  */
 export class AppController implements Disposable {
@@ -190,16 +151,17 @@ export class AppController implements Disposable {
   private readonly apiKeys = new Map<string, string>();
   /** Models reported by a provider's own model list (built-in providers). */
   private readonly discoveredModels = new Map<string, string[]>();
-  private readonly pendingApprovals = new Map<string, (response: ApprovalResponse) => void>();
   private readonly disposables: Disposable[] = [];
   /** Provider instances by configuration, shared by all agent roles. */
   private readonly providers = new Map<string, AIProvider>();
   private providersStale = false;
-  private orchestrator?: Orchestrator;
-  private host?: NodeHost;
-  private store?: FileTaskStore;
-  private task = { id: newTaskId(), createdAt: new Date().toISOString() };
-  private session: SessionView = emptySession();
+  /** Live sessions by id, and the one the chat UI shows (one session, of the current folder, for now). */
+  private readonly sessions = new Map<string, SessionController>();
+  private activeId?: string;
+  private readonly sessionContext: SessionContext;
+  /** What the chat UI shows while no folder is open: notices only. */
+  private idleView: SessionView = emptySession();
+  private readonly idleTaskId = newTaskId();
   private claudeCodeStatus: ClaudeCodeStatus = { state: 'unknown' };
   /** Built-in and user skills (all of them; disabled ones are filtered when a task starts). */
   private skills: Skill[] = [];
@@ -207,17 +169,6 @@ export class AppController implements Disposable {
   private skillErrors: string[] = [];
   /** MCP servers, kept running across tasks. */
   private readonly mcp = new McpManager(() => this.postConfig());
-  /** Workspace snapshots around terminal commands and hand-offs (a private git dir). */
-  private snapshots?: ShadowGit;
-  /** An open hand-off to an external agent and the terminal it runs in. */
-  private handoff?: { session: Handoff; terminal: TerminalHandle };
-  /**
-   * A hand-off is starting (its snapshot is taken) or being collected (its changes are read):
-   * Save stays refused, or the user's save would be taken for the external agent's change.
-   */
-  private handoffBusy = 0;
-  /** The workspace .mcp.json as last read (for the settings view). */
-  private workspaceMcpCache: { servers: Record<string, McpServerConfig>; hash: string } = { servers: {}, hash: '' };
   private appUpdateCheck?: Promise<void>;
   private appUpdateTimer?: ReturnType<typeof setInterval>;
   /** Agent CLI processes (ACP), shared by the tasks of every folder; and what their last check found. */
@@ -225,15 +176,8 @@ export class AppController implements Disposable {
   private readonly agentStatus = new Map<string, AgentCliView['status']>();
   /** "No Supervisor next to this agent" was said once already. */
   private supervisorSkipNoted = false;
-  /** The request that runs now: a new task waits for it to end in its own task. */
-  private running?: Promise<unknown>;
-  private startingTask?: Promise<void>;
   /** The desktop app's Radar (VS Code and the CLI have none). */
   private readonly radar?: RadarController;
-  /** The desktop app's Files tree and editor, for the open folder (VS Code has its own editor). */
-  private files?: WorkspaceFiles;
-  /** Saves under way, by path: one at a time per file. */
-  private readonly saving = new Map<string, Promise<void>>();
 
   constructor(
     private readonly shell: AppShell,
@@ -241,6 +185,7 @@ export class AppController implements Disposable {
   ) {
     this.settings = readSettings(shell.settings);
     this.permissions = new PermissionManager(this.settings.mode, this.settings.overrides);
+    this.sessionContext = this.createSessionContext();
     this.applyLocale();
     if (shell.kind === 'desktop' && shell.orkaHome) {
       this.radar = new RadarController(
@@ -259,9 +204,9 @@ export class AppController implements Disposable {
     shell.setMessageHandler((m) => void this.handleMessage(m).catch((e) => this.reportError(e)));
     this.disposables.push(
       shell.watch('skills', () => void this.reloadSkills()),
-      shell.watch('mcpConfig', () => void this.workspaceMcp().then(() => this.postConfig())),
+      shell.watch('mcpConfig', () => void this.readWorkspaceMcp().then(() => this.postConfig())),
       shell.settings.onDidChange(() => void this.onSettingsChanged()),
-      shell.onDidChangeFolder(() => this.recreateOrchestrator()),
+      shell.onDidChangeFolder(() => this.replaceSession()),
     );
     const secrets = shell.secrets.onDidChange?.((key) => {
       const ref = this.keyedProviders().find((r) => secretKey(r) === key);
@@ -273,9 +218,9 @@ export class AppController implements Disposable {
 
   async initialize(): Promise<void> {
     await Promise.all([...this.keyedProviders().map((ref) => this.loadApiKey(ref)), this.reloadSkills(false)]);
-    this.recreateOrchestrator();
+    this.replaceSession();
     void (this.settings.claudeCode.enabled ? this.checkClaudeCode() : Promise.resolve()).then(() => this.scheduledUpdates());
-    void this.workspaceMcp().then(() => this.postConfig());
+    void this.readWorkspaceMcp().then(() => this.postConfig());
     void this.checkAppUpdate();
     this.appUpdateTimer = setInterval(() => void this.checkAppUpdate(), APP_UPDATE_POLL_MS);
     this.appUpdateTimer.unref?.();
@@ -306,29 +251,37 @@ export class AppController implements Disposable {
   async handleMessage(message: FromWebview): Promise<void> {
     switch (message.type) {
       case 'ready':
-        this.shell.post({ type: 'init', session: this.session, config: this.configView(), taskId: this.task.id });
+        this.postInit();
         this.radar?.postAll();
         break;
       case 'send':
-        await this.send(message.text, message.files, message.skills, message.images, message.editor);
-        break;
       case 'stop':
-        this.stop();
-        break;
       case 'rewind':
-        await this.rewind(message.id);
+      case 'compact':
+      case 'approve':
+      case 'previewApproval':
+      case 'openDiff':
+      case 'acceptChange':
+      case 'revertChange':
+      case 'getHunks':
+      case 'revertHunk':
+      case 'keepHunk':
+      case 'acceptAll':
+      case 'revertAll':
+      case 'handoff':
+      case 'searchFiles':
+      case 'listDir':
+      case 'readFile':
+      case 'saveFile':
+      case 'openExternalFile':
+      case 'initMemory': {
+        const session = this.activeSession;
+        if (session) await session.handle(message);
+        else await this.withoutSession(message);
         break;
+      }
       case 'newTask':
         await this.newTask(message.folder);
-        break;
-      case 'compact':
-        await this.compact();
-        break;
-      case 'approve':
-        this.resolveApproval(message.id, { approved: message.approved, feedback: message.feedback, alwaysAllow: message.always });
-        break;
-      case 'previewApproval':
-        await this.shell.openApprovalPreview(message.id);
         break;
       case 'setMode':
         await this.updateSetting('permissionMode', message.mode);
@@ -390,9 +343,6 @@ export class AppController implements Disposable {
       case 'updateClaudeCode':
         await this.updateClaudeCode();
         break;
-      case 'handoff':
-        await this.handOff(message.agent, message.text);
-        break;
       case 'checkForUpdates':
         await this.checkForUpdates();
         break;
@@ -410,9 +360,6 @@ export class AppController implements Disposable {
       case 'resetClaudeExecutable':
         await this.updateSetting('claudeCode.path', '');
         await this.checkClaudeCode();
-        break;
-      case 'initMemory':
-        await this.initMemory();
         break;
       case 'openSettings':
         await this.shell.openSettings('all');
@@ -432,35 +379,8 @@ export class AppController implements Disposable {
       case 'deleteTask':
         await this.deleteTask(message.id, message.folder);
         break;
-      case 'searchFiles':
-        await this.searchFiles(message.query);
-        break;
-      case 'openDiff':
-        await this.shell.openChangeDiff(message.path);
-        break;
       case 'openFile':
         await this.shell.openFile(message.path, { preview: true });
-        break;
-      case 'acceptChange':
-        this.requireOrchestrator().changes.accept(message.path);
-        break;
-      case 'revertChange':
-        await this.revert(message.path);
-        break;
-      case 'getHunks':
-        await this.postHunks(message.path);
-        break;
-      case 'revertHunk':
-        await this.revertHunk(message.path, message.index, message.header);
-        break;
-      case 'keepHunk':
-        await this.keepHunk(message.path, message.index, message.header);
-        break;
-      case 'acceptAll':
-        this.acceptAll();
-        break;
-      case 'revertAll':
-        await this.revertAll();
         break;
       case 'toggleSkill':
         await this.toggleSkill(message.name, message.enabled);
@@ -511,129 +431,28 @@ export class AppController implements Disposable {
       case 'dialogResult':
         // Answered inside the shell that asked.
         break;
-      case 'listDir':
-        this.listDir(message.path);
+    }
+  }
+
+  /** A session's message while no folder is open: a request or a hand-off says why nothing happens. */
+  private async withoutSession(message: SessionMessage): Promise<void> {
+    switch (message.type) {
+      case 'send':
+        await this.send(message.text);
         break;
-      case 'readFile':
-        this.readFile(message.path, message.knownHash);
+      case 'handoff':
+        await this.handOff(message.agent, message.text);
         break;
-      case 'saveFile':
-        await this.saveFile(message.path, message.text, message.baseHash);
+      case 'searchFiles':
+        this.shell.post({ type: 'fileMatches', query: message.query, files: [] });
         break;
-      case 'openExternalFile':
-        await this.openExternalFile(message.path);
+      case 'acceptChange':
+      case 'revertChange':
+      case 'revertHunk':
+      case 'keepHunk':
+        this.requireSession();
         break;
     }
-  }
-
-  // ---------------------------------------------------------------- desktop Files and editor
-
-  private listDir(rel: unknown): void {
-    if (!this.files || typeof rel !== 'string') return;
-    const listing = this.files.list(rel);
-    this.shell.post(
-      'error' in listing
-        ? { type: 'dirEntries', path: rel, error: listing.error }
-        : { type: 'dirEntries', path: rel, entries: listing.entries, ...(listing.truncated ? { truncated: true as const } : {}) },
-    );
-  }
-
-  private readFile(rel: unknown, knownHash: unknown): void {
-    if (!this.files || typeof rel !== 'string') return;
-    const read = this.files.read(rel, typeof knownHash === 'string' ? knownHash : undefined);
-    if ('error' in read) this.shell.post({ type: 'fileContent', path: rel, ok: false, reason: read.error });
-    else if ('unchanged' in read) this.shell.post({ type: 'fileContent', path: rel, ok: true, unchanged: true, hash: read.hash });
-    else this.shell.post({ type: 'fileContent', path: rel, ok: true, ...read });
-  }
-
-  /**
-   * Save the editor's text. Refused while an agent works or a hand-off is open: their change
-   * tracking would take the save for the agent's. A saved file the agent changed is marked as
-   * edited by the user, so Revert, Go back and hunk Revert leave the user's edit alone.
-   */
-  private async saveFile(rel: unknown, text: unknown, baseHash: unknown): Promise<void> {
-    if (!this.files || typeof rel !== 'string') return;
-    const key = rel.toLowerCase();
-    const save = (this.saving.get(key) ?? Promise.resolve()).then(() => this.saveNow(rel, text, baseHash));
-    const done = save.catch(() => undefined);
-    this.saving.set(key, done);
-    try {
-      await save;
-    } finally {
-      if (this.saving.get(key) === done) this.saving.delete(key);
-    }
-  }
-
-  private saveNow(rel: string, text: unknown, baseHash: unknown): void {
-    const files = this.files;
-    const orchestrator = this.orchestrator;
-    if (!files || !orchestrator) return;
-    if (orchestrator.isRunning || this.handoff || this.handoffBusy > 0) {
-      this.shell.post({ type: 'saveRefused', path: rel, reason: 'running' });
-      return;
-    }
-    const file = files.resolve(rel);
-    if (!file) {
-      this.shell.post({ type: 'saveRefused', path: rel, reason: 'outside' });
-      return;
-    }
-    const result = files.save(rel, text as string, baseHash as string);
-    if (!result.ok) {
-      this.shell.post({ type: 'saveRefused', path: rel, reason: result.reason, ...(result.hash ? { hash: result.hash } : {}) });
-      return;
-    }
-    // The tracker knows a file by the path the agent used, which may be another link to the same
-    // file: note the save under each tracked path that leads to it (each path once).
-    const paths = [file.abs, file.real];
-    for (const tracked of orchestrator.changes.trackedPaths()) {
-      const real = realPathOf(tracked);
-      if (real && samePath(real, file.real)) paths.push(tracked);
-    }
-    const noted: string[] = [];
-    for (const p of paths) {
-      if (noted.some((n) => samePath(n, p))) continue;
-      noted.push(p);
-      orchestrator.changes.noteUserEdit(p, result.before, result.after);
-    }
-    orchestrator.addNote(`The user edited ${rel} by hand in the editor; re-read it before editing it again.`);
-    this.shell.post({ type: 'fileSaved', path: rel, hash: result.hash });
-    // Changes and their hunks are published again, so hunk numbers match the saved file.
-    orchestrator.changes.notify();
-  }
-
-  /**
-   * "Open in system app" for a file of the folder: only a document, image or media file (never a
-   * program or script, which that would run), and on macOS and Linux never one marked executable.
-   */
-  private async openExternalFile(rel: unknown): Promise<void> {
-    if (!this.files || typeof rel !== 'string') return;
-    const file = this.files.resolve(rel);
-    if (!file) return;
-    if (!PASSIVE_FILE.test(file.real) || (process.platform !== 'win32' && isExecutable(file.real))) {
-      void this.shell.message('warning', t('Orka opens only documents, images and media with the system app, never programs or scripts: {file}.', { file: rel }));
-      return;
-    }
-    await this.shell.openFile(file.real);
-  }
-
-  /**
-   * The editor's file and selection as the agent's context, checked: a file inside the folder and
-   * valid line numbers. {} when there is none (or the app has no Files editor); undefined when it
-   * is not valid.
-   */
-  private editorSelection(editor: EditorSelection | undefined, root: string): EditorContext | undefined {
-    if (!this.files || editor === undefined) return {};
-    if (!editor || typeof editor !== 'object' || typeof editor.file !== 'string') return undefined;
-    const file = this.files.resolve(editor.file);
-    if (!file || !isFile(file.real)) return undefined;
-    let selection: EditorContext['selection'];
-    if (editor.selection !== undefined) {
-      const { startLine, endLine, text } = editor.selection ?? {};
-      const line = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= MAX_SELECTION_LINE;
-      if (!line(startLine) || !line(endLine) || startLine > endLine || typeof text !== 'string') return undefined;
-      selection = { startLine, endLine, text: text.slice(0, MAX_SELECTION_CHARS) };
-    }
-    return { ...this.shell.editorContext(root), activeFile: file.rel, ...(selection ? { selection } : {}) };
   }
 
   private async applyWebviewSetting(key: string, value: unknown): Promise<void> {
@@ -649,75 +468,128 @@ export class AppController implements Disposable {
     if (WEBVIEW_SETTINGS[key]?.(value)) await this.updateSetting(key, value);
   }
 
+  // ---------------------------------------------------------------- the session shown
+
+  /** The session the chat UI shows (undefined while no folder is open). */
+  get activeSession(): SessionController | undefined {
+    return this.activeId === undefined ? undefined : this.sessions.get(this.activeId);
+  }
+
+  private anyRunning(): boolean {
+    return [...this.sessions.values()].some((s) => s.isRunning);
+  }
+
+  private requireSession(): SessionController {
+    const session = this.activeSession;
+    if (!session) throw new Error('No workspace folder is open.');
+    return session;
+  }
+
+  /** The page shows the active session's task (or, without a folder, the notices only) from scratch. */
+  private postInit(): void {
+    const session = this.activeSession;
+    if (session) session.postInit();
+    else this.shell.post({ type: 'init', session: this.idleView, config: this.configView(), taskId: this.idleTaskId });
+  }
+
+  private createSessionContext(): SessionContext {
+    return {
+      shell: this.shell,
+      permissions: this.permissions,
+      settings: () => this.settings,
+      providerFor: (name) => this.providerFor(name),
+      externalAgent: (root) => this.externalAgent(root),
+      mcpTools: (session) => this.mcpTools(session),
+      skills: () => this.skills,
+      activeSkills: () => this.activeSkills(),
+      reloadSkills: (post) => this.reloadSkills(post),
+      inheritsNoModel: (name) => this.inheritsNoModel(name),
+      readyToSend: (session) => this.readyToSend(session),
+      mainReady: () => this.isReady(this.mainProvider()),
+      isInstalled: (id, fresh) => this.isInstalled(id, fresh),
+      agentEvent: (event) => this.onAgentEvent(event),
+      configView: () => this.configView(),
+      postConfig: () => this.postConfig(),
+      postHistory: () => this.postHistory(),
+      changed: () => this.updateStatus(),
+      runFinished: () => {
+        if (this.providersStale) this.disposeProviders();
+      },
+    };
+  }
+
+  /**
+   * The current folder's session replaces the one there was: the old one saves its task, lets go of
+   * an open hand-off, stops its processes and answers open approvals "no".
+   */
+  private replaceSession(): void {
+    for (const session of this.sessions.values()) void session.dispose();
+    this.sessions.clear();
+    this.activeId = undefined;
+    const folder = this.shell.currentFolder();
+    if (!folder) {
+      this.shell.attach(undefined, this.settings);
+      this.idleView = emptySession();
+      this.postInit();
+      this.updateStatus();
+      return;
+    }
+    const session = new SessionController(this.sessionContext, folder.path);
+    this.sessions.set(session.id, session);
+    this.activeId = session.id;
+    this.shell.attach(session.orchestrator, this.settings);
+    session.postInit();
+    this.updateStatus();
+    void session.workspaceMcp().then(() => this.postConfig());
+  }
+
   // ---------------------------------------------------------------- agent actions
 
   async send(text: string, files: string[] = [], skillNames: string[] = [], images: ImageAttachment[] = [], editor?: EditorSelection): Promise<void> {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    const orchestrator = this.orchestrator;
-    if (!orchestrator) {
+    if (!text.trim()) return;
+    const session = this.activeSession;
+    if (!session) {
       void this.shell.message('warning', this.noFolderText());
       return;
     }
-    if (orchestrator.isRunning) {
-      void this.shell.message('info', t('The agent is still working. Stop it first or wait until it finishes.'));
-      return;
-    }
-    const root = this.host!.workspaceRoot;
-    const fromEditor = this.editorSelection(editor, root);
-    if (!fromEditor) {
-      this.publishNotice('warning', t('Not sent: the selection from the editor does not name a file and lines in this folder.'));
-      return;
-    }
+    await session.send(text, files, skillNames, images, editor);
+  }
+
+  /** The main agent's provider can take a request; when not, the session says why. */
+  private readyToSend(session: SessionController): boolean {
     const main = this.mainProvider();
     const agent = this.agentFor(main);
     if (agent && !this.isReady(main)) {
       const status = this.agentStatus.get(agent.id);
-      this.publishNotice(
+      session.publishNotice(
         'error',
         status?.state === 'not_found'
           ? t('{agent} is not installed. Install it ({hint}), then check it again in Settings > Providers.', { agent: agent.label, hint: installHint(agent) || '?' })
           : t('{agent} could not be started: {error}', { agent: agent.label, error: status?.detail ?? '?' }),
         'agentClis',
       );
-      return;
+      return false;
     }
     if (!this.isReady(main)) {
-      this.publishNotice(
+      session.publishNotice(
         'error',
         t('No API key set for {provider}. Add one (kept in secure storage on this machine), or pick another provider for the main agent.', {
           provider: this.providerLabel(main),
         }),
         `setApiKey:${main}`,
       );
-      return;
+      return false;
     }
     if (agent && this.settings.supervisor.enabled && !this.supervisorSkipNoted && this.inheritsNoModel('supervisor')) {
       this.supervisorSkipNoted = true;
-      this.publishNotice(
+      session.publishNotice(
         'info',
         t('No Supervisor while {agent} is the main agent: it needs a model provider of its own. Add an API key, or pick a provider for the Supervisor in Settings > Agents.', {
           agent: agent.label,
         }),
       );
     }
-    // Files an external agent changed meanwhile become reviewable changes, and the agent hears about them.
-    if (this.handoff) await this.collectHandoff(false);
-    // A new task picks up skills added or edited since the last one.
-    if (!orchestrator.history.length) await this.reloadSkills(false);
-    const invoked = [...new Set(skillNames)].map((name) => this.skills.find((s) => s.name === name)).filter((s): s is Skill => !!s);
-    await this.confirmWorkspaceHooks();
-    const attachments = await this.readAttachments(files);
-    // A secret-looking file the user put into the context arms the secrets guard, as an agent's read of it would.
-    if (fromEditor.activeFile && isSecretFile(fromEditor.activeFile)) orchestrator.noteSecretContext(fromEditor.activeFile);
-    const context = fromEditor.activeFile ? fromEditor : this.shell.editorContext(root);
-    const run = orchestrator.run(trimmed, context, attachments, { skills: invoked, images: validImages(images) });
-    this.running = run;
-    try {
-      await run;
-    } finally {
-      if (this.running === run) this.running = undefined;
-    }
+    return true;
   }
 
   private noFolderText(): string {
@@ -738,45 +610,11 @@ export class AppController implements Disposable {
   }
 
   stop(): void {
-    this.orchestrator?.stop();
+    this.activeSession?.stop();
   }
 
-  /**
-   * Go back to just before one of this task's messages: the conversation from there on is
-   * removed, files the agents changed since are restored, and the message is put back in the box.
-   */
   async rewind(id: string): Promise<void> {
-    const orchestrator = this.orchestrator;
-    if (!orchestrator) return;
-    if (orchestrator.isRunning) {
-      void this.shell.message('info', t('The agent is still working. Stop it first, then go back.'));
-      return;
-    }
-    if (!orchestrator.rewindTargets.some((p) => p.id === id)) {
-      void this.shell.message('info', t('Going back to this message is no longer possible: the task was compacted or reopened since.'));
-      return;
-    }
-    const back = t('Go back');
-    const keep = (await orchestrator.rewindPreview(id))?.keep ?? [];
-    const choice = await this.shell.message(
-      'warning',
-      t('Go back to before this message? The conversation from here on is removed, and files the agents changed since return to how they were. The file changes stay reviewable in Changes.') +
-        (keep.length ? ` ${t('Files you edited yourself are kept: {files}.', { files: keep.slice(0, 8).join(', ') })}` : ''),
-      { modal: true },
-      back,
-    );
-    if (choice !== back) return;
-    const result = await orchestrator.rewind(id);
-    if (!result) return;
-    this.shell.post({ type: 'setInput', text: result.text });
-    this.publishNotice(
-      'info',
-      (result.restored.length
-        ? t('Went back. Restored {n} file(s): {files}. Edit the message and send it again.', { n: result.restored.length, files: result.restored.slice(0, 8).join(', ') })
-        : t('Went back. Edit the message and send it again.')) +
-        (result.kept.length ? ` ${t('Kept {n} file(s) you edited: {files}.', { n: result.kept.length, files: result.kept.slice(0, 8).join(', ') })}` : ''),
-    );
-    await this.saveTask();
+    await this.activeSession?.rewind(id);
   }
 
   /**
@@ -784,7 +622,7 @@ export class AppController implements Disposable {
    * app's session list), the new task is in that recent folder; without any folder, one is picked.
    */
   async newTask(folder?: string): Promise<void> {
-    if (folder !== undefined || !this.orchestrator) {
+    if (folder !== undefined || !this.activeSession) {
       const target = folder === undefined ? undefined : this.recentFolder(folder);
       if (folder !== undefined && !target) return;
       // Another folder starts with a new task of its own.
@@ -793,151 +631,60 @@ export class AppController implements Disposable {
         return;
       }
     }
-    // A second click while the first one waits for the request to end starts no other task.
-    this.startingTask ??= this.startNewTask().finally(() => (this.startingTask = undefined));
-    return this.startingTask;
-  }
-
-  private async startNewTask(): Promise<void> {
-    if (this.orchestrator?.isRunning) {
-      this.orchestrator.stop();
-      // The stopped request ends in its own task and is saved there (an agent CLI gets a few
-      // seconds to end its turn); a request that does not end in time is left out of both.
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      await Promise.race([this.running?.catch(() => undefined), new Promise<void>((resolve) => (timer = setTimeout(resolve, STOP_WAIT_MS)))]);
-      clearTimeout(timer);
-    }
-    await this.saveTask();
-    this.task = { id: newTaskId(), createdAt: new Date().toISOString() };
-    this.orchestrator?.reset();
-    await this.postHistory();
+    await this.activeSession?.newTask();
   }
 
   async compact(): Promise<void> {
-    const orchestrator = this.orchestrator;
-    if (!orchestrator || orchestrator.isRunning) return;
-    if (!this.isReady(this.mainProvider())) return;
-    await orchestrator.compact();
-    await this.saveTask();
+    await this.activeSession?.compact();
   }
 
   acceptAll(): void {
-    this.orchestrator?.changes.acceptAll();
+    this.activeSession?.acceptAll();
   }
 
   async revertAll(): Promise<void> {
-    const orchestrator = this.orchestrator;
-    if (!orchestrator) return;
-    const changes = await orchestrator.changes.list();
-    if (!changes.length) return;
-    // Files the user edited after the agent stay as they are; they are named afterwards.
-    const edited = changes.filter((c) => c.userEdited).length;
-    const count = changes.length - edited;
-    if (count) {
-      const revertLabel = t('Revert All');
-      const question =
-        tn('Revert the {n} AI-changed file?', 'Revert all {n} AI-changed files?', count) +
-        (edited ? ` ${tn('{n} file you edited after the agent stays as it is.', '{n} files you edited after the agent stay as they are.', edited)}` : '');
-      const choice = await this.shell.message('warning', question, { modal: true }, revertLabel);
-      if (choice !== revertLabel) return;
-    }
-    const reverted = count ? await orchestrator.changes.revertAll() : [];
-    if (reverted.length) orchestrator.addNote(`The user reverted your changes to these files: ${reverted.join(', ')}.`);
-    const kept = orchestrator.changes.skippedUserEdited();
-    if (kept.length) {
-      this.publishNotice('info', t('Kept {n} file(s) you edited: {files}. Revert their parts in Changes.', { n: kept.length, files: kept.slice(0, 8).join(', ') }));
-    }
-  }
-
-  private relPath(absPath: string): string {
-    return path.relative(this.host!.workspaceRoot, absPath).split(path.sep).join('/');
-  }
-
-  /**
-   * Revert one file. A file the user edited after the agent is never reverted as a whole (that would
-   * throw their edit away): only the agent's part is undone, when it can be told apart cleanly.
-   */
-  private async revert(absPath: string): Promise<void> {
-    const orchestrator = this.requireOrchestrator();
-    const rel = this.relPath(absPath);
-    if (!orchestrator.changes.isUserEdited(absPath)) {
-      if (await orchestrator.changes.revert(absPath)) orchestrator.addNote(`The user reverted your changes to ${rel}.`);
-      return;
-    }
-    const undo = t("Undo only the agent's part");
-    const choice = await this.shell.message('warning', t('You edited {file} after the agent.', { file: rel }), { modal: true }, undo);
-    if (choice !== undo) return;
-    const result = await orchestrator.changes.revertAgentPart(absPath);
-    if (result === 'reverted') {
-      orchestrator.addNote(`The user undid your changes to ${rel} and kept their own edits. Re-read the file before editing it again.`);
-      return;
-    }
-    const reasons: Record<Exclude<typeof result, 'reverted'>, string> = {
-      conflict: t("Could not separate your edits from the agent's in {file} (they are on the same or neighbouring lines); nothing was changed.", { file: rel }),
-      unavailable: t("Could not undo only the agent's part of {file}: that needs Git, and the file's text from before your edit, which a reopened large task does not keep. Nothing was changed.", {
-        file: rel,
-      }),
-      changed: t('{file} changed after you saved it; nothing was changed. Try again.', { file: rel }),
-      notApplicable: t('The agent created or deleted {file}, so its part cannot be undone apart from your edits; nothing was changed.', { file: rel }),
-    };
-    this.publishNotice('warning', reasons[result]);
-  }
-
-  /** Hunks of one changed file for the Changes panel. */
-  private async postHunks(absPath: string): Promise<void> {
-    const orchestrator = this.orchestrator;
-    if (!orchestrator) return;
-    const hunks = await orchestrator.changes.hunks(absPath).catch(() => []);
-    const views: HunkView[] = hunks.slice(0, MAX_HUNKS).map((h) => ({
-      header: hunkHeader(h),
-      lines: h.lines.slice(0, MAX_HUNK_LINES).map((l) => ({ type: l.type, text: lineText(l.text) })),
-      hidden: Math.max(0, h.lines.length - MAX_HUNK_LINES),
-    }));
-    this.shell.post({ type: 'hunks', path: absPath, hunks: views });
+    await this.activeSession?.revertAll();
   }
 
   /** Keep one part of a change (the rest stays reviewable). */
   async keepHunk(absPath: string, index: number, header?: string): Promise<void> {
-    const orchestrator = this.requireOrchestrator();
-    if (!Number.isInteger(index) || index < 0) return;
-    const hunk = (await orchestrator.changes.hunks(absPath))[index];
-    if (!hunk || !isShown(hunk, header) || !(await orchestrator.changes.acceptHunk(absPath, index))) {
-      void this.shell.message('warning', t('That part of the change no longer exists; the file changed in the meantime.'));
-    }
-    await this.postHunks(absPath);
+    await this.requireSession().keepHunk(absPath, index, header);
   }
 
   async openChangeDiff(absPath: string): Promise<void> {
     await this.shell.openChangeDiff(absPath);
   }
 
-  /**
-   * Undo one part of a change. `header`: the hunk as the page showed it; when the change moved on
-   * since, nothing is undone. A part that includes lines the user edited is left alone.
-   */
+  /** Undo one part of a change; see SessionController.revertHunk. */
   async revertHunk(absPath: string, index: number, header?: string): Promise<void> {
-    const orchestrator = this.requireOrchestrator();
-    if (!Number.isInteger(index) || index < 0) return;
-    const hunk = (await orchestrator.changes.hunks(absPath))[index];
-    if (hunk && isShown(hunk, header) && (await orchestrator.changes.hunkTouchesUserEdit(absPath, index))) {
-      void this.shell.message('warning', t('This part includes lines you edited; it was left as is.'));
-    } else if (!hunk || !isShown(hunk, header) || !(await orchestrator.changes.revertHunk(absPath, index, { header: hunkHeader(hunk) }))) {
-      void this.shell.message('warning', t('That part of the change no longer exists; the file changed in the meantime.'));
-    } else {
-      orchestrator.addNote(`The user reverted part of your change to ${this.relPath(absPath)} (${hunkHeader(hunk)}). Re-read the file before editing it again.`);
-    }
-    await this.postHunks(absPath);
+    await this.requireSession().revertHunk(absPath, index, header);
   }
 
   async initMemory(): Promise<void> {
-    if (!this.host) return;
-    const created = await initProjectMemory(this.host);
-    void this.shell.message(
-      'info',
-      created.length ? t('Created {files}. The agent reads these at the start of each task.', { files: created.join(', ') }) : t('.project-ai already exists.'),
-    );
-    await this.shell.openFile(path.join(this.host.workspaceRoot, '.project-ai', 'decisions.md'));
-    this.postConfig();
+    await this.activeSession?.initMemory();
+  }
+
+  /** Continue the task in an external agent; see SessionController.handOff. */
+  async handOff(agentId: string, text?: string): Promise<void> {
+    if (!externalAgent(agentId)) return;
+    const session = this.activeSession;
+    if (!session) {
+      void this.shell.message('warning', this.noFolderText());
+      return;
+    }
+    await session.handOff(agentId, text);
+  }
+
+  /** Notices about the app itself (an update, a sign-in) go to the session shown. */
+  private publishNotice(level: 'info' | 'warning' | 'error', message: string, action?: string): void {
+    const session = this.activeSession;
+    if (session) {
+      session.publishNotice(level, message, action);
+      return;
+    }
+    const event = { type: 'notice' as const, level, message, action };
+    applyEvent(this.idleView, event);
+    this.shell.post({ type: 'event', event });
   }
 
   // ---------------------------------------------------------------- skills
@@ -1021,27 +768,18 @@ export class AppController implements Disposable {
 
   // ---------------------------------------------------------------- MCP servers
 
-  /** Servers from the workspace .mcp.json (the format Claude Code uses), if any. */
-  private async workspaceMcp(): Promise<{ servers: Record<string, McpServerConfig>; hash: string }> {
-    const root = this.host?.workspaceRoot;
-    if (!root) return { servers: {}, hash: '' };
-    try {
-      const raw = await fs.readFile(path.join(root, '.mcp.json'), 'utf8');
-      const servers = readMcpServers(JSON.parse(raw)?.mcpServers);
-      this.workspaceMcpCache = { servers, hash: createHash('sha1').update(raw).digest('hex') };
-    } catch {
-      this.workspaceMcpCache = { servers: {}, hash: '' };
-    }
-    return this.workspaceMcpCache;
+  /** The active session's .mcp.json read again (nothing without a folder). */
+  private async readWorkspaceMcp(): Promise<void> {
+    await this.activeSession?.workspaceMcp();
   }
 
   /**
-   * The servers a task may use: the user's settings, plus the workspace .mcp.json once the user
-   * allowed it (it starts programs on this machine, so a cloned repository must not do that silently).
+   * The servers a task may use: the user's settings, plus the session folder's .mcp.json once the
+   * user allowed it (it starts programs on this machine, so a cloned repository must not do that silently).
    */
-  private async mcpConfigs(askTrust: boolean): Promise<Record<string, McpServerConfig>> {
+  private async mcpConfigs(session: SessionController | undefined, askTrust: boolean): Promise<Record<string, McpServerConfig>> {
     const own = this.settings.mcp.servers;
-    const workspace = await this.workspaceMcp();
+    const workspace = session ? await session.workspaceMcp() : { servers: {}, hash: '' };
     const names = Object.keys(workspace.servers).filter((n) => !(n in own));
     if (!names.length) return own;
     const trust = this.shell.workspaceState.get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
@@ -1062,13 +800,13 @@ export class AppController implements Disposable {
     return { ...Object.fromEntries(names.map((n) => [n, workspace.servers[n]])), ...own };
   }
 
-  /** Tools of all MCP servers for a new task (started on demand, kept running across tasks). */
-  private async mcpTools(): Promise<Tool[]> {
+  /** Tools of all MCP servers for a new task of this session (started on demand, kept running across tasks). */
+  private async mcpTools(session: SessionController): Promise<Tool[]> {
     if (!this.settings.mcp.enabled) {
       this.mcp.sync({});
       return [];
     }
-    this.mcp.sync(await this.mcpConfigs(true));
+    this.mcp.sync(await this.mcpConfigs(session, true));
     return this.mcp.tools();
   }
 
@@ -1080,15 +818,17 @@ export class AppController implements Disposable {
       return;
     }
     // A workspace server: switching it on means trusting the file, off means not.
-    const workspace = await this.workspaceMcp();
+    const session = this.activeSession;
+    const workspace = session ? await session.workspaceMcp() : { servers: {} as Record<string, McpServerConfig>, hash: '' };
     if (workspace.servers[name]) await this.shell.workspaceState.update(MCP_TRUST_STATE, { hash: workspace.hash, allowed: enabled });
-    this.mcp.sync(await this.mcpConfigs(false));
+    this.mcp.sync(await this.mcpConfigs(session, false));
   }
 
   private mcpView(): ConfigView['mcp'] {
     const status = new Map(this.mcp.status().map((s) => [s.name, s]));
+    const workspace = this.activeSession?.workspaceMcpServers ?? { servers: {}, hash: '' };
     const trust = this.shell.workspaceState.get<{ hash: string; allowed: boolean }>(MCP_TRUST_STATE);
-    const workspaceAllowed = trust?.hash === this.workspaceMcpCache.hash && trust.allowed;
+    const workspaceAllowed = trust?.hash === workspace.hash && trust.allowed;
     const view = (name: string, config: McpServerConfig, source: McpServerView['source']): McpServerView => {
       const s = status.get(name);
       return {
@@ -1107,7 +847,7 @@ export class AppController implements Disposable {
       enabled: this.settings.mcp.enabled,
       servers: [
         ...Object.entries(own).map(([n, c]) => view(n, c, 'settings')),
-        ...Object.entries(this.workspaceMcpCache.servers)
+        ...Object.entries(workspace.servers)
           .filter(([n]) => !(n in own))
           .map(([n, c]) => view(n, c, 'workspace')),
       ],
@@ -1123,7 +863,7 @@ export class AppController implements Disposable {
       void this.shell.message('info', t('No Claude Code configuration (~/.claude.json) was found.'));
       return;
     }
-    const root = this.host?.workspaceRoot?.replace(/\\/g, '/');
+    const root = this.activeSession?.root.replace(/\\/g, '/');
     const project = root ? Object.entries(data?.projects ?? {}).find(([p]) => p.toLowerCase() === root.toLowerCase())?.[1] : undefined;
     const found = readMcpServers({ ...(data?.mcpServers ?? {}), ...((project as any)?.mcpServers ?? {}) });
     const current = this.settings.mcp.servers;
@@ -1142,13 +882,13 @@ export class AppController implements Disposable {
   // ---------------------------------------------------------------- workspace folder
 
   private async selectFolder(fsPath?: string): Promise<void> {
-    if (fsPath && fsPath === this.host?.workspaceRoot) return;
-    if (this.orchestrator?.isRunning) {
+    if (fsPath && fsPath === this.activeSession?.root) return;
+    if (this.activeSession?.isRunning) {
       void this.shell.message('info', t('Stop the agent before switching folders.'));
       this.postConfig();
       return;
     }
-    // The shell reports a change through onDidChangeFolder, which recreates the orchestrator.
+    // The shell reports a change through onDidChangeFolder, which replaces the session.
     if (!(await this.shell.selectFolder(fsPath))) this.postConfig();
   }
 
@@ -1159,7 +899,7 @@ export class AppController implements Disposable {
       void this.shell.message('info', t('This workspace has a single folder; the agent works there.'));
       return;
     }
-    const current = this.host?.workspaceRoot;
+    const current = this.activeSession?.root;
     const index = await this.shell.pick(
       folders.map((f) => ({ label: f.name, description: f.path === current ? t('current') : f.path })),
       { title: t('Folder the agent works in') },
@@ -1167,102 +907,12 @@ export class AppController implements Disposable {
     if (index !== undefined) await this.selectFolder(folders[index].path);
   }
 
-  private async readAttachments(files: string[]): Promise<Array<{ path: string; content: string }>> {
-    const root = this.host?.workspaceRoot;
-    if (!root) return [];
-    const out: Array<{ path: string; content: string }> = [];
-    for (const rel of [...new Set(files)].slice(0, MAX_ATTACHMENTS)) {
-      if (this.files) {
-        const attached = this.readAttachment(this.files, rel);
-        if (attached) out.push(attached);
-        continue;
-      }
-      const abs = path.resolve(root, rel);
-      const inside = path.relative(root, abs);
-      if (inside.startsWith('..') || path.isAbsolute(inside)) continue;
-      try {
-        const stat = await fs.stat(abs);
-        if (!stat.isFile() || stat.size > MAX_ATTACHMENT_BYTES) {
-          this.publishNotice(
-            'warning',
-            stat.isFile()
-              ? t('Skipped {file}: larger than 200 KB. The agent can still read it with its tools.', { file: rel })
-              : t('Skipped {file}: not a file.', { file: rel }),
-          );
-          continue;
-        }
-        out.push({ path: inside.split(path.sep).join('/'), content: await this.host!.readFile(abs) });
-      } catch {
-        this.publishNotice('warning', t('Could not attach {file}.', { file: rel }));
-      }
-    }
-    return out;
-  }
-
-  /**
-   * One attachment in the desktop app, read with the editor's checks: a link that leads out of the
-   * folder is not followed. A secret-looking file arms the secrets guard.
-   */
-  private readAttachment(files: WorkspaceFiles, rel: string): { path: string; content: string } | undefined {
-    const file = files.resolve(rel);
-    if (!file) return undefined;
-    let read: ReturnType<typeof readInsideWorkspace>;
-    try {
-      read = readInsideWorkspace(files.root, file.abs, MAX_ATTACHMENT_BYTES);
-    } catch {
-      read = { error: 'notFound' };
-    }
-    if ('error' in read) {
-      if (read.error === 'tooLarge') this.publishNotice('warning', t('Skipped {file}: larger than 200 KB. The agent can still read it with its tools.', { file: rel }));
-      else if (read.error === 'notFile') this.publishNotice('warning', t('Skipped {file}: not a file.', { file: rel }));
-      else if (read.error === 'notFound') this.publishNotice('warning', t('Could not attach {file}.', { file: rel }));
-      return undefined;
-    }
-    if (isSecretFile(file.rel)) this.orchestrator?.noteSecretContext(file.rel);
-    return { path: file.rel, content: read.bytes.toString('utf8') };
-  }
-
-  private async searchFiles(query: string): Promise<void> {
-    const q = query.replace(/[\\[\]{}*?!]/g, '').trim();
-    const root = this.host?.workspaceRoot;
-    const files = q && root ? await this.shell.findFiles(root, q, 30).catch(() => []) : [];
-    const rel = files.sort((a, b) => a.length - b.length).slice(0, 12);
-    this.shell.post({ type: 'fileMatches', query, files: rel });
-  }
-
   // ---------------------------------------------------------------- task history
 
-  private taskTitle(): string {
-    const first = this.session.items.find((i) => i.kind === 'user');
-    const text = first && first.kind === 'user' ? first.text.replace(/\s+/g, ' ').trim() : t('Untitled task');
-    return text.length > 90 ? `${text.slice(0, 87)}…` : text;
-  }
-
-  private async saveTask(): Promise<void> {
-    const orchestrator = this.orchestrator;
-    if (!orchestrator || !this.store) return;
-    const state = orchestrator.snapshot();
-    if (!state.messages.length) return;
-    const snapshot: TaskSnapshot = {
-      version: 1,
-      id: this.task.id,
-      title: this.taskTitle(),
-      createdAt: this.task.createdAt,
-      updatedAt: new Date().toISOString(),
-      ...state,
-      // The model history keeps full tool results; the replayed chat only needs a readable copy.
-      view: slimSession(this.session),
-    };
-    try {
-      await this.store.save(snapshot);
-    } catch (error) {
-      this.reportError(error);
-    }
-  }
-
   private async postHistory(): Promise<void> {
-    const tasks = this.store ? await this.store.list() : [];
-    this.shell.post({ type: 'history', tasks, currentId: this.orchestrator?.snapshot().messages.length ? this.task.id : undefined });
+    const session = this.activeSession;
+    const tasks = session ? await session.store.list() : [];
+    this.shell.post({ type: 'history', tasks, currentId: session && !session.isEmpty ? session.taskId : undefined });
     await this.postSessions();
   }
 
@@ -1276,7 +926,7 @@ export class AppController implements Disposable {
         tasks: (await new FileTaskStore(this.shell.storage(folder.path).tasks).list().catch(() => [])).slice(0, MAX_SESSION_TASKS),
       })),
     );
-    this.shell.post({ type: 'sessions', groups, taskId: this.orchestrator ? this.task.id : undefined, organizer: this.sessionOrganizer() });
+    this.shell.post({ type: 'sessions', groups, taskId: this.activeSession?.taskId, organizer: this.sessionOrganizer() });
   }
 
   /** The user's groups and hidden sessions, as saved (anything malformed is dropped). */
@@ -1366,7 +1016,7 @@ export class AppController implements Disposable {
   }
 
   private isCurrentFolder(folder: string): boolean {
-    const root = this.host?.workspaceRoot;
+    const root = this.activeSession?.root;
     return !!root && samePath(root, folder);
   }
 
@@ -1376,7 +1026,7 @@ export class AppController implements Disposable {
       const target = this.recentFolder(folder);
       if (!target) return;
       if (!this.isCurrentFolder(target)) {
-        if (this.orchestrator?.isRunning) {
+        if (this.activeSession?.isRunning) {
           void this.shell.message('info', t('Stop the agent before opening another task.'));
           return;
         }
@@ -1384,27 +1034,7 @@ export class AppController implements Disposable {
         if (!this.isCurrentFolder(target)) return;
       }
     }
-    const orchestrator = this.orchestrator;
-    if (!orchestrator || !this.store) return;
-    if (orchestrator.isRunning) {
-      void this.shell.message('info', t('Stop the agent before opening another task.'));
-      return;
-    }
-    if (id === this.task.id) return;
-    await this.saveTask();
-    await this.reloadSkills(false);
-    const snapshot = await this.store.load(id);
-    if (!snapshot) {
-      void this.shell.message('warning', t('That task could not be loaded.'));
-      await this.postHistory();
-      return;
-    }
-    orchestrator.restore(snapshot);
-    this.task = { id: snapshot.id, createdAt: snapshot.createdAt };
-    this.session = isSessionView(snapshot.view) ? { ...snapshot.view, running: false } : emptySession();
-    this.session.usageByAgent = snapshot.usageByAgent;
-    this.shell.post({ type: 'init', session: this.session, config: this.configView(), taskId: this.task.id });
-    await this.postHistory();
+    await this.activeSession?.open(id);
   }
 
   async deleteTask(id: string, folder?: string): Promise<void> {
@@ -1412,16 +1042,14 @@ export class AppController implements Disposable {
     if (folder !== undefined && !target) return;
     // A task of another recent folder (desktop session list) is deleted from that folder's history.
     const elsewhere = target !== undefined && !this.isCurrentFolder(target);
-    const store = elsewhere ? new FileTaskStore(this.shell.storage(target).tasks) : this.store;
+    const session = elsewhere ? undefined : this.activeSession;
+    const store = elsewhere ? new FileTaskStore(this.shell.storage(target).tasks) : session?.store;
     if (!store) return;
     const deleteLabel = t('Delete');
     const choice = await this.shell.message('warning', t('Delete this task from the history? This cannot be undone.'), { modal: true }, deleteLabel);
     if (choice !== deleteLabel) return;
     await store.delete(id);
-    if (!elsewhere && id === this.task.id) {
-      this.task = { id: newTaskId(), createdAt: new Date().toISOString() };
-      if (!this.orchestrator?.isRunning) this.orchestrator?.reset();
-    }
+    if (session && id === session.taskId) session.forgetTask();
     // A deleted session leaves its group and the hidden list too.
     const organizer = this.sessionOrganizer();
     if (organizer.assigned[id] || organizer.hidden.includes(id)) {
@@ -1430,26 +1058,6 @@ export class AppController implements Disposable {
       await this.shell.globalState.update(SESSION_ORGANIZER_STATE, organizer);
     }
     await this.postHistory();
-  }
-
-  // ---------------------------------------------------------------- approvals
-
-  private requestApproval(request: ApprovalRequest): Promise<ApprovalResponse> {
-    this.shell.setApprovalPreview(request.id, request.preview);
-    if (!this.shell.visible) {
-      this.shell.reveal();
-      const show = t('Show');
-      void this.shell.message('info', t('AI agent needs approval: {title}', { title: request.title }), {}, show).then((c) => c === show && this.shell.reveal());
-    }
-    return new Promise((resolve) => this.pendingApprovals.set(request.id, resolve));
-  }
-
-  private resolveApproval(id: string, response: ApprovalResponse): void {
-    const resolve = this.pendingApprovals.get(id);
-    if (!resolve) return;
-    this.pendingApprovals.delete(id);
-    this.shell.clearApprovalPreview(id);
-    resolve(response);
   }
 
   // ---------------------------------------------------------------- providers
@@ -1500,13 +1108,12 @@ export class AppController implements Disposable {
     return this.settings.agentClis.enabled.includes(id) ? this.agentEntry(id) : undefined;
   }
 
-  /** The third-party agent that runs the main agent's turns, when the main agent is one. */
-  private externalAgent(): ExternalAgentRuntime | undefined {
+  /** The third-party agent that runs the main agent's turns in `root`, when the main agent is one. */
+  private externalAgent(root: string): ExternalAgentRuntime | undefined {
     const ref = this.mainProvider();
     if (!isAgentRef(ref)) return undefined;
     const entry = this.agentFor(ref);
-    const root = this.host?.workspaceRoot;
-    if (!entry || !root) throw new Error(t('That agent CLI is turned off. Turn it on in Settings > Providers > Agent CLIs.'));
+    if (!entry) throw new Error(t('That agent CLI is turned off. Turn it on in Settings > Providers > Agent CLIs.'));
     return pooledAgent(this.acpPool, agentLaunchSpec(entry, root, this.settings.agentClis.paths[entry.id]));
   }
 
@@ -1569,13 +1176,14 @@ export class AppController implements Disposable {
    */
   private pruneKeyNotices(): void {
     const main = this.mainProvider();
-    const before = this.session.items.length;
-    this.session.items = this.session.items.filter((item) => {
-      if (item.kind !== 'notice' || !item.action?.startsWith('setApiKey:')) return true;
-      const ref = item.action.slice('setApiKey:'.length);
-      return ref === main && !this.isReady(ref);
-    });
-    if (this.session.items.length !== before) this.shell.post({ type: 'init', session: this.session, config: this.configView(), taskId: this.task.id });
+    const stale = (action: string) => {
+      if (!action.startsWith('setApiKey:')) return false;
+      const ref = action.slice('setApiKey:'.length);
+      return ref !== main || this.isReady(ref);
+    };
+    const session = this.activeSession;
+    if (session) session.dropNotices(stale);
+    else if (dropNotices(this.idleView, stale)) this.postInit();
   }
 
   /** Provider/model an agent ("main", "supervisor" or a sub-agent) will actually run on. */
@@ -1678,16 +1286,17 @@ export class AppController implements Disposable {
    * (the proposal goes after it).
    */
   private async startRadarSession(text: string): Promise<void> {
-    if (!this.orchestrator) {
+    const session = this.activeSession;
+    if (!session) {
       void this.shell.message('warning', this.noFolderText());
       return;
     }
-    if (this.orchestrator.isRunning) {
+    if (session.isRunning) {
       void this.shell.message('info', t('The agent is still working. Stop it first or wait until it finishes.'));
       return;
     }
-    await this.newTask();
-    this.shell.post({ type: 'setInput', text, append: true });
+    await session.newTask();
+    session.post({ type: 'setInput', text, append: true });
   }
 
   private disposeProviders(): void {
@@ -2096,7 +1705,7 @@ export class AppController implements Disposable {
       return false;
     }
     // Never swap the executable under a running agent; a quiet (scheduled) check simply waits.
-    if (this.orchestrator?.isRunning) {
+    if (this.anyRunning()) {
       if (quiet) return false;
       this.providersStale = true;
     } else this.disposeProviders();
@@ -2360,14 +1969,9 @@ export class AppController implements Disposable {
       (event.type === 'notice' && event.action === 'claudeUpdate') ||
       (event.type === 'supervisor' && event.status === 'error' && /or newer is required/i.test(event.message ?? ''));
     if (outdated && this.settings.claudeCode.enabled && this.settings.claudeCode.autoUpdate && !this.claudeCodeUpdate) void this.updateClaudeCode();
-    // Out of quota with no fallback: offer to go on in a free external agent.
-    if (event.type === 'run_finished' && event.reason === 'error' && !this.handoff && USAGE_LIMIT.test(this.orchestrator?.lastError ?? '')) {
-      const agent = EXTERNAL_AGENTS[0];
-      this.publishNotice('info', t('The provider hit a usage limit. You can continue this task in {agent} for free.', { agent: agent.label }), `handoff:${agent.id}`);
-    }
   }
 
-  // ---------------------------------------------------------------- hand-off to external agents
+  // ---------------------------------------------------------------- external agents
 
   /** Whether each external agent is installed, looked up at most every 30 seconds. */
   private installed = new Map<string, { found: boolean; at: number }>();
@@ -2388,109 +1992,8 @@ export class AppController implements Disposable {
       label: a.label,
       description: t(a.description),
       installed: this.isInstalled(a.id),
-      active: this.handoff?.session.agent.id === a.id,
+      active: this.activeSession?.handoffAgentId === a.id,
     }));
-  }
-
-  /**
-   * Continue the task in an external agent that has no API (Freebuff): open it in a terminal in
-   * this folder with a task summary on the clipboard, and snapshot the workspace, so the files it
-   * changes show up under Changes (Keep / Revert) when the user comes back.
-   */
-  async handOff(agentId: string, text?: string): Promise<void> {
-    const agent = externalAgent(agentId);
-    const orchestrator = this.orchestrator;
-    const root = this.host?.workspaceRoot;
-    if (!agent) return;
-    if (!orchestrator || !root) {
-      void this.shell.message('warning', this.noFolderText());
-      return;
-    }
-    if (orchestrator.isRunning) {
-      void this.shell.message('info', t('The agent is still working. Stop it first or wait until it finishes.'));
-      return;
-    }
-    if (this.handoff) {
-      this.handoff.terminal.show();
-      return;
-    }
-    if (!this.isInstalled(agent.id, true)) {
-      const install = t('Install');
-      const website = t('Website');
-      const pick = await this.shell.message(
-        'info',
-        t('{agent} is not installed. Install it with: {command}', { agent: agent.label, command: agent.installCommand }),
-        {},
-        install,
-        website,
-      );
-      if (pick === install) {
-        this.shell.runInTerminal({ name: t('Install {agent}', { agent: agent.label }), cwd: root, command: agent.installCommand, onClose: () => this.postConfig() }).show();
-      } else if (pick === website) {
-        void this.shell.openExternal(agent.url);
-      }
-      return;
-    }
-    const session = new Handoff(agent, root, this.snapshots, orchestrator.changes);
-    // From the snapshot on, a save would count as the external agent's change.
-    this.handoffBusy++;
-    let tracked: boolean;
-    let brief: string | undefined;
-    let terminal: TerminalHandle;
-    try {
-      tracked = await session.begin();
-      const requests = [...userRequests(orchestrator.history), ...(text?.trim() ? [text.trim()] : [])];
-      brief = handoffBrief({ requests, plan: orchestrator.currentPlan, changedFiles: (await orchestrator.changes.list()).map((c) => c.relPath) });
-      if (brief) await this.shell.writeClipboard(brief);
-      terminal = this.shell.runInTerminal({
-        name: agent.label,
-        cwd: root,
-        command: agent.command,
-        onClose: () => {
-          if (this.handoff?.session === session) void this.collectHandoff(true);
-        },
-      });
-      this.handoff = { session, terminal };
-    } finally {
-      this.handoffBusy--;
-    }
-    terminal.show();
-    const parts = [t('{agent} is open in the terminal.', { agent: agent.label })];
-    if (brief) parts.push(t('The task summary is on the clipboard: paste it there.'));
-    parts.push(
-      tracked
-        ? t('When you close that terminal or send Orka a message, the files {agent} changed show up under Changes.', { agent: agent.label })
-        : t("Orka can't track what {agent} changes: {reason}.", { agent: agent.label, reason: session.untrackedReason ?? t('snapshots are off') }),
-    );
-    this.publishNotice('info', parts.join(' '));
-    this.postConfig();
-  }
-
-  /** Pick up what the external agent changed; `ended` when its terminal was closed. */
-  private async collectHandoff(ended: boolean): Promise<void> {
-    const handoff = this.handoff;
-    if (!handoff) return;
-    if (ended) this.handoff = undefined;
-    const label = handoff.session.agent.label;
-    // Save stays refused until the external agent's changes are read: a save meanwhile would count as theirs.
-    this.handoffBusy++;
-    let changed: Awaited<ReturnType<Handoff['collect']>>;
-    try {
-      changed = await handoff.session.collect(!ended).catch(() => []);
-    } finally {
-      this.handoffBusy--;
-    }
-    if (changed.length) {
-      const files = changed.map((c) => c.path);
-      this.orchestrator?.addNote(
-        `The user worked on this task in ${label} (another coding agent) and it changed: ${files.join(', ')}. Read these files before building on them.`,
-      );
-      const shown = files.slice(0, 6).join(', ') + (files.length > 6 ? ', …' : '');
-      this.publishNotice('info', t('{agent} changed {n} file(s): {files}. Review them under Changes (Keep / Revert).', { agent: label, n: files.length, files: shown }));
-    } else if (ended) {
-      this.publishNotice('info', t('{agent} closed without changing any files.', { agent: label }));
-    }
-    if (ended) this.postConfig();
   }
 
   /** "Opus 5.5" for a known id, the id itself otherwise. */
@@ -2500,117 +2003,6 @@ export class AppController implements Disposable {
   }
 
   // ---------------------------------------------------------------- state plumbing
-
-  /** The agents' settings; hooks from the folder's own settings only once the user allowed them. */
-  private orchestratorSettings(): OrchestratorSettings {
-    const s = this.settings;
-    if (!s.hooksFromWorkspace || !hasHooks(s.orchestrator.hooks)) return s.orchestrator;
-    const trust = this.shell.workspaceState.get<{ hash: string; allowed: boolean }>(HOOKS_TRUST_STATE);
-    return trust?.hash === hooksHash(s.orchestrator.hooks) && trust.allowed ? s.orchestrator : { ...s.orchestrator, hooks: NO_HOOKS };
-  }
-
-  /**
-   * Hooks defined in the open folder's settings run commands without asking, and a cloned
-   * repository controls those settings: ask once for each version of them.
-   */
-  private async confirmWorkspaceHooks(): Promise<void> {
-    const hooks = this.settings.orchestrator.hooks;
-    if (!this.settings.hooksFromWorkspace || !hasHooks(hooks)) return;
-    const hash = hooksHash(hooks);
-    if (this.shell.workspaceState.get<{ hash: string }>(HOOKS_TRUST_STATE)?.hash === hash) return;
-    const commands = [...(hooks?.afterEdit ?? []), ...(hooks?.beforeFinish ?? [])].map((h) => h.command);
-    const allow = t('Allow');
-    const choice = await this.shell.message(
-      'warning',
-      t('This folder\'s settings define hooks that run commands on your machine while the agent works: {commands}. Allow them?', { commands: commands.join(' · ') }),
-      { modal: true },
-      allow,
-      t('Not now'),
-    );
-    await this.shell.workspaceState.update(HOOKS_TRUST_STATE, { hash, allowed: choice === allow });
-  }
-
-  private recreateOrchestrator(): void {
-    void this.saveTask();
-    // A hand-off belongs to the workspace and change list being replaced.
-    this.handoff = undefined;
-    this.orchestrator?.dispose();
-    this.host?.stopAllProcesses();
-    for (const resolve of this.pendingApprovals.values()) resolve({ approved: false });
-    this.pendingApprovals.clear();
-    const folder = this.shell.currentFolder();
-    if (!folder) {
-      this.orchestrator = undefined;
-      this.host = undefined;
-      this.files = undefined;
-      this.store = undefined;
-      this.snapshots = undefined;
-      this.shell.attach(undefined, this.settings);
-      this.session = emptySession();
-      this.shell.post({ type: 'init', session: this.session, config: this.configView(), taskId: this.task.id });
-      this.updateStatus();
-      return;
-    }
-    this.host = this.shell.createHost({
-      root: folder.path,
-      shell: this.settings.shell,
-      browserPath: this.settings.browserPath,
-      approve: (r) => this.requestApproval(r),
-    });
-    this.files = this.shell.kind === 'desktop' ? new WorkspaceFiles(this.host.workspaceRoot) : undefined;
-    const storage = this.shell.storage(folder.path);
-    this.snapshots = new ShadowGit(folder.path, storage.snapshots);
-    this.store = new FileTaskStore(storage.tasks);
-    this.task = { id: newTaskId(), createdAt: new Date().toISOString() };
-    // eslint-disable-next-line @typescript-eslint/no-this-alias -- read by a getter below, so the setting applies at once
-    const controller = this;
-    const orchestrator = new Orchestrator({
-      host: this.host,
-      getProvider: () => this.providerFor('main'),
-      getExternalAgent: () => this.externalAgent(),
-      getExtraTools: () => this.mcpTools(),
-      getLightProvider: () => (this.settings.light.provider === 'inherit' ? undefined : this.providerFor('light')),
-      get commandSnapshots() {
-        return controller.settings.trackCommandChanges ? controller.snapshots : undefined;
-      },
-      getFallbackProvider: () => (this.settings.fallback.provider === 'inherit' ? undefined : this.providerFor('fallback')),
-      permissions: this.permissions,
-      getSettings: () => this.orchestratorSettings(),
-      subagents: {
-        getProfiles: () => (this.settings.subagents.enabled ? DEFAULT_SUBAGENTS : []),
-        getProvider: (name) => this.providerFor(name),
-      },
-      supervisor: {
-        getProvider: () => this.providerFor('supervisor'),
-        // Next to an agent CLI the Supervisor needs a model; without one it sits out (send() says so).
-        getSettings: () => ({ ...this.settings.supervisor, enabled: this.settings.supervisor.enabled && !this.inheritsNoModel('supervisor') }),
-      },
-      skills: () => this.activeSkills(),
-    });
-    orchestrator.on((event) => {
-      if (event.type === 'reset') this.session = emptySession();
-      applyEvent(this.session, event);
-      this.shell.post({ type: 'event', event });
-      this.onAgentEvent(event);
-      if (event.type === 'run_started' || event.type === 'run_finished') this.updateStatus();
-      if (event.type === 'run_finished') {
-        // Any approval still open belongs to a finished run.
-        for (const [id, resolve] of this.pendingApprovals) {
-          resolve({ approved: false });
-          this.shell.clearApprovalPreview(id);
-        }
-        this.pendingApprovals.clear();
-        if (this.providersStale) this.disposeProviders();
-        void this.saveTask().then(() => this.postHistory());
-      }
-    });
-    this.orchestrator = orchestrator;
-    this.shell.attach(orchestrator, this.settings);
-    this.session = emptySession();
-    this.shell.post({ type: 'init', session: this.session, config: this.configView(), taskId: this.task.id });
-    this.updateStatus();
-    void this.workspaceMcp().then(() => this.postConfig());
-  }
 
   private async onSettingsChanged(): Promise<void> {
     const previousShell = this.settings.shell;
@@ -2623,18 +2015,13 @@ export class AppController implements Disposable {
     this.permissions.setMode(this.settings.mode);
     this.permissions.setOverrides(this.settings.overrides);
     // Provider settings may have changed: rebuild providers once nothing is using them.
-    if (this.orchestrator?.isRunning) this.providersStale = true;
+    if (this.anyRunning()) this.providersStale = true;
     else this.disposeProviders();
-    if (previousShell !== this.settings.shell && !this.orchestrator?.isRunning) this.recreateOrchestrator();
+    // A new shell takes a new host: the session is created again (not while it runs).
+    if (previousShell !== this.settings.shell && !this.activeSession?.isRunning) this.replaceSession();
     this.radar?.apply(this.settings.radar);
     this.updateStatus();
     this.postConfig();
-  }
-
-  private publishNotice(level: 'info' | 'warning' | 'error', message: string, action?: string): void {
-    const event = { type: 'notice' as const, level, message, action };
-    applyEvent(this.session, event);
-    this.shell.post({ type: 'event', event });
   }
 
   private reportError(error: unknown): void {
@@ -2656,7 +2043,8 @@ export class AppController implements Disposable {
       const env = (ENV_KEYS[ref as ProviderKind] ?? []).find((name) => process.env[name]);
       return env ? { source: 'env', hint: env } : undefined;
     };
-    const root = this.host?.workspaceRoot;
+    const session = this.activeSession;
+    const root = session?.root;
     const folders = this.shell.folders();
     const disabledSkills = new Set(s.skills.disabled);
     const skills: SkillView[] = this.skills.map((skill) => ({
@@ -2703,7 +2091,7 @@ export class AppController implements Disposable {
     return {
       locale: getLocale(),
       mode: s.mode,
-      workspaceOpen: !!this.orchestrator,
+      workspaceOpen: !!session,
       folders: folders.length > 1 || (this.shell.canOpenFolder && folders.length) ? folders : undefined,
       folder: root,
       canOpenFolder: this.shell.canOpenFolder,
@@ -2737,7 +2125,7 @@ export class AppController implements Disposable {
           network: s.overrides.network ?? 'mode',
         },
         autoVerify: s.orchestrator.autoVerify,
-        trackCommandChanges: { enabled: s.trackCommandChanges, unavailable: this.snapshots?.disabledReason },
+        trackCommandChanges: { enabled: s.trackCommandChanges, unavailable: session?.snapshots.disabledReason },
         inlineReview: this.shell.kind === 'vscode' ? s.inlineReview : undefined,
         maxIterations: s.orchestrator.maxIterations,
         tokenBudget: s.orchestrator.tokenBudget ?? 0,
@@ -2790,7 +2178,7 @@ export class AppController implements Disposable {
 
   private updateStatus(): void {
     if (!this.shell.status) return;
-    const running = !!this.orchestrator?.isRunning;
+    const running = this.anyRunning();
     const main = this.resolveAgent('main');
     const s = this.settings;
     const modeLabel = { ask: t('Ask'), balanced: t('Balanced'), autonomous: t('Autonomous') }[s.mode];
@@ -2819,21 +2207,16 @@ export class AppController implements Disposable {
     });
   }
 
-  private requireOrchestrator(): Orchestrator {
-    if (!this.orchestrator) throw new Error('No workspace folder is open.');
-    return this.orchestrator;
-  }
-
   async dispose(): Promise<void> {
     clearInterval(this.appUpdateTimer);
     this.radar?.dispose();
     this.acpPool.dispose();
-    await this.saveTask();
-    this.orchestrator?.dispose();
-    for (const resolve of this.pendingApprovals.values()) resolve({ approved: false });
+    const sessions = [...this.sessions.values()];
+    this.sessions.clear();
+    this.activeId = undefined;
+    await Promise.all(sessions.map((s) => s.dispose()));
     this.disposeProviders();
     this.mcp.dispose();
-    this.host?.stopAllProcesses();
     for (const d of this.disposables) d.dispose();
   }
 }
@@ -2843,80 +2226,10 @@ function splitCommandLine(line: string): string[] {
   return [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]).filter((w) => w.length > 0);
 }
 
-/** Two paths name the same file or folder (Windows paths ignore case). */
-function samePath(a: string, b: string): boolean {
-  const norm = (p: string) => {
-    const resolved = path.resolve(p);
-    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
-  };
-  return norm(a) === norm(b);
-}
-
-/** Where a path really leads, or undefined when it cannot be resolved. */
-function realPathOf(p: string): string | undefined {
-  try {
-    return realpathSync.native(p);
-  } catch {
-    return undefined;
-  }
-}
-
-/** A file with an execute bit (macOS and Linux); one that cannot be read counts as executable. */
-function isExecutable(p: string): boolean {
-  try {
-    return (statSync(p).mode & 0o111) !== 0;
-  } catch {
-    return true;
-  }
-}
-
-/** Errors that mean the provider's quota or session limit is used up. */
-const USAGE_LIMIT = /usage limit|rate.?limit|session limit|quota|\b429\b|too many requests/i;
-
-const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
-const MAX_IMAGES = 5;
-/** Base64 length of about 5 MB of image data (the Claude API's per-image limit). */
-const MAX_IMAGE_BASE64 = 6_900_000;
-
-/** Images from the chat UI, checked before they reach a model: type, size, count, and a well-formed thumbnail. */
-export function validImages(images: unknown): ImageAttachment[] {
-  if (!Array.isArray(images)) return [];
-  const out: ImageAttachment[] = [];
-  for (const raw of images.slice(0, MAX_IMAGES)) {
-    const i = raw as Partial<ImageAttachment>;
-    if (!i || typeof i.data !== 'string' || !IMAGE_TYPES.has(String(i.mediaType))) continue;
-    if (i.data.length > MAX_IMAGE_BASE64 || !/^[A-Za-z0-9+/=]+$/.test(i.data)) continue;
-    const thumb = typeof i.thumb === 'string' && /^data:image\/(jpeg|png);base64,[A-Za-z0-9+/=]+$/.test(i.thumb) && i.thumb.length < 80_000 ? i.thumb : undefined;
-    out.push({ name: String(i.name ?? 'image').slice(0, 80), mediaType: i.mediaType as ImageAttachment['mediaType'], data: i.data, thumb });
-  }
-  return out;
-}
-
-function isSessionView(value: unknown): value is SessionView {
-  return !!value && typeof value === 'object' && Array.isArray((value as SessionView).items);
-}
-
 function slug(text: string): string {
   return text
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 30);
-}
-
-function hooksHash(hooks: HooksConfig | undefined): string {
-  return createHash('sha1').update(JSON.stringify(hooks ?? {})).digest('hex');
-}
-
-/** A hunk is the one the page showed with `header` (any hunk, when no header was sent). */
-function isShown(hunk: Parameters<typeof hunkHeader>[0], header: unknown): boolean {
-  return header === undefined || (typeof header === 'string' && hunkHeader(hunk) === header);
-}
-
-function isFile(p: string): boolean {
-  try {
-    return statSync(p).isFile();
-  } catch {
-    return false;
-  }
 }

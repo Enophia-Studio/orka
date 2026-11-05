@@ -403,7 +403,8 @@ describe('Orka update check', () => {
 
 describe('desktop Files and editor', () => {
   const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
-  const orchestratorOf = (controller: AppController) => (controller as unknown as { orchestrator: Orchestrator }).orchestrator;
+  const sessionOf = (controller: AppController) => controller.activeSession!;
+  const orchestratorOf = (controller: AppController): Orchestrator => sessionOf(controller).orchestrator;
   const notesOf = (controller: AppController) => (orchestratorOf(controller) as unknown as { notes: string[] }).notes;
   const notices = (shell: FakeShell) => shell.posted.flatMap((m) => (m.type === 'event' && m.event.type === 'notice' ? [m.event.message] : []));
   const fakeAgent = path.resolve(__dirname, '..', '..', '..', 'core', 'test', 'fixtures', 'fake-acp.mjs');
@@ -467,17 +468,17 @@ describe('desktop Files and editor', () => {
     assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'a.txt', reason: 'running' });
     controller.stop();
     await sent;
-    (controller as unknown as { handoff?: unknown }).handoff = { session: {}, terminal: { show: () => undefined } };
+    (sessionOf(controller) as unknown as { handoff?: unknown }).handoff = { session: {}, terminal: { show: () => undefined } };
     await save(controller, 'a.txt', 'mine\n');
     assert.equal(shell.posted.filter((m) => m.type === 'saveRefused' && m.reason === 'running').length, 2);
     assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'before\n');
-    (controller as unknown as { handoff?: unknown }).handoff = undefined;
+    (sessionOf(controller) as unknown as { handoff?: unknown }).handoff = undefined;
   });
 
   it('refuses to save while a hand-off starts and until a closed one is collected', async () => {
     const { shell, controller } = await start('desktop');
     writeFileSync(path.join(folderA, 'a.txt'), 'before\n');
-    const inner = controller as unknown as { handoff?: unknown; handoffBusy: number; collectHandoff(ended: boolean): Promise<void> };
+    const inner = sessionOf(controller) as unknown as { handoff?: unknown; handoffBusy: number; collectHandoff(ended: boolean): Promise<void> };
     // Between the snapshot and the open terminal.
     inner.handoffBusy = 1;
     await save(controller, 'a.txt', 'mine\n');
