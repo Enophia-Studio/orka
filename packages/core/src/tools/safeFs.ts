@@ -18,14 +18,17 @@ export type ReplaceInsideResult = { ok: true; before: Buffer } | { ok: false; re
  * the way (a link whose target does not exist yet counts by its target); undefined otherwise.
  */
 export function insideWorkspace(root: string, abs: string): string | undefined {
-  if (!isInside(root, abs)) return undefined;
+  // `abs` may be named from the root as given or from its real path (a Windows 8.3 name such as
+  // RUNNER~1 resolves to the long one, a linked folder to its target): both are the workspace.
+  const realRoot = realPath(root);
+  if (!isInside(root, abs) && !isInside(realRoot, abs)) return undefined;
   let real: string;
   try {
     real = realTarget(abs);
   } catch {
     return undefined; // a link loop
   }
-  return isInside(realPath(root), real) ? real : undefined;
+  return isInside(realRoot, real) ? real : undefined;
 }
 
 /**

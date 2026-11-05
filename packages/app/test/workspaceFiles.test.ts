@@ -64,6 +64,26 @@ describe('workspace paths from the page', () => {
   });
 });
 
+describe('a folder opened by another name', () => {
+  it('lists, reads and saves when the folder is opened through a link to it (or a Windows 8.3 name)', () => {
+    write('src/a.txt', 'one\n');
+    const alias = path.join(outside, 'alias');
+    dirLink(root, alias);
+    const viaAlias = new WorkspaceFiles(alias);
+    const top = viaAlias.list('');
+    assert.ok('entries' in top, JSON.stringify(top));
+    assert.deepEqual(top.entries.map((e) => e.name), ['src']);
+    const inner = viaAlias.list('src');
+    assert.ok('entries' in inner, JSON.stringify(inner));
+    assert.deepEqual(inner.entries.map((e) => e.name), ['a.txt']);
+    const read = viaAlias.read('src/a.txt');
+    assert.ok('text' in read && read.text === 'one\n', JSON.stringify(read));
+    const saved = viaAlias.save('src/a.txt', 'two\n', read.hash);
+    assert.ok(saved.ok, JSON.stringify(saved));
+    assert.equal(fs.readFileSync(path.join(root, 'src', 'a.txt'), 'utf8'), 'two\n');
+  });
+});
+
 describe('listing folders', () => {
   it('lists folders first, by name regardless of case, hides .git and marks ignored folders', () => {
     write('b.txt', '');

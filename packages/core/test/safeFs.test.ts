@@ -136,14 +136,21 @@ describe('safe workspace file reads and writes', () => {
   it('writes exactly the given bytes, in place, and returns the bytes it replaced', () => {
     const abs = path.join(ws.root, 'a.txt');
     const before = Buffer.from('﻿old line\r\nsecond line that is longer\r\n', 'utf8');
-    fs.writeFileSync(abs, before);
-    const ino = fs.statSync(abs, { bigint: true }).ino;
+    const created = fs.openSync(abs, 'w');
+    fs.writeSync(created, before);
+    const ino = fs.fstatSync(created, { bigint: true }).ino;
+    fs.closeSync(created);
     const content = '﻿new\r\nçok güzel\r\n';
     const result = replaceInsideWorkspace(ws.root, abs, sha(before), content);
     assert.ok(result.ok);
     assert.deepEqual(result.before, before);
-    assert.deepEqual(fs.readFileSync(abs), Buffer.from(content, 'utf8'));
-    assert.equal(fs.statSync(abs, { bigint: true }).ino, ino, 'the same file, not a new one');
+    const after = fs.openSync(abs, 'r');
+    try {
+      assert.deepEqual(fs.readFileSync(after), Buffer.from(content, 'utf8'));
+      assert.equal(fs.fstatSync(after, { bigint: true }).ino, ino, 'the same file, not a new one');
+    } finally {
+      fs.closeSync(after);
+    }
     const read = readInsideWorkspace(ws.root, abs, 1000);
     assert.ok('bytes' in read);
     assert.deepEqual(read.bytes, Buffer.from(content, 'utf8'));

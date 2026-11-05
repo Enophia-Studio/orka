@@ -86,7 +86,7 @@ describe("the editor's languages and highlighted lines", () => {
     assert.doesNotMatch(html.join(''), /style=/);
     for (const tag of html.join('').match(/<[^>]+>/g) ?? []) assert.match(tag, /^(<span class="[\w -]+">|<\/span>)$/);
     // Without the markup it is the same text.
-    const text = html.map((h) => h.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
+    const text = html.map((h) => h.split(/<[^>]*>/).join('').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&'));
     assert.deepEqual(text, lines);
   });
 

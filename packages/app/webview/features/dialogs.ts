@@ -21,8 +21,9 @@ export function showDialog(id: string, dialog: DialogView): void {
 
 export function answerDialog(id: string, value: string | number | undefined): void {
   if (!dialogs.delete(id)) return;
-  const answer = pageQuestions.get(id);
-  if (answer) {
+  // Only ids this page made itself ("page-<n>") are its own questions; any other id is the app's.
+  const answer = id.startsWith('page-') ? pageQuestions.get(id) : undefined;
+  if (typeof answer === 'function') {
     pageQuestions.delete(id);
     answer(value);
   } else post({ type: 'dialogResult', id, value });

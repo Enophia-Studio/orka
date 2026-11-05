@@ -73,7 +73,8 @@ describe('Orka desktop server', () => {
       const csp = page.headers['content-security-policy'];
       const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
       assert.ok(nonce, csp);
-      assert.match(csp, new RegExp(`style-src 'self' 'nonce-${nonce.replace(/[+/=]/g, '\\$&')}'(;|$)`));
+      const styleSrc = csp.split(';').map((part) => part.trim()).find((part) => part.startsWith('style-src'));
+      assert.equal(styleSrc, `style-src 'self' 'nonce-${nonce}'`);
       assert.doesNotMatch(csp, /unsafe-inline|strict-dynamic/);
       const editor = page.body.indexOf(`<script nonce="${nonce}" src="/editor.js"></script>`);
       assert.ok(editor > 0 && editor < page.body.indexOf('src="/webview.js"'), 'editor.js comes first');
