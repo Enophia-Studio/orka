@@ -1,6 +1,7 @@
-import { applyEvent, customAgentEntry, emptySession, FileTaskStore, VERSION } from '@orka/core';
+import { applyEvent, customAgentEntry, emptySession, FileTaskStore, hunkHeader, type Orchestrator, programPath, VERSION } from '@orka/core';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -397,5 +398,187 @@ describe('Orka update check', () => {
     await shell.globalState.update('orka.appUpdate', { checkedAt: Date.now(), latest: '99.0.0', url: 'https://evil.example/orka.exe' });
     await controller.handleMessage({ type: 'openRelease' });
     assert.deepEqual(shell.opened, []);
+  });
+});
+
+describe('desktop Files and editor', () => {
+  const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
+  const orchestratorOf = (controller: AppController) => (controller as unknown as { orchestrator: Orchestrator }).orchestrator;
+  const notesOf = (controller: AppController) => (orchestratorOf(controller) as unknown as { notes: string[] }).notes;
+  const notices = (shell: FakeShell) => shell.posted.flatMap((m) => (m.type === 'event' && m.event.type === 'notice' ? [m.event.message] : []));
+  const fakeAgent = path.resolve(__dirname, '..', '..', '..', 'core', 'test', 'fixtures', 'fake-acp.mjs');
+  const agentSettings = {
+    provider: 'agent:custom:fake',
+    'agentClis.enabled': ['custom:fake'],
+    'agentClis.custom': [{ name: 'Fake', command: process.execPath, args: [fakeAgent] }],
+    'supervisor.enabled': false,
+  };
+  const lines = (n: number, change: Record<number, string> = {}) => Array.from({ length: n }, (_, i) => change[i + 1] ?? `line ${i + 1}`).join('\n') + '\n';
+
+  afterEach(() => {
+    delete process.env.FAKE_ACP_SCRIPT;
+  });
+
+  /** A file the agent changed from `original` to `current` (as the change tracker sees it). */
+  function agentChanged(controller: AppController, rel: string, original: string, current: string): string {
+    const abs = path.join(folderA, rel);
+    mkdirSync(path.dirname(abs), { recursive: true });
+    writeFileSync(abs, current);
+    orchestratorOf(controller).changes.recordOriginal(abs, original);
+    return abs;
+  }
+
+  /** Save through the editor's message, with the hash of what is on disk now. */
+  async function save(controller: AppController, rel: string, text: string) {
+    await controller.handleMessage({ type: 'saveFile', path: rel, text, baseHash: sha(readFileSync(path.join(folderA, rel))) });
+  }
+
+  it('lists folders, reads files and saves them for the editor', async () => {
+    const { shell, controller } = await start('desktop');
+    mkdirSync(path.join(folderA, 'src'));
+    writeFileSync(path.join(folderA, 'src', 'hello.ts'), 'one\r\ntwo\r\n');
+    await controller.handleMessage({ type: 'listDir', path: '' });
+    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '', entries: [{ name: 'src', kind: 'dir' }] });
+    await controller.handleMessage({ type: 'listDir', path: '../beta' });
+    assert.deepEqual(shell.last('dirEntries'), { type: 'dirEntries', path: '../beta', error: 'outside' });
+    await controller.handleMessage({ type: 'readFile', path: 'src/hello.ts' });
+    const hash = sha('one\r\ntwo\r\n');
+    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, text: 'one\ntwo\n', hash, size: 10, eol: 'crlf', bom: false });
+    await controller.handleMessage({ type: 'readFile', path: 'src/hello.ts', knownHash: hash });
+    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/hello.ts', ok: true, unchanged: true, hash });
+    await controller.handleMessage({ type: 'readFile', path: 'src/missing.ts' });
+    assert.deepEqual(shell.last('fileContent'), { type: 'fileContent', path: 'src/missing.ts', ok: false, reason: 'notFound' });
+    await controller.handleMessage({ type: 'saveFile', path: 'src/hello.ts', text: 'one\ntwo\nthree\n', baseHash: hash });
+    assert.equal(readFileSync(path.join(folderA, 'src', 'hello.ts'), 'utf8'), 'one\r\ntwo\r\nthree\r\n');
+    assert.deepEqual(shell.last('fileSaved'), { type: 'fileSaved', path: 'src/hello.ts', hash: sha('one\r\ntwo\r\nthree\r\n') });
+    assert.ok(notesOf(controller).some((n) => n.includes('The user edited src/hello.ts by hand')));
+    // The page's old hash no longer matches what is on disk.
+    await controller.handleMessage({ type: 'saveFile', path: 'src/hello.ts', text: 'other\n', baseHash: hash });
+    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'src/hello.ts', reason: 'conflict', hash: sha('one\r\ntwo\r\nthree\r\n') });
+  });
+
+  it('refuses to save while the agent works or a hand-off is open', async () => {
+    process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Working.' }, { hang: true }]]);
+    const { shell, controller } = await start('desktop', agentSettings);
+    writeFileSync(path.join(folderA, 'a.txt'), 'before\n');
+    const sent = controller.send('Do something');
+    await until(() => orchestratorOf(controller).isRunning && shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to work');
+    await save(controller, 'a.txt', 'mine\n');
+    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'a.txt', reason: 'running' });
+    controller.stop();
+    await sent;
+    (controller as unknown as { handoff?: unknown }).handoff = { session: {}, terminal: { show: () => undefined } };
+    await save(controller, 'a.txt', 'mine\n');
+    assert.equal(shell.posted.filter((m) => m.type === 'saveRefused' && m.reason === 'running').length, 2);
+    assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'before\n');
+    (controller as unknown as { handoff?: unknown }).handoff = undefined;
+  });
+
+  it("marks a saved file as the user's, so Revert All keeps it and says so", async () => {
+    const { shell, controller } = await start('desktop');
+    agentChanged(controller, 'mine.txt', 'original\n', 'agent\n');
+    const other = agentChanged(controller, 'other.txt', 'original\n', 'agent\n');
+    await save(controller, 'mine.txt', 'agent\nand mine\n');
+    const changes = await orchestratorOf(controller).changes.list();
+    assert.equal(changes.find((c) => c.relPath === 'mine.txt')?.userEdited, true);
+    shell.answer = 'Revert All';
+    await controller.handleMessage({ type: 'revertAll' });
+    assert.match(shell.asked.at(-1)!.text, /Revert the 1 AI-changed file\? 1 file you edited after the agent stays as it is\./);
+    assert.equal(readFileSync(path.join(folderA, 'mine.txt'), 'utf8'), 'agent\nand mine\n');
+    assert.equal(readFileSync(other, 'utf8'), 'original\n');
+    assert.ok(notices(shell).includes('Kept 1 file(s) you edited: mine.txt. Revert their parts in Changes.'));
+    assert.ok(notesOf(controller).some((n) => n.includes('these files: other.txt.')));
+  });
+
+  it("undoes only the agent's part of a file the user edited, never the user's lines", async (t) => {
+    if (!programPath('git')) return t.skip('needs git');
+    const { shell, controller } = await start('desktop');
+    const abs = agentChanged(controller, 'f.txt', lines(12), lines(12, { 2: 'agent line' }));
+    await save(controller, 'f.txt', lines(12, { 2: 'agent line', 10: 'my line' }));
+    shell.answer = undefined;
+    await controller.handleMessage({ type: 'revertChange', path: abs });
+    assert.match(shell.asked.at(-1)!.text, /You edited f\.txt after the agent\./);
+    assert.deepEqual(shell.asked.at(-1)!.actions, ["Undo only the agent's part"], 'nothing offers to throw the edit away');
+    assert.equal(readFileSync(abs, 'utf8'), lines(12, { 2: 'agent line', 10: 'my line' }), 'cancelled: nothing changed');
+    shell.answer = "Undo only the agent's part";
+    await controller.handleMessage({ type: 'revertChange', path: abs });
+    assert.equal(readFileSync(abs, 'utf8'), lines(12, { 10: 'my line' }));
+    // Edits on the same lines cannot be told apart: nothing is written.
+    const both = agentChanged(controller, 'g.txt', lines(5), lines(5, { 3: 'agent' }));
+    await save(controller, 'g.txt', lines(5, { 3: 'agent and me' }));
+    await controller.handleMessage({ type: 'revertChange', path: both });
+    assert.equal(readFileSync(both, 'utf8'), lines(5, { 3: 'agent and me' }));
+    assert.match(notices(shell).at(-1)!, /Could not separate your edits from the agent's in g\.txt/);
+  });
+
+  it('leaves a hunk alone when the page showed another one, or when it has lines the user edited', async () => {
+    const { shell, controller } = await start('desktop');
+    const abs = agentChanged(controller, 'h.txt', lines(20), lines(20, { 2: 'agent A', 18: 'agent B' }));
+    assert.equal((await orchestratorOf(controller).changes.hunks(abs)).length, 2);
+    await controller.handleMessage({ type: 'revertHunk', path: abs, index: 0, header: '@@ -1,1 +1,1 @@' });
+    assert.equal(readFileSync(abs, 'utf8'), lines(20, { 2: 'agent A', 18: 'agent B' }), 'a stale header writes nothing');
+    assert.match(shell.asked.at(-1)!.text, /no longer exists/);
+    await controller.handleMessage({ type: 'keepHunk', path: abs, index: 0, header: '@@ -1,1 +1,1 @@' });
+    assert.equal((await orchestratorOf(controller).changes.hunks(abs)).length, 2, 'a stale header keeps nothing');
+    await save(controller, 'h.txt', lines(20, { 2: 'agent A', 3: 'mine', 18: 'agent B' }));
+    const [first, second] = await orchestratorOf(controller).changes.hunks(abs);
+    await controller.handleMessage({ type: 'revertHunk', path: abs, index: 0, header: hunkHeader(first) });
+    assert.equal(shell.asked.at(-1)!.text, 'This part includes lines you edited; it was left as is.');
+    await controller.handleMessage({ type: 'revertHunk', path: abs, index: 1, header: hunkHeader(second) });
+    assert.equal(readFileSync(abs, 'utf8'), lines(20, { 2: 'agent A', 3: 'mine' }));
+  });
+
+  it('sends the editor selection as the context of the request, checked', async () => {
+    process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Ok.' }, { stop: 'end_turn' }], [{ chunk: 'Ok.' }, { stop: 'end_turn' }]]);
+    const { shell, controller } = await start('desktop', agentSettings);
+    writeFileSync(path.join(folderA, 'hello.ts'), 'a\nb\nc\n');
+    writeFileSync(path.join(folderA, '.env'), 'TOKEN=x\n');
+    const orchestrator = orchestratorOf(controller);
+    const lastPrompt = () => JSON.stringify(orchestrator.history.filter((m) => m.role === 'user').at(-1));
+    await controller.send('Explain', [], [], [], { file: 'hello.ts', selection: { startLine: 2, endLine: 3, text: 'b\nc' } });
+    assert.match(lastPrompt(), /Active file: hello\.ts/);
+    assert.match(lastPrompt(), /Selected lines 2-3:\\n```\\nb\\nc\\n```/);
+    assert.equal((orchestrator as unknown as { secretFile?: string }).secretFile, undefined);
+
+    const before = orchestrator.history.length;
+    for (const editor of [
+      { file: '../beta/x.ts' },
+      { file: 'missing.ts' },
+      { file: 'hello.ts', selection: { startLine: 0, endLine: 1, text: 'a' } },
+      { file: 'hello.ts', selection: { startLine: 3, endLine: 2, text: 'a' } },
+      { file: 'hello.ts', selection: { startLine: 1.5, endLine: 2, text: 'a' } },
+      { file: 'hello.ts', selection: { startLine: 1, endLine: 2, text: 42 } },
+    ]) {
+      await controller.send('Explain', [], [], [], editor as never);
+    }
+    assert.equal(orchestrator.history.length, before, 'nothing was sent');
+    assert.equal(notices(shell).filter((n) => n.startsWith('Not sent: the selection from the editor')).length, 6);
+
+    // A secret-looking file the user selected makes web access ask first, as an agent's read would.
+    await controller.send('Explain', [], [], [], { file: '.env', selection: { startLine: 1, endLine: 1, text: 'TOKEN=x' } });
+    assert.equal((orchestrator as unknown as { secretFile?: string }).secretFile, '.env');
+  });
+
+  it('does not attach a file through a link that leaves the folder', async () => {
+    process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Ok.' }, { stop: 'end_turn' }]]);
+    const { controller } = await start('desktop', agentSettings);
+    writeFileSync(path.join(folderB, 'secret.txt'), 'outside content\n');
+    symlinkSync(folderB, path.join(folderA, 'out'), process.platform === 'win32' ? 'junction' : 'dir');
+    writeFileSync(path.join(folderA, 'inside.txt'), 'inside content\n');
+    await controller.send('Look', ['out/secret.txt', 'inside.txt']);
+    const prompt = JSON.stringify(orchestratorOf(controller).history.filter((m) => m.role === 'user').at(-1));
+    assert.match(prompt, /<attached_file path=\\"inside\.txt\\">\\ninside content/);
+    assert.doesNotMatch(prompt, /outside content/);
+  });
+
+  it('ignores the Files messages in VS Code', async () => {
+    const { shell, controller } = await start('vscode');
+    writeFileSync(path.join(folderA, 'a.txt'), 'before\n');
+    await controller.handleMessage({ type: 'listDir', path: '' });
+    await controller.handleMessage({ type: 'readFile', path: 'a.txt' });
+    await controller.handleMessage({ type: 'saveFile', path: 'a.txt', text: 'mine\n', baseHash: sha('before\n') });
+    await controller.handleMessage({ type: 'openExternalFile', path: 'a.txt' });
+    assert.ok(!shell.posted.some((m) => ['dirEntries', 'fileContent', 'fileSaved', 'saveRefused'].includes(m.type)));
+    assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'before\n');
   });
 });

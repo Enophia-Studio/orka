@@ -8,11 +8,18 @@ import * as path from 'node:path';
 const MAX_BODY = 25 * 1024 * 1024; // pasted images
 /** How long the start URL works (the window opens well within this; the app quits after 90 s without one). */
 const LAUNCH_CODE_TTL_MS = 3 * 60_000;
+/**
+ * Replies with file contents and listings (the editor's). A page that reloads asks for them again,
+ * so they are never kept for it: up to 2 MB each would sit in the backlog.
+ */
+const NOT_KEPT = new Set<ToWebview['type']>(['dirEntries', 'fileContent', 'fileSaved', 'saveRefused']);
 const STATIC: Record<string, string> = {
   '/webview.js': 'text/javascript; charset=utf-8',
   '/webview.css': 'text/css; charset=utf-8',
   '/ide.css': 'text/css; charset=utf-8',
   '/theme.css': 'text/css; charset=utf-8',
+  '/editor.js': 'text/javascript; charset=utf-8',
+  '/editor.css': 'text/css; charset=utf-8',
   '/icon.png': 'image/png',
 };
 
@@ -23,7 +30,7 @@ export interface PageLook {
 }
 
 export interface UiServerOptions {
-  /** Where webview.js, webview.css, ide.css and theme.css are. */
+  /** Where webview.js, webview.css, ide.css, theme.css and the editor's editor.js and editor.css are. */
   distDir: string;
   onMessage(message: FromWebview): void;
   /** The chat UI's saved state (draft text), handed to a page as it loads. */
@@ -92,6 +99,7 @@ export class UiServer {
 
   post(message: ToWebview): void {
     if (!this.clients.size) {
+      if (NOT_KEPT.has(message.type)) return;
       this.backlog.push(message);
       if (this.backlog.length > 500) this.backlog = this.backlog.slice(-500);
       return;
@@ -140,7 +148,8 @@ export class UiServer {
         'content-security-policy': [
           "default-src 'none'",
           `script-src 'nonce-${nonce}'`,
-          "style-src 'self'",
+          // The editor's own styles (CodeMirror) are style elements carrying the page's nonce.
+          `style-src 'self' 'nonce-${nonce}'`,
           // No remote images: model output could otherwise leak data through image URLs.
           "img-src 'self' data:",
           "font-src 'self'",
@@ -243,6 +252,7 @@ function page(nonce: string, state: unknown, look: PageLook): string {
   <link rel="icon" href="/icon.png">
   <link rel="stylesheet" href="/webview.css">
   <link rel="stylesheet" href="/ide.css">
+  <link rel="stylesheet" href="/editor.css">
   <link rel="stylesheet" href="/theme.css">
   <title>Orka</title>
 </head>
@@ -270,6 +280,7 @@ function page(nonce: string, state: unknown, look: PageLook): string {
       });
     })();
   </script>
+  <script nonce="${nonce}" src="/editor.js"></script>
   <script nonce="${nonce}" src="/webview.js"></script>
 </body>
 </html>`;

@@ -6,6 +6,7 @@ export { BackgroundProcess } from './host/processes';
 export { browserFor, closeBrowser, findBrowser, HeadlessBrowser } from './browser/HeadlessBrowser';
 export * from './permissions/PermissionManager';
 export { classifyCommand, type CommandClassification, type CommandContext } from './permissions/commandRisk';
+export { isSecretFile } from './permissions/secrets';
 export * from './changes/ChangeTracker';
 export { type CommandChange, mergeText, ShadowGit } from './changes/ShadowGit';
 export { type DiffHunk, type DiffLine, hunkHeader, hunksBetween, lineText, unifiedDiff } from './changes/diff';

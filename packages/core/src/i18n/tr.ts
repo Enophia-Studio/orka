@@ -1076,4 +1076,22 @@ export const TR: Record<string, string> = {
   'Hide the side panel': 'Yan paneli gizle',
   'Show the side panel': 'Yan paneli göster',
   'Radar: what other AI coding tools shipped': 'Radar: diğer AI kodlama araçlarının yayınladıkları',
+
+  // Desktop Files and editor: files the user edited by hand, sending a selection
+  'You edited {file} after the agent.': "{file} dosyasını Agent'tan sonra siz düzenlediniz.",
+  "Undo only the agent's part": "Yalnızca Agent'ın kısmını geri al",
+  "Could not separate your edits from the agent's in {file} (they are on the same or neighbouring lines); nothing was changed.":
+    "{file} dosyasında sizin düzenlemeleriniz Agent'ınkilerden ayrılamadı (aynı ya da komşu satırlardalar); hiçbir şey değiştirilmedi.",
+  "Could not undo only the agent's part of {file}: that needs Git, and the file's text from before your edit, which a reopened large task does not keep. Nothing was changed.":
+    "{file} dosyasında yalnızca Agent'ın kısmı geri alınamadı: bunun için Git ve dosyanın sizin düzenlemenizden önceki metni gerekir; yeniden açılan büyük bir görev bu metni saklamaz. Hiçbir şey değiştirilmedi.",
+  '{file} changed after you saved it; nothing was changed. Try again.': '{file} siz kaydettikten sonra değişti; hiçbir şey değiştirilmedi. Yeniden deneyin.',
+  'The agent created or deleted {file}, so its part cannot be undone apart from your edits; nothing was changed.':
+    "{file} dosyasını Agent oluşturdu ya da sildi; bu yüzden Agent'ın kısmı sizin düzenlemelerinizden ayrı geri alınamaz. Hiçbir şey değiştirilmedi.",
+  '{n} file you edited after the agent stays as it is.': "Agent'tan sonra düzenlediğiniz {n} dosya olduğu gibi kalır.",
+  '{n} files you edited after the agent stay as they are.': "Agent'tan sonra düzenlediğiniz {n} dosya olduğu gibi kalır.",
+  'Kept {n} file(s) you edited: {files}. Revert their parts in Changes.': 'Düzenlediğiniz {n} dosya korundu: {files}. Parçalarını Changes\'ten geri alabilirsiniz.',
+  'This part includes lines you edited; it was left as is.': 'Bu kısım sizin düzenlediğiniz satırları içeriyor; olduğu gibi bırakıldı.',
+  'Files you edited yourself are kept: {files}.': 'Kendi düzenlediğiniz dosyalar korunur: {files}.',
+  'Not sent: the selection from the editor does not name a file and lines in this folder.': 'Gönderilmedi: editördeki seçim bu klasördeki bir dosyayı ve satırları göstermiyor.',
+  'Orka does not open programs or scripts with the system: {file}.': 'Orka programları ve betikleri sistemle açmaz: {file}.',
 };

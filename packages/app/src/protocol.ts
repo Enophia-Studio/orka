@@ -235,6 +235,40 @@ export interface HunkView {
   hidden: number;
 }
 
+/** One entry of a folder in the desktop app's Files tree. */
+export interface DirEntry {
+  name: string;
+  kind: 'dir' | 'file';
+  /** A link (or junction) to a place inside the folder. */
+  link?: true;
+  /** A dependency or build folder, shown dimmed. */
+  ignored?: true;
+}
+
+/** A file's line endings; a file with both (or a lone CR) opens read-only. */
+export type Eol = 'lf' | 'crlf' | 'mixed';
+
+/**
+ * Why a file cannot be opened in the editor. `unreadable`: the system refused to read it
+ * (permissions, or another program holds it locked).
+ */
+export type FileReason = 'outside' | 'notFound' | 'notFile' | 'tooLarge' | 'binary' | 'encoding' | 'unreadable';
+
+/**
+ * Why a save was refused. `conflict`: the file changed on disk since it was read; `gone`: it no
+ * longer exists; `readOnly`: it has mixed line endings; `invalid`: a malformed request;
+ * `unwritable`: the system refused the write.
+ */
+export type SaveRefusal = 'conflict' | 'gone' | 'tooLarge' | 'outside' | 'readOnly' | 'invalid' | 'unwritable';
+
+/** What the user selected in the desktop app's editor, sent with a message. */
+export interface EditorSelection {
+  /** Workspace-relative path with forward slashes. */
+  file: string;
+  /** 1-based, inclusive. */
+  selection?: { startLine: number; endLine: number; text: string };
+}
+
 /** A pasted or dropped image: base64 data for the model, a small JPEG data URL for the chat. */
 export interface ImageAttachment {
   name: string;
@@ -357,11 +391,27 @@ export type ToWebview =
   | { type: 'setInput'; text: string; append?: boolean }
   /** Desktop only: Radar's state, and its report when that changed (undefined: none yet). */
   | { type: 'radar'; radar: RadarView }
-  | { type: 'radarReport'; report?: RadarReportView };
+  | { type: 'radarReport'; report?: RadarReportView }
+  /**
+   * Desktop Files and editor: replies to listDir, readFile and saveFile, by the workspace-relative
+   * path asked for. A reply is only sent while the page is connected (never kept for a reload).
+   */
+  | { type: 'dirEntries'; path: string; entries: DirEntry[]; truncated?: true }
+  | { type: 'dirEntries'; path: string; error: 'outside' | 'notFound' }
+  /** The text has 
+ line breaks and no BOM; hash is the sha256 of the bytes on disk. */
+  | { type: 'fileContent'; path: string; ok: true; text: string; hash: string; size: number; eol: Eol; bom: boolean; readOnly?: true }
+  /** The file still has the hash the page already knows. */
+  | { type: 'fileContent'; path: string; ok: true; unchanged: true; hash: string }
+  | { type: 'fileContent'; path: string; ok: false; reason: FileReason }
+  | { type: 'fileSaved'; path: string; hash: string }
+  /** running: an agent works or a hand-off is open. hash: what is on disk now, after a conflict. */
+  | { type: 'saveRefused'; path: string; reason: SaveRefusal | 'running'; hash?: string };
 
 export type FromWebview =
   | { type: 'ready' }
-  | { type: 'send'; text: string; files?: string[]; skills?: string[]; images?: ImageAttachment[] }
+  /** editor: the desktop editor's file and selection (ignored elsewhere). */
+  | { type: 'send'; text: string; files?: string[]; skills?: string[]; images?: ImageAttachment[]; editor?: EditorSelection }
   | { type: 'stop' }
   /** Go back to just before this user message (conversation and files). */
   | { type: 'rewind'; id: string }
@@ -415,8 +465,9 @@ export type FromWebview =
   | { type: 'acceptChange'; path: string }
   | { type: 'revertChange'; path: string }
   | { type: 'getHunks'; path: string }
-  | { type: 'revertHunk'; path: string; index: number }
-  | { type: 'keepHunk'; path: string; index: number }
+  /** header: the hunk's header as shown; a hunk that no longer has it is left alone. */
+  | { type: 'revertHunk'; path: string; index: number; header?: string }
+  | { type: 'keepHunk'; path: string; index: number; header?: string }
   | { type: 'acceptAll' }
   | { type: 'revertAll' }
   | { type: 'toggleSkill'; name: string; enabled: boolean }
@@ -439,4 +490,12 @@ export type FromWebview =
   /** A new session in the current folder with the proposal of this cluster in the message box (never sent). */
   | { type: 'radarStartSession'; cluster: string }
   /** Open a release note the report links to (only a link that is in the report). */
-  | { type: 'radarOpenLink'; url: string };
+  | { type: 'radarOpenLink'; url: string }
+  /** Desktop Files and editor: paths are workspace-relative with forward slashes ('' = the folder itself). */
+  | { type: 'listDir'; path: string }
+  /** knownHash: the hash the page has; an unchanged file comes back without its text. */
+  | { type: 'readFile'; path: string; knownHash?: string }
+  /** baseHash: the hash of the file as it was read; the save is refused when the disk differs. */
+  | { type: 'saveFile'; path: string; text: string; baseHash: string }
+  /** Open a file of the folder in the program the system uses for it. */
+  | { type: 'openExternalFile'; path: string };

@@ -21,6 +21,7 @@ import {
   createProvider,
   DEFAULT_SUBAGENTS,
   describeModel,
+  type EditorContext,
   emptySession,
   EXTERNAL_AGENTS,
   externalAgent,
@@ -34,6 +35,7 @@ import {
   initProjectMemory,
   isChatModelId,
   isNewerVersion,
+  isSecretFile,
   lineText,
   listModels,
   loadSkills,
@@ -56,6 +58,7 @@ import {
   PROVIDER_PRESETS,
   PROVIDERS,
   type ProviderKind,
+  readInsideWorkspace,
   releasePageUrl,
   resolveClaudeExecutable,
   type SessionView,
@@ -75,7 +78,7 @@ import {
 } from '@orka/core';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, promises as fs } from 'node:fs';
+import { existsSync, promises as fs, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import type {
@@ -84,6 +87,7 @@ import type {
   AppVersionView,
   ClaudeCodeStatus,
   ConfigView,
+  EditorSelection,
   ExternalAgentView,
   FromWebview,
   HunkView,
@@ -113,6 +117,7 @@ import {
   WEBVIEW_SETTINGS,
 } from './settings';
 import type { AppShell, PickItem, TerminalHandle } from './shell';
+import { WorkspaceFiles } from './workspaceFiles';
 
 const isModelId = (value: unknown): value is string => typeof value === 'string' && /^[\w.:/@-]{1,160}$/.test(value);
 const secretKey = (ref: string) => `orka.apiKey.${ref}`;
@@ -129,6 +134,11 @@ const CLAUDE_UPDATE_STATE = 'orka.claudeCodeUpdatedAt';
 const HOOKS_TRUST_STATE = 'orka.hooksTrust';
 /** How often model lists and Claude Code are refreshed in the background. */
 const MODEL_REFRESH_MS = 24 * 60 * 60 * 1000;
+/** The longest editor selection sent with a message (the context builder's own limit). */
+const MAX_SELECTION_CHARS = 8_000;
+const MAX_SELECTION_LINE = 10_000_000;
+/** Files "Open in system app" never opens: on Windows (and some Linux desktops) opening one runs it. */
+const LAUNCHABLE = /\.(exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|lnk|url|scr|pif|hta|cpl|reg|jar|appref-ms|msc|application|gadget|desktop|command|app|sh)$/i;
 const MAX_HUNKS = 40;
 const MAX_HUNK_LINES = 80;
 /** Tasks per folder in the desktop app's session list. */
@@ -210,6 +220,10 @@ export class AppController implements Disposable {
   private startingTask?: Promise<void>;
   /** The desktop app's Radar (VS Code and the CLI have none). */
   private readonly radar?: RadarController;
+  /** The desktop app's Files tree and editor, for the open folder (VS Code has its own editor). */
+  private files?: WorkspaceFiles;
+  /** Saves under way, by path: one at a time per file. */
+  private readonly saving = new Map<string, Promise<void>>();
 
   constructor(
     private readonly shell: AppShell,
@@ -286,7 +300,7 @@ export class AppController implements Disposable {
         this.radar?.postAll();
         break;
       case 'send':
-        await this.send(message.text, message.files, message.skills, message.images);
+        await this.send(message.text, message.files, message.skills, message.images, message.editor);
         break;
       case 'stop':
         this.stop();
@@ -427,10 +441,10 @@ export class AppController implements Disposable {
         await this.postHunks(message.path);
         break;
       case 'revertHunk':
-        await this.revertHunk(message.path, message.index);
+        await this.revertHunk(message.path, message.index, message.header);
         break;
       case 'keepHunk':
-        await this.keepHunk(message.path, message.index);
+        await this.keepHunk(message.path, message.index, message.header);
         break;
       case 'acceptAll':
         this.acceptAll();
@@ -487,7 +501,116 @@ export class AppController implements Disposable {
       case 'dialogResult':
         // Answered inside the shell that asked.
         break;
+      case 'listDir':
+        this.listDir(message.path);
+        break;
+      case 'readFile':
+        this.readFile(message.path, message.knownHash);
+        break;
+      case 'saveFile':
+        await this.saveFile(message.path, message.text, message.baseHash);
+        break;
+      case 'openExternalFile':
+        await this.openExternalFile(message.path);
+        break;
     }
+  }
+
+  // ---------------------------------------------------------------- desktop Files and editor
+
+  private listDir(rel: unknown): void {
+    if (!this.files || typeof rel !== 'string') return;
+    const listing = this.files.list(rel);
+    this.shell.post(
+      'error' in listing
+        ? { type: 'dirEntries', path: rel, error: listing.error }
+        : { type: 'dirEntries', path: rel, entries: listing.entries, ...(listing.truncated ? { truncated: true as const } : {}) },
+    );
+  }
+
+  private readFile(rel: unknown, knownHash: unknown): void {
+    if (!this.files || typeof rel !== 'string') return;
+    const read = this.files.read(rel, typeof knownHash === 'string' ? knownHash : undefined);
+    if ('error' in read) this.shell.post({ type: 'fileContent', path: rel, ok: false, reason: read.error });
+    else if ('unchanged' in read) this.shell.post({ type: 'fileContent', path: rel, ok: true, unchanged: true, hash: read.hash });
+    else this.shell.post({ type: 'fileContent', path: rel, ok: true, ...read });
+  }
+
+  /**
+   * Save the editor's text. Refused while an agent works or a hand-off is open: their change
+   * tracking would take the save for the agent's. A saved file the agent changed is marked as
+   * edited by the user, so Revert, Go back and hunk Revert leave the user's edit alone.
+   */
+  private async saveFile(rel: unknown, text: unknown, baseHash: unknown): Promise<void> {
+    if (!this.files || typeof rel !== 'string') return;
+    const key = rel.toLowerCase();
+    const save = (this.saving.get(key) ?? Promise.resolve()).then(() => this.saveNow(rel, text, baseHash));
+    const done = save.catch(() => undefined);
+    this.saving.set(key, done);
+    try {
+      await save;
+    } finally {
+      if (this.saving.get(key) === done) this.saving.delete(key);
+    }
+  }
+
+  private saveNow(rel: string, text: unknown, baseHash: unknown): void {
+    const files = this.files;
+    const orchestrator = this.orchestrator;
+    if (!files || !orchestrator) return;
+    if (orchestrator.isRunning || this.handoff) {
+      this.shell.post({ type: 'saveRefused', path: rel, reason: 'running' });
+      return;
+    }
+    const file = files.resolve(rel);
+    if (!file) {
+      this.shell.post({ type: 'saveRefused', path: rel, reason: 'outside' });
+      return;
+    }
+    const result = files.save(rel, text as string, baseHash as string);
+    if (!result.ok) {
+      this.shell.post({ type: 'saveRefused', path: rel, reason: result.reason, ...(result.hash ? { hash: result.hash } : {}) });
+      return;
+    }
+    // The tracker knows a file by its path inside the folder; through a link, its target may be tracked too.
+    orchestrator.changes.noteUserEdit(file.abs, result.before, result.after);
+    if (!samePath(file.abs, file.real)) orchestrator.changes.noteUserEdit(file.real, result.before, result.after);
+    orchestrator.addNote(`The user edited ${rel} by hand in the editor; re-read it before editing it again.`);
+    this.shell.post({ type: 'fileSaved', path: rel, hash: result.hash });
+    // Changes and their hunks are published again, so hunk numbers match the saved file.
+    orchestrator.changes.notify();
+  }
+
+  /** "Open in system app" for a file of the folder (never a program or script, which that would run). */
+  private async openExternalFile(rel: unknown): Promise<void> {
+    if (!this.files || typeof rel !== 'string') return;
+    const file = this.files.resolve(rel);
+    if (!file) return;
+    if (LAUNCHABLE.test(file.real)) {
+      void this.shell.message('warning', t('Orka does not open programs or scripts with the system: {file}.', { file: rel }));
+      return;
+    }
+    await this.shell.openFile(file.real);
+  }
+
+  /**
+   * The editor's file and selection as the agent's context, checked: a file inside the folder and
+   * valid line numbers. {} when there is none (or the app has no Files editor); undefined when it
+   * is not valid.
+   */
+  private editorSelection(editor: EditorSelection | undefined, root: string): EditorContext | undefined {
+    if (!this.files || editor === undefined) return {};
+    if (!editor || typeof editor !== 'object' || typeof editor.file !== 'string') return undefined;
+    const file = this.files.resolve(editor.file);
+    if (!file || !isFile(file.real)) return undefined;
+    let selection: EditorContext['selection'];
+    if (editor.selection !== undefined) {
+      const { startLine, endLine, text } = editor.selection ?? {};
+      const line = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= MAX_SELECTION_LINE;
+      if (!line(startLine) || !line(endLine) || startLine > endLine || typeof text !== 'string') return undefined;
+      selection = { startLine, endLine, text: text.slice(0, MAX_SELECTION_CHARS) };
+    }
+    return { ...this.shell.editorContext(root), activeFile: file.rel, ...(selection ? { selection } : {}) };
   }
 
   private async applyWebviewSetting(key: string, value: unknown): Promise<void> {
@@ -505,7 +628,7 @@ export class AppController implements Disposable {
 
   // ---------------------------------------------------------------- agent actions
 
-  async send(text: string, files: string[] = [], skillNames: string[] = [], images: ImageAttachment[] = []): Promise<void> {
+  async send(text: string, files: string[] = [], skillNames: string[] = [], images: ImageAttachment[] = [], editor?: EditorSelection): Promise<void> {
     const trimmed = text.trim();
     if (!trimmed) return;
     const orchestrator = this.orchestrator;
@@ -515,6 +638,12 @@ export class AppController implements Disposable {
     }
     if (orchestrator.isRunning) {
       void this.shell.message('info', t('The agent is still working. Stop it first or wait until it finishes.'));
+      return;
+    }
+    const root = this.host!.workspaceRoot;
+    const fromEditor = this.editorSelection(editor, root);
+    if (!fromEditor) {
+      this.publishNotice('warning', t('Not sent: the selection from the editor does not name a file and lines in this folder.'));
       return;
     }
     const main = this.mainProvider();
@@ -556,7 +685,10 @@ export class AppController implements Disposable {
     const invoked = [...new Set(skillNames)].map((name) => this.skills.find((s) => s.name === name)).filter((s): s is Skill => !!s);
     await this.confirmWorkspaceHooks();
     const attachments = await this.readAttachments(files);
-    const run = orchestrator.run(trimmed, this.shell.editorContext(this.host!.workspaceRoot), attachments, { skills: invoked, images: validImages(images) });
+    // A secret-looking file the user put into the context arms the secrets guard, as an agent's read of it would.
+    if (fromEditor.activeFile && isSecretFile(fromEditor.activeFile)) orchestrator.noteSecretContext(fromEditor.activeFile);
+    const context = fromEditor.activeFile ? fromEditor : this.shell.editorContext(root);
+    const run = orchestrator.run(trimmed, context, attachments, { skills: invoked, images: validImages(images) });
     this.running = run;
     try {
       await run;
@@ -602,9 +734,11 @@ export class AppController implements Disposable {
       return;
     }
     const back = t('Go back');
+    const keep = (await orchestrator.rewindPreview(id))?.keep ?? [];
     const choice = await this.shell.message(
       'warning',
-      t('Go back to before this message? The conversation from here on is removed, and files the agents changed since return to how they were. The file changes stay reviewable in Changes.'),
+      t('Go back to before this message? The conversation from here on is removed, and files the agents changed since return to how they were. The file changes stay reviewable in Changes.') +
+        (keep.length ? ` ${t('Files you edited yourself are kept: {files}.', { files: keep.slice(0, 8).join(', ') })}` : ''),
       { modal: true },
       back,
     );
@@ -614,9 +748,10 @@ export class AppController implements Disposable {
     this.shell.post({ type: 'setInput', text: result.text });
     this.publishNotice(
       'info',
-      result.restored.length
+      (result.restored.length
         ? t('Went back. Restored {n} file(s): {files}. Edit the message and send it again.', { n: result.restored.length, files: result.restored.slice(0, 8).join(', ') })
-        : t('Went back. Edit the message and send it again.'),
+        : t('Went back. Edit the message and send it again.')) +
+        (result.kept.length ? ` ${t('Kept {n} file(s) you edited: {files}.', { n: result.kept.length, files: result.kept.slice(0, 8).join(', ') })}` : ''),
     );
     await this.saveTask();
   }
@@ -670,23 +805,59 @@ export class AppController implements Disposable {
   async revertAll(): Promise<void> {
     const orchestrator = this.orchestrator;
     if (!orchestrator) return;
-    const count = (await orchestrator.changes.list()).length;
-    if (!count) return;
-    const revertLabel = t('Revert All');
-    const choice = await this.shell.message('warning', tn('Revert the {n} AI-changed file?', 'Revert all {n} AI-changed files?', count), { modal: true }, revertLabel);
-    if (choice !== revertLabel) return;
-    const reverted = await orchestrator.changes.revertAll();
-    if (reverted.length) orchestrator.addNote(`The user reverted all of your file changes: ${reverted.join(', ')}.`);
+    const changes = await orchestrator.changes.list();
+    if (!changes.length) return;
+    // Files the user edited after the agent stay as they are; they are named afterwards.
+    const edited = changes.filter((c) => c.userEdited).length;
+    const count = changes.length - edited;
+    if (count) {
+      const revertLabel = t('Revert All');
+      const question =
+        tn('Revert the {n} AI-changed file?', 'Revert all {n} AI-changed files?', count) +
+        (edited ? ` ${tn('{n} file you edited after the agent stays as it is.', '{n} files you edited after the agent stay as they are.', edited)}` : '');
+      const choice = await this.shell.message('warning', question, { modal: true }, revertLabel);
+      if (choice !== revertLabel) return;
+    }
+    const reverted = count ? await orchestrator.changes.revertAll() : [];
+    if (reverted.length) orchestrator.addNote(`The user reverted your changes to these files: ${reverted.join(', ')}.`);
+    const kept = orchestrator.changes.skippedUserEdited();
+    if (kept.length) {
+      this.publishNotice('info', t('Kept {n} file(s) you edited: {files}. Revert their parts in Changes.', { n: kept.length, files: kept.slice(0, 8).join(', ') }));
+    }
   }
 
   private relPath(absPath: string): string {
     return path.relative(this.host!.workspaceRoot, absPath).split(path.sep).join('/');
   }
 
+  /**
+   * Revert one file. A file the user edited after the agent is never reverted as a whole (that would
+   * throw their edit away): only the agent's part is undone, when it can be told apart cleanly.
+   */
   private async revert(absPath: string): Promise<void> {
     const orchestrator = this.requireOrchestrator();
-    await orchestrator.changes.revert(absPath);
-    orchestrator.addNote(`The user reverted your changes to ${this.relPath(absPath)}.`);
+    const rel = this.relPath(absPath);
+    if (!orchestrator.changes.isUserEdited(absPath)) {
+      if (await orchestrator.changes.revert(absPath)) orchestrator.addNote(`The user reverted your changes to ${rel}.`);
+      return;
+    }
+    const undo = t("Undo only the agent's part");
+    const choice = await this.shell.message('warning', t('You edited {file} after the agent.', { file: rel }), { modal: true }, undo);
+    if (choice !== undo) return;
+    const result = await orchestrator.changes.revertAgentPart(absPath);
+    if (result === 'reverted') {
+      orchestrator.addNote(`The user undid your changes to ${rel} and kept their own edits. Re-read the file before editing it again.`);
+      return;
+    }
+    const reasons: Record<Exclude<typeof result, 'reverted'>, string> = {
+      conflict: t("Could not separate your edits from the agent's in {file} (they are on the same or neighbouring lines); nothing was changed.", { file: rel }),
+      unavailable: t("Could not undo only the agent's part of {file}: that needs Git, and the file's text from before your edit, which a reopened large task does not keep. Nothing was changed.", {
+        file: rel,
+      }),
+      changed: t('{file} changed after you saved it; nothing was changed. Try again.', { file: rel }),
+      notApplicable: t('The agent created or deleted {file}, so its part cannot be undone apart from your edits; nothing was changed.', { file: rel }),
+    };
+    this.publishNotice('warning', reasons[result]);
   }
 
   /** Hunks of one changed file for the Changes panel. */
@@ -703,10 +874,11 @@ export class AppController implements Disposable {
   }
 
   /** Keep one part of a change (the rest stays reviewable). */
-  async keepHunk(absPath: string, index: number): Promise<void> {
+  async keepHunk(absPath: string, index: number, header?: string): Promise<void> {
     const orchestrator = this.requireOrchestrator();
     if (!Number.isInteger(index) || index < 0) return;
-    if (!(await orchestrator.changes.acceptHunk(absPath, index))) {
+    const hunk = (await orchestrator.changes.hunks(absPath))[index];
+    if (!hunk || !isShown(hunk, header) || !(await orchestrator.changes.acceptHunk(absPath, index))) {
       void this.shell.message('warning', t('That part of the change no longer exists; the file changed in the meantime.'));
     }
     await this.postHunks(absPath);
@@ -716,11 +888,17 @@ export class AppController implements Disposable {
     await this.shell.openChangeDiff(absPath);
   }
 
-  async revertHunk(absPath: string, index: number): Promise<void> {
+  /**
+   * Undo one part of a change. `header`: the hunk as the page showed it; when the change moved on
+   * since, nothing is undone. A part that includes lines the user edited is left alone.
+   */
+  async revertHunk(absPath: string, index: number, header?: string): Promise<void> {
     const orchestrator = this.requireOrchestrator();
     if (!Number.isInteger(index) || index < 0) return;
     const hunk = (await orchestrator.changes.hunks(absPath))[index];
-    if (!hunk || !(await orchestrator.changes.revertHunk(absPath, index))) {
+    if (hunk && isShown(hunk, header) && (await orchestrator.changes.hunkTouchesUserEdit(absPath, index))) {
+      void this.shell.message('warning', t('This part includes lines you edited; it was left as is.'));
+    } else if (!hunk || !isShown(hunk, header) || !(await orchestrator.changes.revertHunk(absPath, index, { header: hunkHeader(hunk) }))) {
       void this.shell.message('warning', t('That part of the change no longer exists; the file changed in the meantime.'));
     } else {
       orchestrator.addNote(`The user reverted part of your change to ${this.relPath(absPath)} (${hunkHeader(hunk)}). Re-read the file before editing it again.`);
@@ -971,6 +1149,11 @@ export class AppController implements Disposable {
     if (!root) return [];
     const out: Array<{ path: string; content: string }> = [];
     for (const rel of [...new Set(files)].slice(0, MAX_ATTACHMENTS)) {
+      if (this.files) {
+        const attached = this.readAttachment(this.files, rel);
+        if (attached) out.push(attached);
+        continue;
+      }
       const abs = path.resolve(root, rel);
       const inside = path.relative(root, abs);
       if (inside.startsWith('..') || path.isAbsolute(inside)) continue;
@@ -991,6 +1174,29 @@ export class AppController implements Disposable {
       }
     }
     return out;
+  }
+
+  /**
+   * One attachment in the desktop app, read with the editor's checks: a link that leads out of the
+   * folder is not followed. A secret-looking file arms the secrets guard.
+   */
+  private readAttachment(files: WorkspaceFiles, rel: string): { path: string; content: string } | undefined {
+    const file = files.resolve(rel);
+    if (!file) return undefined;
+    let read: ReturnType<typeof readInsideWorkspace>;
+    try {
+      read = readInsideWorkspace(files.root, file.abs, MAX_ATTACHMENT_BYTES);
+    } catch {
+      read = { error: 'notFound' };
+    }
+    if ('error' in read) {
+      if (read.error === 'tooLarge') this.publishNotice('warning', t('Skipped {file}: larger than 200 KB. The agent can still read it with its tools.', { file: rel }));
+      else if (read.error === 'notFile') this.publishNotice('warning', t('Skipped {file}: not a file.', { file: rel }));
+      else if (read.error === 'notFound') this.publishNotice('warning', t('Could not attach {file}.', { file: rel }));
+      return undefined;
+    }
+    if (isSecretFile(file.rel)) this.orchestrator?.noteSecretContext(file.rel);
+    return { path: file.rel, content: read.bytes.toString('utf8') };
   }
 
   private async searchFiles(query: string): Promise<void> {
@@ -2297,6 +2503,7 @@ export class AppController implements Disposable {
     if (!folder) {
       this.orchestrator = undefined;
       this.host = undefined;
+      this.files = undefined;
       this.store = undefined;
       this.snapshots = undefined;
       this.shell.attach(undefined, this.settings);
@@ -2311,6 +2518,7 @@ export class AppController implements Disposable {
       browserPath: this.settings.browserPath,
       approve: (r) => this.requestApproval(r),
     });
+    this.files = this.shell.kind === 'desktop' ? new WorkspaceFiles(this.host.workspaceRoot) : undefined;
     const storage = this.shell.storage(folder.path);
     this.snapshots = new ShadowGit(folder.path, storage.snapshots);
     this.store = new FileTaskStore(storage.tasks);
@@ -2596,7 +2804,7 @@ function splitCommandLine(line: string): string[] {
   return [...line.matchAll(/"([^"]*)"|(\S+)/g)].map((m) => m[1] ?? m[2]).filter((w) => w.length > 0);
 }
 
-/** Two paths name the same folder (Windows paths ignore case). */
+/** Two paths name the same file or folder (Windows paths ignore case). */
 function samePath(a: string, b: string): boolean {
   const norm = (p: string) => {
     const resolved = path.resolve(p);
@@ -2641,4 +2849,17 @@ function slug(text: string): string {
 
 function hooksHash(hooks: HooksConfig | undefined): string {
   return createHash('sha1').update(JSON.stringify(hooks ?? {})).digest('hex');
+}
+
+/** A hunk is the one the page showed with `header` (any hunk, when no header was sent). */
+function isShown(hunk: Parameters<typeof hunkHeader>[0], header: unknown): boolean {
+  return header === undefined || (typeof header === 'string' && hunkHeader(hunk) === header);
+}
+
+function isFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
 }

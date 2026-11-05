@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { SKIP_DIRS } from './files';
+import type { DirEntry, Eol, FileReason, SaveRefusal } from './protocol';
 
 /** The largest file the editor opens or saves. */
 export const MAX_EDITOR_BYTES = 2 * 1024 * 1024;
@@ -10,29 +11,6 @@ export const MAX_EDITOR_BYTES = 2 * 1024 * 1024;
 export const MAX_DIR_ENTRIES = 2000;
 /** Folders the Files tree shows dimmed and collapsed: dependencies, build output, engine caches. */
 export const IGNORED_FOLDERS: ReadonlySet<string> = new Set([...IGNORED_DIRS, ...SKIP_DIRS]);
-
-/** A file's line endings; a file with both (or a lone CR) opens read-only. */
-export type Eol = 'lf' | 'crlf' | 'mixed';
-/**
- * Why a file cannot be opened. `unreadable`: the system refused to read it (permissions, or
- * another program holds it locked).
- */
-export type FileReason = 'outside' | 'notFound' | 'notFile' | 'tooLarge' | 'binary' | 'encoding' | 'unreadable';
-/**
- * Why a save was refused. `conflict`: the file changed on disk since it was read; `gone`: it no
- * longer exists; `readOnly`: it has mixed line endings; `invalid`: a malformed request;
- * `unwritable`: the system refused the write.
- */
-export type SaveRefusal = 'conflict' | 'gone' | 'tooLarge' | 'outside' | 'readOnly' | 'invalid' | 'unwritable';
-
-export interface DirEntry {
-  name: string;
-  kind: 'dir' | 'file';
-  /** A link (or junction) to a place inside the workspace. */
-  link?: true;
-  /** A dependency or build folder, shown dimmed. */
-  ignored?: true;
-}
 
 export type DirListing = { entries: DirEntry[]; truncated: boolean } | { error: 'outside' | 'notFound' };
 
