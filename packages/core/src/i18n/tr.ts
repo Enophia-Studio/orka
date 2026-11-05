@@ -262,7 +262,7 @@ export const TR: Record<string, string> = {
   'Could not read {file}: {error}': '{file} okunamadı: {error}',
   '{file} is not valid JSON: {error}': '{file} geçerli bir JSON değil: {error}',
   '{file} cannot be used: {errors}': '{file} kullanılamıyor: {errors}',
-  'The radar needs an API provider; the Claude Code provider cannot run it.': "Radar bir API provider'ı gerektirir; Claude Code provider'ı onu çalıştıramaz.",
+  'Radar cannot run on an agent CLI: its own tools cannot be turned off.': "Radar bir agent CLI üzerinde çalışamaz: agent'ın kendi araçları kapatılamıyor.",
   'The radar is already analyzing new entries.': 'Radar zaten yeni kayıtları analiz ediyor.',
   'Radar report': 'Radar raporu',
   'Generated {date} with {provider}. Based on public release notes only; summaries and comparisons are written by a model and can be wrong.':
@@ -1067,7 +1067,7 @@ export const TR: Record<string, string> = {
   Analyze: 'Analiz et',
   'Analyze right after a check finds something': 'Kontrol yeni bir şey bulunca hemen analiz et',
   'Uses your provider and tokens, at most {n} model calls a run.': "Kendi provider'ınızı ve token'larınızı kullanır; çalışma başına en fazla {n} model çağrısı.",
-  'Same as main ({provider})': 'Ana ile aynı ({provider})',
+  'Automatic ({provider})': 'Otomatik ({provider})',
   'Choose a provider…': 'Provider seçin…',
   'Analyze with': 'Analizi yapan',
   Summarizing: 'Özetleniyor',

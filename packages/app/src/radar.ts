@@ -195,7 +195,9 @@ export class RadarController {
     // Turned off meanwhile: nothing more is planned.
     if (abort.signal.aborted || !this.settings.enabled || this.disposed) return;
     this.schedule(POLL_INTERVAL_MS);
-    if (found > 0 && this.settings.autoAnalyze && !('problem' in this.host.model())) void this.analyze();
+    // Never on its own with Claude Code: a subscription CLI runs Radar only when the user clicks Analyze.
+    const model = this.host.model();
+    if (found > 0 && this.settings.autoAnalyze && !('problem' in model) && model.provider !== 'claude-code') void this.analyze();
   }
 
   /** Turned off: no timer, and whatever runs is stopped; the lock goes once it has (see refresh). */

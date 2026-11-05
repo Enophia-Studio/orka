@@ -75,6 +75,11 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
       assert.ok(argv.includes(flag), `flag ${JSON.stringify(flag)}`);
     }
     assert.equal(argv[argv.indexOf('--tools') + 1], '', 'built-in tools disabled');
+    // A plain text model, also what lets Radar run on it: no MCP servers (none given to the strict
+    // config), no settings files (their hooks and plugins), no slash commands or skills.
+    assert.equal(argv[argv.indexOf('--setting-sources') + 1], '', 'no settings files');
+    assert.ok(argv.includes('--disable-slash-commands'));
+    assert.ok(!argv.includes('--mcp-config') && !argv.some((a) => /skip-permissions|bypassPermissions/.test(a)));
   });
 
   it('restarts with the full transcript when the history no longer matches the session', async () => {

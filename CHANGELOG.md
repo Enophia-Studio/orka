@@ -11,6 +11,7 @@
 **CLI-first**
 
 - Until you pick a main provider, a ready CLI comes first: Claude Code (turned on and logged in), else an agent CLI you turned on whose check passed; API providers follow as a fallback. The provider pickers list a model API only once it has a key.
+- **Radar** can run on Claude Code, and uses it by default when it is turned on and logged in: as a plain model with every built-in tool, MCP server, settings file and slash command off, and no tools from Radar. With Claude Code an analysis runs only when you click **Analyze**, never automatically. Agent CLIs still never run Radar.
 
 ## 0.6.0
 

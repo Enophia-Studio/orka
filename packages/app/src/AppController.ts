@@ -1455,34 +1455,39 @@ export class AppController implements Disposable {
   }
 
   /**
-   * The model Radar analyzes with: the provider picked for Radar, else the main agent's when that is
-   * a model provider that is ready. Never an agent CLI or Claude Code (a subscription CLI is not
-   * meant to run automated analysis), and never one the user did not set up.
+   * The model Radar analyzes with: the provider picked for Radar; without a choice, Claude Code
+   * when it is turned on and logged in (CLI-first), else the main agent's provider when that is a
+   * model provider that is ready, else the first model API with a key. Claude Code runs Radar as a plain model: every built-in tool,
+   * MCP server, settings file and slash command of the CLI is off (ClaudeCodeProvider), and Radar
+   * offers no tools of its own, so there is nothing to run and nothing to ask permission for.
+   * Never an agent CLI (its own tools cannot be turned off), and never one the user did not set up.
    */
   private radarModel(): RadarModel {
     const plain = (ref: string) => this.radarCanUse(ref);
     const chosen = this.settings.radar.provider;
     const label = (ref: string, model: string) => `${this.providerLabel(ref)} · ${this.modelLabel(ref, model)}`;
+    // Claude Code counts as ready only once its check found it logged in.
+    const ready = (ref: string) => (ref === 'claude-code' ? this.claudeCodeStatus.state === 'ready' : this.isReady(ref));
     if (!chosen) {
-      const main = this.mainProvider();
-      const model = plain(main) && this.isReady(main) ? this.defaultModel(main) : '';
-      return model ? { provider: main, model, label: label(main, model), inherited: true } : { problem: t('Pick a provider and model for Radar.') };
+      const ref = ['claude-code', this.mainProvider(), ...this.allProviderRefs()].find((r) => plain(r) && ready(r) && this.defaultModel(r));
+      return ref ? { provider: ref, model: this.defaultModel(ref), label: label(ref, this.defaultModel(ref)), inherited: true } : { problem: t('Pick a provider and model for Radar.') };
     }
     if (!plain(chosen)) return { problem: t('Pick a provider and model for Radar.') };
+    if (chosen === 'claude-code' && !ready(chosen)) return { problem: t('{provider} is not ready.', { provider: this.providerLabel(chosen) }) };
     if (!this.isReady(chosen)) return { problem: t('{provider} needs an API key.', { provider: this.providerLabel(chosen) }) };
     const model = this.settings.radar.model || this.defaultModel(chosen);
     if (!model) return { problem: t('Pick a model for {provider} (Settings > Providers).', { provider: this.providerLabel(chosen) }) };
     return { provider: chosen, model, label: label(chosen, model), inherited: false };
   }
 
-  /** A model provider the user set up (never an agent CLI or Claude Code). */
+  /** A model provider the user set up, or Claude Code once turned on (never an agent CLI). */
   private radarCanUse(ref: string): boolean {
-    return !isAgentRef(ref) && ref !== 'claude-code' && this.allProviderRefs().includes(ref as ProviderRef);
+    return !isAgentRef(ref) && this.allProviderRefs().includes(ref as ProviderRef);
   }
 
-  /** A provider of its own for one analysis (disposed after it), on the user's own key. */
+  /** A provider of its own for one analysis (disposed after it), on the user's own key or Claude Code login. */
   private radarProvider(ref: string, model: string): AIProvider {
-    if (isAgentRef(ref) || ref === 'claude-code') throw new Error(t('The radar needs an API provider; the Claude Code provider cannot run it.'));
+    if (isAgentRef(ref)) throw new Error(t('Radar cannot run on an agent CLI: its own tools cannot be turned off.'));
     return createProvider(this.providerConfig(ref, model));
   }
 

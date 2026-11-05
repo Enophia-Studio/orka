@@ -259,8 +259,8 @@ export function readSettings(c: SettingsStore): AppSettings {
     sessions: { maxRunning: maxRunning(c.get<unknown>('sessions.maxRunning', DEFAULT_MAX_RUNNING)) },
     radar: {
       enabled: userOnly('radar.enabled') === true,
-      // A model provider only: valid() never returns an agent CLI, and Claude Code is left out here.
-      provider: radarProvider && radarProvider !== 'claude-code' ? radarProvider : '',
+      // A model provider, or Claude Code once turned on (a plain model with no tools): valid() never returns an agent CLI.
+      provider: radarProvider ?? '',
       model: typeof radarModel === 'string' && MODEL_ID.test(radarModel.trim()) ? radarModel.trim() : '',
       autoAnalyze: userOnly('radar.autoAnalyze') === true,
     },
@@ -394,7 +394,7 @@ export const WEBVIEW_SETTINGS: Record<string, (value: unknown) => boolean> = {
   'radar.enabled': (v) => typeof v === 'boolean',
   'radar.autoAnalyze': (v) => typeof v === 'boolean',
   // '' = the main agent's provider. Never an agent CLI or Claude Code: Radar runs on a model API.
-  'radar.provider': (v) => v === '' || (typeof v === 'string' && /^(?:claude|openai|gemini|custom:[a-z0-9][a-z0-9-]{0,39})$/.test(v)),
+  'radar.provider': (v) => v === '' || (typeof v === 'string' && /^(?:claude|openai|gemini|claude-code|custom:[a-z0-9][a-z0-9-]{0,39})$/.test(v)),
   'radar.model': (v) => v === '' || (typeof v === 'string' && MODEL_ID.test(v)),
 };
 
