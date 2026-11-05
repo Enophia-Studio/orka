@@ -41,6 +41,7 @@ import { createHash } from 'node:crypto';
 import { promises as fs, realpathSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import type { ConfigView, EditorSelection, HunkView, ImageAttachment, SessionMessage, SessionPost, ToWebview } from './protocol';
+import type { RunGate } from './runGate';
 import { type AppSettings, readMcpServers } from './settings';
 import type { AppShell, StateStore, TerminalHandle } from './shell';
 import { WorkspaceFiles } from './workspaceFiles';
@@ -98,6 +99,8 @@ export interface SessionContext {
   changed(session: SessionController): void;
   /** A run of this session ended (providers waiting for an idle moment are rebuilt). */
   runFinished(session: SessionController): void;
+  /** Which sessions may run at once (the process budget and the folder lock). */
+  readonly gate: RunGate;
 }
 
 /**
@@ -120,8 +123,8 @@ export class SessionController {
   private task = { id: newTaskId(), createdAt: new Date().toISOString() };
   private session: SessionView = emptySession();
   private readonly pendingApprovals = new Map<string, (response: ApprovalResponse) => void>();
-  /** An open hand-off to an external agent and the terminal it runs in. */
-  private handoff?: { session: Handoff; terminal: TerminalHandle };
+  /** An open hand-off to an external agent, the terminal it runs in, and its hold on the folder (see RunGate). */
+  private handoff?: { session: Handoff; terminal: TerminalHandle; release: () => void };
   /**
    * A hand-off is starting (its snapshot is taken) or being collected (its changes are read):
    * Save stays refused, or the user's save would be taken for the external agent's change.
@@ -328,8 +331,8 @@ export class SessionController {
   }
 
   /**
-   * Save the editor's text. Refused while an agent works or a hand-off is open: their change
-   * tracking would take the save for the agent's. A saved file the agent changed is marked as
+   * Save the editor's text. Refused while an agent works or a hand-off is open, here or in an
+   * overlapping folder: their change tracking would take the save for the agent's. A saved file the agent changed is marked as
    * edited by the user, so Revert, Go back and hunk Revert leave the user's edit alone.
    */
   private async saveFile(rel: unknown, text: unknown, baseHash: unknown): Promise<void> {
@@ -349,7 +352,8 @@ export class SessionController {
     const files = this.files;
     const orchestrator = this.orchestrator;
     if (!files) return;
-    if (orchestrator.isRunning || this.handoff || this.handoffBusy > 0) {
+    // A run or hand-off of another session in an overlapping folder would take the save for its own change.
+    if (orchestrator.isRunning || this.handoff || this.handoffBusy > 0 || this.ctx.gate.busyNear(this.root, this.id)) {
       this.post({ type: 'saveRefused', path: rel, reason: 'running' });
       return;
     }
@@ -433,24 +437,53 @@ export class SessionController {
       return;
     }
     if (!this.ctx.readyToSend(this)) return;
-    // Files an external agent changed meanwhile become reviewable changes, and the agent hears about them.
-    if (this.handoff) await this.collectHandoff(false);
-    // A new task picks up skills added or edited since the last one.
-    if (!orchestrator.history.length) await this.ctx.reloadSkills(false);
-    const skills = this.ctx.skills();
-    const invoked = [...new Set(skillNames)].map((name) => skills.find((s) => s.name === name)).filter((s): s is Skill => !!s);
-    await this.confirmWorkspaceHooks();
-    const attachments = await this.readAttachments(files);
-    // A secret-looking file the user put into the context arms the secrets guard, as an agent's read of it would.
-    if (fromEditor.activeFile && isSecretFile(fromEditor.activeFile)) orchestrator.noteSecretContext(fromEditor.activeFile);
-    const context = fromEditor.activeFile ? fromEditor : this.ctx.shell.editorContext(this.root);
-    const run = orchestrator.run(trimmed, context, attachments, { skills: invoked, images: validImages(images) });
-    this.running = run;
+    const release = this.startRun();
+    if (!release) return;
     try {
-      await run;
+      // Files an external agent changed meanwhile become reviewable changes, and the agent hears about them.
+      if (this.handoff) await this.collectHandoff(false);
+      // A new task picks up skills added or edited since the last one.
+      if (!orchestrator.history.length) await this.ctx.reloadSkills(false);
+      const skills = this.ctx.skills();
+      const invoked = [...new Set(skillNames)].map((name) => skills.find((s) => s.name === name)).filter((s): s is Skill => !!s);
+      await this.confirmWorkspaceHooks();
+      const attachments = await this.readAttachments(files);
+      // A secret-looking file the user put into the context arms the secrets guard, as an agent's read of it would.
+      if (fromEditor.activeFile && isSecretFile(fromEditor.activeFile)) orchestrator.noteSecretContext(fromEditor.activeFile);
+      const context = fromEditor.activeFile ? fromEditor : this.ctx.shell.editorContext(this.root);
+      const run = orchestrator.run(trimmed, context, attachments, { skills: invoked, images: validImages(images) });
+      this.running = run;
+      try {
+        await run;
+      } finally {
+        if (this.running === run) this.running = undefined;
+      }
     } finally {
-      if (this.running === run) this.running = undefined;
+      release();
     }
+  }
+
+  /**
+   * A place for a run of this session (see RunGate): its release, or undefined when too many
+   * sessions run or another one works in an overlapping folder (the session says so).
+   */
+  private startRun(): (() => void) | undefined {
+    const gate = this.ctx.gate.acquire(this.id, this.root);
+    if (gate.ok) return gate.release;
+    this.publishNotice(
+      'warning',
+      gate.reason === 'budget'
+        ? tn(
+            '{n} session is already running (the limit is {max}, in Settings > Control). Wait for it to finish or stop it.',
+            '{n} sessions are already running (the limit is {max}, in Settings > Control). Wait for one to finish or stop one.',
+            gate.running,
+            { max: gate.max },
+          )
+        : t('Another session is working in {folder}, which overlaps this folder. Orka runs one session at a time there.', {
+            folder: path.basename(gate.holder) || gate.holder,
+          }),
+    );
+    return undefined;
   }
 
   stop(): void {
@@ -520,7 +553,14 @@ export class SessionController {
   async compact(): Promise<void> {
     if (this.orchestrator.isRunning) return;
     if (!this.ctx.mainReady()) return;
-    await this.orchestrator.compact();
+    // Compacting asks a model, which may start a process: it counts as a run.
+    const release = this.startRun();
+    if (!release) return;
+    try {
+      await this.orchestrator.compact();
+    } finally {
+      release();
+    }
     await this.saveTask();
   }
 
@@ -895,12 +935,23 @@ export class SessionController {
       }
       return;
     }
+    // The external agent changes files with no one asking: never next to another session's run.
+    const holder = this.ctx.gate.busyNear(root, this.id);
+    if (holder) {
+      this.publishNotice(
+        'warning',
+        t('Another session is working in {folder}, which overlaps this folder. Orka runs one session at a time there.', { folder: path.basename(holder) || holder }),
+      );
+      return;
+    }
     const session = new Handoff(agent, root, this.snapshots, orchestrator.changes);
-    // From the snapshot on, a save would count as the external agent's change.
+    // From the snapshot on, a save would count as the external agent's change, and no other session runs in the folder.
+    const release = this.ctx.gate.holdFolder(this.id, root);
     this.handoffBusy++;
     let tracked: boolean;
     let brief: string | undefined;
     let terminal: TerminalHandle;
+    let opened = false;
     try {
       tracked = await session.begin();
       const requests = [...userRequests(orchestrator.history), ...(text?.trim() ? [text.trim()] : [])];
@@ -914,9 +965,11 @@ export class SessionController {
           if (this.handoff?.session === session) void this.collectHandoff(true);
         },
       });
-      this.handoff = { session, terminal };
+      this.handoff = { session, terminal, release };
+      opened = true;
     } finally {
       this.handoffBusy--;
+      if (!opened) release();
     }
     terminal.show();
     const parts = [t('{agent} is open in the terminal.', { agent: agent.label })];
@@ -943,6 +996,8 @@ export class SessionController {
       changed = await handoff.session.collect(!ended).catch(() => []);
     } finally {
       this.handoffBusy--;
+      // An ended hand-off lets go of the folder once its changes are read.
+      if (ended) handoff.release();
     }
     if (changed.length) {
       const files = changed.map((c) => c.path);
@@ -992,7 +1047,7 @@ export class SessionController {
 
   /**
    * The session goes away (another folder, or the app closes): its task is saved, an open hand-off
-   * is let go, its processes stop and open approvals are answered "no".
+   * is let go, its processes stop, open approvals are answered "no" and its places in the RunGate are freed.
    */
   async dispose(): Promise<void> {
     // The task's state is read before anything is stopped.
@@ -1002,6 +1057,8 @@ export class SessionController {
     this.orchestrator.dispose();
     this.host.stopAllProcesses();
     this.denyApprovals();
+    // Its stopped run may take a moment to end: its place and folder are free at once.
+    this.ctx.gate.releaseAll(this.id);
     await saved;
   }
 }

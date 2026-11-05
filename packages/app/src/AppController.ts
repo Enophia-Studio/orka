@@ -95,6 +95,7 @@ import {
   SHELL_CHOICES,
   WEBVIEW_SETTINGS,
 } from './settings';
+import { RunGate } from './runGate';
 import { dropNotices, samePath, type SessionContext, SessionController } from './SessionController';
 import type { AppShell, PickItem } from './shell';
 
@@ -174,8 +175,13 @@ export class AppController implements Disposable {
   private readonly mcp = new McpManager(() => this.postConfig());
   private appUpdateCheck?: Promise<void>;
   private appUpdateTimer?: ReturnType<typeof setInterval>;
-  /** Agent CLI processes (ACP), shared by the tasks of every folder; and what their last check found. */
-  private readonly acpPool = new AcpAgentPool();
+  /** Sessions that may run at once: the process budget and one session per folder (and the folders inside it). */
+  private readonly gate = new RunGate(() => this.maxRunning());
+  /**
+   * Agent CLI processes (ACP), shared by the tasks of every folder; and what their last check found.
+   * The cap stays above the session budget, so a session the gate lets run finds room for its agent.
+   */
+  private readonly acpPool = new AcpAgentPool({ max: () => Math.max(4, this.maxRunning() + 1) });
   private readonly agentStatus = new Map<string, AgentCliView['status']>();
   /** "No Supervisor next to this agent" was said once already. */
   private supervisorSkipNoted = false;
@@ -515,7 +521,13 @@ export class AppController implements Disposable {
         // Providers waiting for an idle moment are rebuilt once no session uses them.
         if (this.providersStale && !this.anyRunning()) this.disposeProviders();
       },
+      gate: this.gate,
     };
+  }
+
+  /** Sessions that may run at once: the setting in the desktop app; the VS Code panel has one session. */
+  private maxRunning(): number {
+    return this.shell.kind === 'desktop' ? this.settings.sessions.maxRunning : 1;
   }
 
   /**
@@ -677,7 +689,7 @@ export class AppController implements Disposable {
 
   private postLive(): void {
     if (!this.parallel()) return;
-    this.shell.post({ type: 'live', sessions: this.liveViews(), activeId: this.activeId });
+    this.shell.post({ type: 'live', sessions: this.liveViews(), activeId: this.activeId, maxRunning: this.maxRunning() });
   }
 
   // ---------------------------------------------------------------- agent actions
@@ -2329,7 +2341,7 @@ export class AppController implements Disposable {
       app: this.appVersionView(),
       agentClis: this.agentClisView(),
       agentClisLeftOut: NOT_IN_CATALOG.map((a) => ({ id: a.id, reason: t(a.reason) })),
-      ui: this.shell.kind === 'desktop' ? { layout: s.desktop.layout, theme: s.desktop.theme } : undefined,
+      ui: this.shell.kind === 'desktop' ? { layout: s.desktop.layout, theme: s.desktop.theme, maxRunning: s.sessions.maxRunning } : undefined,
     };
   }
 

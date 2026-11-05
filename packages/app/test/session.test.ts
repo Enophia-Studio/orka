@@ -549,3 +549,112 @@ describe('approvals and permissions per session', () => {
     assert.ok(said(shell, b, 'Beta went on.'));
   });
 });
+
+describe('run gate', () => {
+  /** Events the fake agents logged so far. */
+  const logged = (log: string) =>
+    existsSync(log)
+      ? readFileSync(log, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as { event: string; pid: number })
+      : [];
+  const notices = (shell: FakeShell, session: SessionController) =>
+    shell.posted.flatMap((m) => (m.type === 'event' && m.sessionId === session.id && m.event.type === 'notice' ? [m.event.message] : []));
+
+  it('refuses a run over the budget with a notice, and starts no agent for it', async () => {
+    const log = path.join(home, 'acp.log');
+    process.env.FAKE_ACP_LOG = log;
+    script([{ chunk: 'Working.' }, { hang: true }]);
+    const { shell, controller } = await start('desktop', { ...agentSettings, 'sessions.maxRunning': 1 });
+    const a = controller.activeSession!;
+    const sentA = controller.send('A long request');
+    await until(() => said(shell, a, 'Working.'), 'alpha to work');
+    assert.equal(shell.last('live')?.maxRunning, 1);
+
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    script([{ chunk: 'Beta is done.' }, { stop: 'end_turn' }]);
+    await controller.send('Task in beta');
+    assert.deepEqual(notices(shell, b), [
+      '1 session is already running (the limit is 1, in Settings > Control). Wait for it to finish or stop it.',
+    ]);
+    assert.ok(!b.isRunning);
+    assert.equal(logged(log).filter((e) => e.event === 'initialize').length, 1, 'no agent process for beta');
+
+    // Once alpha stops, beta runs.
+    await controller.handleMessage({ type: 'stop', sessionId: a.id });
+    await sentA;
+    await controller.send('Task in beta');
+    assert.ok(said(shell, b, 'Beta is done.'));
+  });
+
+  it('runs one session at a time in folders inside each other, and refuses a save there meanwhile', async () => {
+    const inner = path.join(folderA, 'packages', 'web');
+    mkdirSync(inner, { recursive: true });
+    writeFileSync(path.join(inner, 'notes.txt'), 'mine\n');
+    script([{ chunk: 'Working.' }, { hang: true }]);
+    const { shell, controller } = await start('desktop', agentSettings, [folderA, folderB, inner]);
+    const a = controller.activeSession!;
+    const sentA = controller.send('A long request');
+    await until(() => said(shell, a, 'Working.'), 'alpha to work');
+
+    await controller.handleMessage({ type: 'selectFolder', path: inner });
+    const nested = controller.activeSession!;
+    assert.notEqual(nested, a);
+    await controller.send('Task inside alpha');
+    assert.deepEqual(notices(shell, nested), ['Another session is working in alpha, which overlaps this folder. Orka runs one session at a time there.']);
+    assert.ok(!nested.isRunning);
+    await controller.handleMessage({ type: 'saveFile', path: 'notes.txt', text: 'changed\n', baseHash: 'x' });
+    assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'notes.txt', reason: 'running', sessionId: nested.id });
+    assert.equal(readFileSync(path.join(inner, 'notes.txt'), 'utf8'), 'mine\n');
+
+    // A folder next to it is not held up.
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    script([{ chunk: 'Beta is done.' }, { stop: 'end_turn' }]);
+    await controller.send('Task in beta');
+    assert.ok(said(shell, b, 'Beta is done.'));
+
+    await controller.handleMessage({ type: 'stop', sessionId: a.id });
+    await sentA;
+    await controller.handleMessage({ type: 'switchSession', sessionId: nested.id });
+    script([{ chunk: 'Inner is done.' }, { stop: 'end_turn' }]);
+    await controller.send('Task inside alpha');
+    assert.ok(said(shell, nested, 'Inner is done.'));
+  });
+
+  it('keeps others out of the folder of an open hand-off, without counting it as a run', async () => {
+    const inner = path.join(folderA, 'src');
+    mkdirSync(inner);
+    const { shell, controller } = await start('desktop', { ...agentSettings, 'sessions.maxRunning': 1 }, [folderA, folderB, inner]);
+    const a = controller.activeSession!;
+    // The installed check looks on the PATH: here the hand-off agent counts as installed.
+    (controller as unknown as { isInstalled: () => boolean }).isInstalled = () => true;
+    await controller.handOff('freebuff');
+    assert.ok(a.handoffAgentId, 'the hand-off is open');
+
+    await controller.handleMessage({ type: 'selectFolder', path: inner });
+    const nested = controller.activeSession!;
+    await controller.send('Task inside alpha');
+    assert.deepEqual(notices(shell, nested), ['Another session is working in alpha, which overlaps this folder. Orka runs one session at a time there.']);
+    await controller.handOff('freebuff');
+    assert.equal(shell.terminals.length, 1, 'no second hand-off there');
+
+    // Not a run: with a budget of one, another folder still runs.
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    const b = controller.activeSession!;
+    script([{ chunk: 'Beta is done.' }, { stop: 'end_turn' }]);
+    await controller.send('Task in beta');
+    assert.ok(said(shell, b, 'Beta is done.'));
+
+    // The terminal closes: once its changes are read, the folder is free.
+    (shell.terminals[0] as unknown as { onClose(): void }).onClose();
+    await until(() => !a.handoffAgentId, 'the hand-off to end');
+    await controller.handleMessage({ type: 'switchSession', sessionId: nested.id });
+    script([{ chunk: 'Inner is done.' }, { stop: 'end_turn' }]);
+    await until(() => !(controller as unknown as { gate: { busyNear(root: string): string | undefined } }).gate.busyNear(inner), 'the folder to be free');
+    await controller.send('Task inside alpha');
+    assert.ok(said(shell, nested, 'Inner is done.'));
+  });
+});

@@ -308,13 +308,30 @@ describe('desktop appearance settings', () => {
     assert.equal(vscode.shell.last('init')?.config.ui, undefined);
 
     const desktop = await start('desktop');
-    assert.deepEqual(desktop.shell.last('init')?.config.ui, { layout: 'ide', theme: 'system' });
+    assert.deepEqual(desktop.shell.last('init')?.config.ui, { layout: 'ide', theme: 'system', maxRunning: 3 });
     await desktop.controller.handleMessage({ type: 'setSetting', key: 'desktop.theme', value: 'dark' });
     await desktop.controller.handleMessage({ type: 'setSetting', key: 'desktop.layout', value: 'sideways' });
     assert.equal(desktop.shell.settings.get('desktop.theme', ''), 'dark');
     assert.equal(desktop.shell.settings.isSet('desktop.layout'), false, 'invalid values are refused');
     await tick();
-    assert.deepEqual(desktop.shell.last('config')?.config.ui, { layout: 'ide', theme: 'dark' });
+    assert.deepEqual(desktop.shell.last('config')?.config.ui, { layout: 'ide', theme: 'dark', maxRunning: 3 });
+  });
+
+  it('takes sessions running at once from 1 to 8, in the desktop app only', async () => {
+    const vscode = await start('vscode');
+    await vscode.controller.handleMessage({ type: 'setSetting', key: 'sessions.maxRunning', value: 2 });
+    assert.equal(vscode.shell.settings.isSet('sessions.maxRunning'), false);
+
+    const desktop = await start('desktop');
+    for (const value of [0, 9, 2.5, '2']) await desktop.controller.handleMessage({ type: 'setSetting', key: 'sessions.maxRunning', value });
+    assert.equal(desktop.shell.settings.isSet('sessions.maxRunning'), false, 'invalid values are refused');
+    await desktop.controller.handleMessage({ type: 'setSetting', key: 'sessions.maxRunning', value: 5 });
+    await tick();
+    assert.equal(desktop.shell.last('config')?.config.ui?.maxRunning, 5);
+    // A value written by hand outside the range counts as the default.
+    await desktop.shell.settings.update('sessions.maxRunning', 50);
+    await tick();
+    assert.equal(desktop.shell.last('config')?.config.ui?.maxRunning, 3);
   });
 });
 
@@ -468,7 +485,7 @@ describe('desktop Files and editor', () => {
     assert.deepEqual(shell.last('saveRefused'), { type: 'saveRefused', path: 'a.txt', reason: 'running', sessionId: sessionOf(controller).id });
     controller.stop();
     await sent;
-    (sessionOf(controller) as unknown as { handoff?: unknown }).handoff = { session: {}, terminal: { show: () => undefined } };
+    (sessionOf(controller) as unknown as { handoff?: unknown }).handoff = { session: {}, terminal: { show: () => undefined }, release: () => undefined };
     await save(controller, 'a.txt', 'mine\n');
     assert.equal(shell.posted.filter((m) => m.type === 'saveRefused' && m.reason === 'running').length, 2);
     assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'before\n');
@@ -486,7 +503,11 @@ describe('desktop Files and editor', () => {
     inner.handoffBusy = 0;
     // The terminal closed; its changes are still being read.
     let finish!: (changed: unknown[]) => void;
-    inner.handoff = { session: { agent: { label: 'Other' }, collect: () => new Promise((resolve) => (finish = resolve)) }, terminal: { show: () => undefined } };
+    inner.handoff = {
+      session: { agent: { label: 'Other' }, collect: () => new Promise((resolve) => (finish = resolve)) },
+      terminal: { show: () => undefined },
+      release: () => undefined,
+    };
     const collecting = inner.collectHandoff(true);
     assert.equal(inner.handoff, undefined);
     await save(controller, 'a.txt', 'mine\n');

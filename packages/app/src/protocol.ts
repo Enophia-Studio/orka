@@ -163,8 +163,8 @@ export interface ConfigView {
   agentClis: AgentCliView[];
   /** Why some well-known agents are not offered (shown under the list). */
   agentClisLeftOut: Array<{ id: string; reason: string }>;
-  /** Desktop only: the window's layout and color theme. */
-  ui?: { layout: 'ide' | 'classic'; theme: 'system' | 'light' | 'dark' };
+  /** Desktop only: the window's layout and color theme, and how many sessions may run at once (sessions.maxRunning). */
+  ui?: { layout: 'ide' | 'classic'; theme: 'system' | 'light' | 'dark'; maxRunning: number };
 }
 
 export interface AppVersionView {
@@ -403,8 +403,11 @@ export type ToWebview =
   | { type: 'history'; tasks: TaskSummary[]; currentId?: string }
   /** Desktop: the tasks of the recent folders, for the session list; taskId: the task open now (saved or not). */
   | { type: 'sessions'; groups: SessionGroup[]; taskId?: string; organizer: SessionOrganizerView; live?: LiveSessionView[] }
-  /** Desktop (IDE layout): the open sessions, sent when one starts, stops, waits for approval or goes away. */
-  | { type: 'live'; sessions: LiveSessionView[]; activeId?: string }
+  /**
+   * Desktop (IDE layout): the open sessions, sent when one starts, stops, waits for approval or goes
+   * away; maxRunning: how many may run at once.
+   */
+  | { type: 'live'; sessions: LiveSessionView[]; activeId?: string; maxRunning: number }
   | Scoped<{ type: 'fileMatches'; query: string; files: string[] }>
   | Scoped<{ type: 'hunks'; path: string; hunks: HunkView[] }>
   | { type: 'dialog'; id: string; dialog: DialogView }

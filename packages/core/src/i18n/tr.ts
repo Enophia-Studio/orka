@@ -860,6 +860,12 @@ export const TR: Record<string, string> = {
   'A session in {folder} needs your approval: {title}': '{folder} klasöründeki bir oturum onayınızı bekliyor: {title}',
   'A session is already running in {folder}. Orka runs one session at a time per folder; stop it or wait, then start a new one.':
     '{folder} klasöründe zaten çalışan bir oturum var. Orka her klasörde aynı anda tek oturum çalıştırır; onu durdurun ya da bitmesini bekleyin, sonra yenisini başlatın.',
+  '{n} session is already running (the limit is {max}, in Settings > Control). Wait for it to finish or stop it.':
+    'Zaten {n} oturum çalışıyor (sınır {max}, Ayarlar > Kontrol bölümünde). Bitmesini bekleyin ya da durdurun.',
+  '{n} sessions are already running (the limit is {max}, in Settings > Control). Wait for one to finish or stop one.':
+    'Zaten {n} oturum çalışıyor (sınır {max}, Ayarlar > Kontrol bölümünde). Birinin bitmesini bekleyin ya da birini durdurun.',
+  'Another session is working in {folder}, which overlaps this folder. Orka runs one session at a time there.':
+    'Başka bir oturum bu klasörle çakışan {folder} klasöründe çalışıyor. Orka orada aynı anda tek oturum çalıştırır.',
 
   // Agent CLIs in the app (settings, pickers, notices)
   '{agent} is not installed. Install it ({hint}), then check it again in Settings > Providers.':
