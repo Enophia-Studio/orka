@@ -44,6 +44,18 @@
   --window-bg: light-dark(#f1f1ef, #1a1a19);
   /* Your messages. */
   --bubble: light-dark(#efefec, #333331);
+  /* Syntax colors of the file editor (editor.css). */
+  --tok-keyword: light-dark(#7c3aed, #c4a7ff);
+  --tok-string: light-dark(#0f7b45, #8fd19e);
+  --tok-comment: light-dark(#86867f, #82827b);
+  --tok-number: light-dark(#b45309, #f0b97a);
+  --tok-type: light-dark(#0e7490, #67d2df);
+  --tok-property: light-dark(#1d4ed8, #8ab4f8);
+  --tok-definition: light-dark(#141413, #f3f3f0);
+  --tok-meta: light-dark(#a16207, #d9b26a);
+  --tok-tag: light-dark(#b42318, #f28b82);
+  --tok-attribute: light-dark(#9a6b00, #e0b965);
+  --tok-punctuation: light-dark(#55554f, #b4b4ae);
 }
 
 :root[data-theme='light'] {

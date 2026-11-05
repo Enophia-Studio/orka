@@ -4,9 +4,13 @@ import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/** @returns {import('esbuild').BuildOptions[]} */
-export function webviewBuilds(outdir, { production = false } = {}) {
-  return [
+/**
+ * `editor`: also build the desktop app's file editor (editor.js and editor.css, CodeMirror). Only
+ * the desktop app and the browser preview ask for it; the VS Code extension never ships it.
+ * @returns {import('esbuild').BuildOptions[]}
+ */
+export function webviewBuilds(outdir, { production = false, editor = false } = {}) {
+  const builds = [
     {
       entryPoints: [path.join(here, 'webview/main.ts')],
       // The logo is inlined into the bundle (the UI's CSP allows data: images only).
@@ -35,4 +39,27 @@ export function webviewBuilds(outdir, { production = false } = {}) {
       minify: production,
     },
   ];
+  if (editor) {
+    builds.push(
+      {
+        // One classic script, no code splitting: the page's CSP runs only scripts with its nonce.
+        entryPoints: [path.join(here, 'webview/editor/index.ts')],
+        outfile: path.join(outdir, 'editor.js'),
+        bundle: true,
+        platform: 'browser',
+        format: 'iife',
+        target: 'es2022',
+        sourcemap: !production,
+        minify: production,
+        metafile: true,
+      },
+      {
+        entryPoints: [path.join(here, 'webview/editor/editor.css')],
+        outfile: path.join(outdir, 'editor.css'),
+        bundle: true,
+        minify: production,
+      },
+    );
+  }
+  return builds;
 }

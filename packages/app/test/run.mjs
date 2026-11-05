@@ -20,6 +20,8 @@ await esbuild.build({
   target: 'node22',
   sourcemap: 'inline',
   loader: { '.svg': 'text' },
+  // bundles.test.ts builds the UI bundles itself.
+  external: ['esbuild'],
   logLevel: 'warning',
 });
 const run = spawnSync(process.execPath, ['--test', ...tests.map((f) => path.join(out, f.replace(/\.ts$/, '.cjs')))], { stdio: 'inherit' });
