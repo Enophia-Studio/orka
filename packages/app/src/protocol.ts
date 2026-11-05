@@ -513,6 +513,13 @@ export type FromWebview =
   | { type: 'resetAgentExecutable'; id: string }
   | { type: 'addCustomAgent' }
   | { type: 'removeCustomAgent'; id: string }
+  /**
+   * Install a CLI ("claude-code" or a catalog agent id; Orka's fixed recipes only): asks first with
+   * the exact command, then runs it in a visible terminal, or shows a manual one to copy.
+   */
+  | { type: 'installCli'; id: string }
+  /** Look again whether a CLI being installed is there now (no close signal on macOS). */
+  | { type: 'checkInstall'; id: string }
   /** Open an agent's documentation or terms (the URLs come from Orka's catalog, never from the page). */
   | { type: 'openAgentLink'; id: string; link: 'docs' | 'terms' | 'faq' }
   /** Continue the task in an external agent; text: what the user typed but did not send. */

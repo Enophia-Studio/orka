@@ -4,8 +4,11 @@
  * clients. Rules for every agent, enforced in code:
  * - Orka never reads, stores or passes on the agent's sign-in (OAuth or subscription tokens, the
  *   vendor's credential files) and never sets credential environment variables for it (safeEnv).
- * - Orka starts only the unmodified program found on PATH or at the path the user set; it never
- *   downloads one (install commands are shown to the user, never run by Orka).
+ * - Orka starts only the unmodified program found on PATH, in its vendor's install folder or at the
+ *   path the user set. It runs a vendor's official installer only when the user clicks Install in
+ *   a dialog that shows the exact command, in a terminal they can see; never on its own, never
+ *   elevated, never as an automatic update (the app's install recipes). Other agents' install
+ *   commands are shown for the user to run.
  * - Signing in happens in the vendor's own login command or app. Orka sends ACP `authenticate`
  *   only when the user asks, and only with a method listed in `acpAuthMethods` below.
  * - Orka never turns on an agent's "approve everything" mode; it answers each permission request

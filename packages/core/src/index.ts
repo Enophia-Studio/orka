@@ -55,6 +55,7 @@ export {
   checkAgentCli,
   type CustomAgentDefinition,
   customAgentEntry,
+  installFolder,
   installHint,
   loginCommand,
   resolveAgentExecutable,

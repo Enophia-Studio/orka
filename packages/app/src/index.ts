@@ -1,6 +1,7 @@
 export { AppController, type AppControllerOptions, USER_SKILLS_DIR } from './AppController';
 export { validImages } from './SessionController';
 export { findFilesByName } from './files';
+export { INSTALL_IDS, type InstallId, type InstallRecipe, installRecipe } from './install';
 export type * from './protocol';
 export type { RadarHooks, RadarTimers } from './radar';
 export * from './settings';

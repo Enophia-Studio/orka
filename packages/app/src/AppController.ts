@@ -95,6 +95,7 @@ import {
   SHELL_CHOICES,
   WEBVIEW_SETTINGS,
 } from './settings';
+import { type InstallRecipe, installRecipe, nodeIsRecent, nodeVersion } from './install';
 import { RunGate } from './runGate';
 import { dropNotices, samePath, type SessionContext, SessionController } from './SessionController';
 import type { AppShell, PickItem } from './shell';
@@ -341,6 +342,12 @@ export class AppController implements Disposable {
         break;
       case 'removeCustomAgent':
         await this.removeCustomAgent(message.id);
+        break;
+      case 'installCli':
+        await this.installCli(message.id);
+        break;
+      case 'checkInstall':
+        await this.checkInstalled(message.id);
         break;
       case 'openAgentLink': {
         const entry = this.agentEntry(message.id);
@@ -1749,7 +1756,9 @@ export class AppController implements Disposable {
     this.postConfig();
     const executable = resolveClaudeExecutable(this.settings.claudeCode.path);
     if (!executable) {
-      this.claudeCodeStatus = { state: 'not_found', detail: t('Install it with: npm install -g @anthropic-ai/claude-code') };
+      // The native installer is Anthropic's recommended way; npm still works for those who prefer it.
+      const command = installRecipe('claude-code')!.command;
+      this.claudeCodeStatus = { state: 'not_found', detail: t('Install it with: {command} (or: npm install -g @anthropic-ai/claude-code)', { command }) };
       this.postConfig();
       return;
     }
@@ -1997,13 +2006,113 @@ export class AppController implements Disposable {
     if (!state || state === 'unknown' || state === 'checking') await this.checkAgent(entry.id);
     if (this.agentStatus.get(entry.id)?.state !== 'not_found') return;
     const hint = installHint(entry);
+    const recipe = installRecipe(entry.id);
     this.publishNotice(
       'warning',
-      hint
-        ? t('{agent} is not installed. Install it ({hint}), then check it again in Settings > Providers.', { agent: entry.label, hint })
-        : t('{agent} was not found at "{path}".', { agent: entry.label, path: this.settings.agentClis.paths[entry.id] || entry.bin }),
-      'agentClis',
+      recipe?.runnable
+        ? t('{agent} is not installed. Install it from here, or yourself: {hint}', { agent: entry.label, hint: recipe.command })
+        : hint
+          ? t('{agent} is not installed. Install it ({hint}), then check it again in Settings > Providers.', { agent: entry.label, hint })
+          : t('{agent} was not found at "{path}".', { agent: entry.label, path: this.settings.agentClis.paths[entry.id] || entry.bin }),
+      recipe ? `install:${recipe.id}` : 'agentClis',
     );
+  }
+
+  // ---------------------------------------------------------------- installing CLIs
+
+  /**
+   * Install a CLI from Orka's fixed recipes. A runnable one asks first, showing the exact command,
+   * where it comes from and where it goes; only "Install" runs it, in a terminal the user sees, in
+   * the home folder. A manual one is shown to copy. Nothing runs without the click.
+   */
+  private async installCli(id: string): Promise<void> {
+    const recipe = installRecipe(id);
+    if (!recipe) return;
+    const copy = t('Copy command');
+    const docs = t('Open docs');
+    if (!recipe.runnable) {
+      const choice = await this.shell.message('info', t('Install {cli} yourself with: {command}', { cli: recipe.label, command: recipe.command }), {}, copy, docs);
+      await this.installChoice(recipe, choice, copy, docs);
+      return;
+    }
+    const install = t('Install');
+    const choice = await this.shell.message('info', t('Install {cli}?', { cli: recipe.label }), { modal: true, detail: installDetail(recipe) }, install, copy, docs);
+    if (choice !== install) {
+      await this.installChoice(recipe, choice, copy, docs);
+      return;
+    }
+    if (recipe.node) {
+      const version = await nodeVersion();
+      if (!nodeIsRecent(version, recipe.node)) {
+        const site = 'https://nodejs.org/en/download';
+        const open = t('Open nodejs.org');
+        const text = version
+          ? t('{cli} needs Node.js {min} or newer for npm; this machine has {version}. Update Node.js, then install again.', { cli: recipe.label, min: recipe.node, version })
+          : t('{cli} needs Node.js {min} or newer for npm, and Node.js was not found. Install it, then install again.', { cli: recipe.label, min: recipe.node });
+        if ((await this.shell.message('warning', text, {}, open)) === open) await this.shell.openExternal(site);
+        return;
+      }
+    }
+    this.shell
+      .runInTerminal({
+        name: t('Install {agent}', { agent: recipe.label }),
+        cwd: homedir(),
+        command: recipe.command,
+        onClose: () => void this.checkInstalled(recipe.id),
+      })
+      .show();
+    this.publishNotice('info', t('{cli} is being installed in a terminal. Orka checks it when the terminal closes, or when you click Check again.', { cli: recipe.label }), `checkInstall:${recipe.id}`);
+  }
+
+  /** "Copy command" or "Open docs" in an install dialog. */
+  private async installChoice(recipe: InstallRecipe, choice: string | undefined, copy: string, docs: string): Promise<void> {
+    if (choice === copy) {
+      await this.shell.writeClipboard(recipe.command);
+      this.shell.notify?.(t('Copied: {command}', { command: recipe.command }));
+    } else if (choice === docs && recipe.docsUrl.startsWith('https://')) {
+      await this.shell.openExternal(recipe.docsUrl);
+    }
+  }
+
+  /**
+   * After an install: is the program there now? Found: say so (Claude Code: offer to turn it on).
+   * Not found: the running app's PATH may predate the install, so offer to choose the program.
+   */
+  private async checkInstalled(id: string): Promise<void> {
+    const recipe = installRecipe(id);
+    if (!recipe) return;
+    let found: boolean;
+    let version: string | undefined;
+    if (recipe.verify.kind === 'claude-code') {
+      await this.checkClaudeCode();
+      found = this.claudeCodeStatus.state !== 'not_found';
+      version = this.claudeCodeStatus.version;
+    } else {
+      await this.checkAgent(recipe.verify.id);
+      const status = this.agentStatus.get(recipe.verify.id);
+      found = !!status && status.state !== 'not_found';
+      version = status?.version;
+    }
+    if (found) {
+      this.publishNotice('info', t('{cli} is installed ({version}).', { cli: recipe.label, version: version ?? '?' }));
+      if (recipe.verify.kind === 'claude-code' && !this.settings.claudeCode.enabled) {
+        const turnOn = t('Turn on');
+        if ((await this.shell.message('info', t('Use Claude Code in Orka? It runs on your own Claude Code login.'), {}, turnOn)) === turnOn) {
+          await this.updateSetting('claudeCode.enabled', true);
+        }
+      }
+      return;
+    }
+    const choose = t('Choose file…');
+    const choice = await this.shell.message(
+      'warning',
+      t('{cli} was not found yet. If the installer finished, restart Orka so it sees the new PATH, or choose the program.', { cli: recipe.label }),
+      {},
+      choose,
+    );
+    if (choice !== choose) return;
+    if (recipe.verify.kind === 'claude-code') await this.pickClaudeExecutable();
+    else await this.pickAgentExecutable(recipe.verify.id);
   }
 
   /** Is the agent's program there, and which version? (`--version` only; a sign-in problem shows on the first request.) */
@@ -2472,6 +2581,21 @@ export class AppController implements Disposable {
     this.mcp.dispose();
     for (const d of this.disposables) d.dispose();
   }
+}
+
+/** What the install dialog says under its title: the exact command, its source, folder and docs. */
+function installDetail(recipe: InstallRecipe): string {
+  return [
+    recipe.command,
+    '',
+    t('Official installer from {source}.', { source: recipe.sources.join(', ') }),
+    recipe.folder ? t('It installs to {folder}.', { folder: recipe.folder }) : '',
+    recipe.node ? t('Needs Node.js {min} or newer (npm); Orka checks it first.', { min: recipe.node }) : '',
+    t('Docs: {url}', { url: recipe.docsUrl }),
+    t('It runs in a terminal you can see, without administrator rights. Orka does not sign you in.'),
+  ]
+    .filter((line, i) => line || i === 1)
+    .join('\n');
 }
 
 /** A command line typed by the user: words, or "quoted words" with spaces. */

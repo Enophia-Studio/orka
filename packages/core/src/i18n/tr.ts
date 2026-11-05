@@ -353,7 +353,7 @@ export const TR: Record<string, string> = {
   '{provider} key saved.': '{provider} anahtarı kaydedildi.',
   'Remove the stored API key for...': 'Kayıtlı API anahtarını kaldır...',
   'Remove the stored {provider} key?': 'Kayıtlı {provider} anahtarı kaldırılsın mı?',
-  'Install it with: npm install -g @anthropic-ai/claude-code': 'Şununla kurun: npm install -g @anthropic-ai/claude-code',
+  'Install it with: {command} (or: npm install -g @anthropic-ai/claude-code)': 'Şununla kurun: {command} (ya da: npm install -g @anthropic-ai/claude-code)',
   'Run "claude" in a terminal and log in.': 'Bir terminalde "claude" çalıştırıp giriş yapın.',
   'Select the claude executable': 'claude çalıştırılabilir dosyasını seçin',
   'no model yet': 'henüz model yok',
@@ -886,6 +886,33 @@ export const TR: Record<string, string> = {
   'That agent CLI is turned off. Turn it on in Settings > Providers > Agent CLIs.': "Bu agent CLI kapalı. Ayarlar > Providers > Agent CLI'lar bölümünden açın.",
   'An agent CLI can only be the main agent.': 'Bir agent CLI yalnızca ana agent olabilir.',
   '{agent}: sign in': '{agent}: giriş',
+  // Installing CLIs (the vendor's own installer, after the user's click, in a visible terminal)
+  '{agent} is not installed. Install it from here, or yourself: {hint}': '{agent} kurulu değil. Buradan ya da kendiniz kurun: {hint}',
+  'Copy command': 'Komutu kopyala',
+  'Open docs': 'Belgeleri aç',
+  'Install {cli} yourself with: {command}': '{cli} için şu kurulum komutunu kendiniz çalıştırın: {command}',
+  'Install {cli}?': '{cli} kurulsun mu?',
+  'Open nodejs.org': "nodejs.org'u aç",
+  '{cli} needs Node.js {min} or newer for npm; this machine has {version}. Update Node.js, then install again.':
+    "{cli} npm için Node.js {min} veya üstünü gerektiriyor; bu makinede {version} var. Node.js'i güncelleyip yeniden kurun.",
+  '{cli} needs Node.js {min} or newer for npm, and Node.js was not found. Install it, then install again.':
+    "{cli} npm için Node.js {min} veya üstünü gerektiriyor ve Node.js bulunamadı. Node.js'i kurup yeniden deneyin.",
+  '{cli} is being installed in a terminal. Orka checks it when the terminal closes, or when you click Check again.':
+    '{cli} bir terminalde kuruluyor. Orka terminal kapanınca ya da "Yeniden kontrol et"e tıkladığınızda kontrol eder.',
+  'Copied: {command}': 'Kopyalandı: {command}',
+  '{cli} is installed ({version}).': '{cli} kuruldu ({version}).',
+  'Use Claude Code in Orka? It runs on your own Claude Code login.': "Claude Code Orka'da kullanılsın mı? Kendi Claude Code girişinizle çalışır.",
+  'Turn on': 'Aç',
+  'Choose file…': 'Dosya seç…',
+  '{cli} was not found yet. If the installer finished, restart Orka so it sees the new PATH, or choose the program.':
+    "{cli} henüz bulunamadı. Kurulum bittiyse yeni PATH'i görmesi için Orka'yı yeniden başlatın ya da programı seçin.",
+  'Official installer from {source}.': '{source} kaynağından resmî kurulum.',
+  'It installs to {folder}.': '{folder} klasörüne kurulur.',
+  'Needs Node.js {min} or newer (npm); Orka checks it first.': 'Node.js {min} veya üstü gerekir (npm); Orka önce bunu kontrol eder.',
+  'It runs in a terminal you can see, without administrator rights. Orka does not sign you in.':
+    'Görebileceğiniz bir terminalde, yönetici hakları olmadan çalışır. Orka sizin yerinize giriş yapmaz.',
+  'Install…': 'Kur…',
+  'Check again': 'Yeniden kontrol et',
   'cmd.exe cannot run {part} safely. Run this in a terminal yourself: {command}':
     'cmd.exe {part} öğesini güvenle çalıştıramıyor. Şunu bir terminalde kendiniz çalıştırın: {command}',
   'Choose the {agent} program': '{agent} programını seçin',

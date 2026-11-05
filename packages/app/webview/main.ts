@@ -1745,6 +1745,12 @@ document.addEventListener('click', (e) => {
     case 'login-agent':
       post({ type: 'loginAgentCli', id: id! });
       break;
+    case 'install-cli':
+      post({ type: 'installCli', id: id! });
+      break;
+    case 'check-install':
+      post({ type: 'checkInstall', id: id! });
+      break;
     case 'pick-agent-exe':
       post({ type: 'pickAgentExecutable', id: id! });
       break;
@@ -3534,6 +3540,13 @@ function noticeAction(action?: string): string {
     return agent
       ? `<button class="btn primary small" data-action="handoff" data-agent="${attr(agent.id)}">${icon('handoff')}${escapeHtml(t('Continue in {agent}', { agent: agent.label }))}</button>`
       : '';
+  }
+  // Install a CLI (Orka asks first, with the command), or look again whether it is there now.
+  if (action?.startsWith('install:')) {
+    return `<button class="btn primary small" data-action="install-cli" data-id="${attr(action.slice('install:'.length))}">${escapeHtml(t('Install…'))}</button>`;
+  }
+  if (action?.startsWith('checkInstall:')) {
+    return `<button class="btn small" data-action="check-install" data-id="${attr(action.slice('checkInstall:'.length))}">${escapeHtml(t('Check again'))}</button>`;
   }
   if (action === 'claudeUpdate') {
     const updating = config?.settings.claudeCode.updating;

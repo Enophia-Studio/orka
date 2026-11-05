@@ -71,9 +71,11 @@ export class FakeShell implements AppShell {
   readonly canOpenFolder: boolean;
   readonly visible = true;
   readonly posted: ToWebview[] = [];
-  readonly asked: Array<{ level: string; text: string; actions: string[] }> = [];
+  readonly asked: Array<{ level: string; text: string; actions: string[]; detail?: string; modal?: boolean }> = [];
   readonly opened: string[] = [];
-  readonly terminals: Array<{ name: string; cwd: string; command: string | TerminalProgram; shown: boolean }> = [];
+  readonly terminals: Array<{ name: string; cwd: string; command: string | TerminalProgram; env?: Record<string, string>; onClose?: () => void; shown: boolean }> = [];
+  /** What writeClipboard() was given. */
+  readonly clipboard: string[] = [];
   /** The action message() answers with, when it offers it. */
   answer?: string;
   /** What input() was asked, and what it answers. */
@@ -145,8 +147,8 @@ export class FakeShell implements AppShell {
     return { dispose: () => this.folderListeners.delete(listener) };
   }
 
-  async message(level: 'info' | 'warning' | 'error', text: string, _options?: unknown, ...actions: string[]): Promise<string | undefined> {
-    this.asked.push({ level, text, actions });
+  async message(level: 'info' | 'warning' | 'error', text: string, options?: { modal?: boolean; detail?: string }, ...actions: string[]): Promise<string | undefined> {
+    this.asked.push({ level, text, actions, detail: options?.detail, modal: options?.modal });
     return this.answer !== undefined && actions.includes(this.answer) ? this.answer : undefined;
   }
 
@@ -177,9 +179,11 @@ export class FakeShell implements AppShell {
 
   async openSettings(): Promise<void> {}
 
-  async writeClipboard(): Promise<void> {}
+  async writeClipboard(text: string): Promise<void> {
+    this.clipboard.push(text);
+  }
 
-  runInTerminal(options: { name: string; cwd: string; command: string | TerminalProgram }): TerminalHandle {
+  runInTerminal(options: { name: string; cwd: string; command: string | TerminalProgram; env?: Record<string, string>; onClose?: () => void }): TerminalHandle {
     const terminal = { ...options, shown: false };
     this.terminals.push(terminal);
     return { show: () => void (terminal.shown = true) };

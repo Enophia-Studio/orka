@@ -36,10 +36,19 @@ export interface AgentCliEntry {
    * own program, or for `bin`, another program of the vendor's (with how to install it).
    */
   login?: { args: readonly string[]; bin?: string; installHint?: string };
-  /** How to install it, shown to the user (Orka never runs it). */
+  /**
+   * How to install it, shown to the user. Orka runs an installer only from the app's install
+   * recipes, after the user's click in a dialog that shows it, in a visible terminal.
+   */
   installHint: string;
   /** The install hint for Windows, when it differs. */
   installHintWindows?: string;
+  /**
+   * The folder the vendor's installer puts the program in, looked in when PATH does not find it
+   * (a running app keeps the PATH it started with): on Windows an environment variable and the
+   * folders under it, elsewhere folders under the home folder.
+   */
+  installDir?: { win32?: readonly [string, ...string[]]; posix?: readonly string[] };
   docsUrl: string;
   /** Its row in AGENT_POLICIES. */
   policy: string;
@@ -61,6 +70,8 @@ export const AGENT_CLIS: readonly AgentCliEntry[] = [
     login: { args: [] },
     installHint: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
     installHintWindows: 'irm https://antigravity.google/cli/install.ps1 | iex',
+    // The default binary location on antigravity.google/docs/getting-started.
+    installDir: { win32: ['LOCALAPPDATA', 'agy', 'bin'], posix: ['.local', 'bin'] },
     docsUrl: 'https://antigravity.google/docs/ide/extensions/acp/',
     policy: 'antigravity',
     kind: 'builtin',
@@ -162,16 +173,37 @@ export function customAgentEntry(definition: CustomAgentDefinition): AgentCliEnt
   };
 }
 
-/** The agent's executable: the user's path when set, else the first of its names on PATH. */
+/**
+ * The agent's executable: the user's path when set, else the first of its names on PATH, else in
+ * the vendor's install folder (a program installed after the app started is not on its PATH yet).
+ */
 export function resolveAgentExecutable(entry: AgentCliEntry, overridePath?: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | undefined {
   const find = (name: string) => (/[\\/]/.test(name) ? (existsSync(name) ? path.resolve(name) : undefined) : findExecutable(name, env, platform));
   const explicit = overridePath?.trim();
   if (explicit) return find(explicit);
-  for (const name of [entry.bin, ...(entry.altBins ?? [])]) {
-    const found = name && find(name);
+  const names = [entry.bin, ...(entry.altBins ?? [])].filter(Boolean);
+  for (const name of names) {
+    const found = find(name);
+    if (found) return found;
+  }
+  const dir = installFolder(entry, env, platform);
+  if (!dir) return undefined;
+  for (const name of names) {
+    const found = findExecutable(name, { PATH: dir, PATHEXT: env.PATHEXT }, platform);
     if (found) return found;
   }
   return undefined;
+}
+
+/** The vendor's install folder for the agent on this machine, when the catalog names one. */
+export function installFolder(entry: AgentCliEntry, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | undefined {
+  if (platform === 'win32') {
+    const [variable, ...parts] = entry.installDir?.win32 ?? [];
+    const base = variable ? env[variable] : undefined;
+    return base && path.win32.isAbsolute(base) ? path.win32.join(base, ...parts) : undefined;
+  }
+  const parts = entry.installDir?.posix;
+  return parts ? path.posix.join(homedir(), ...parts) : undefined;
 }
 
 /**

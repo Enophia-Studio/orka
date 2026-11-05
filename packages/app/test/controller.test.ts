@@ -251,16 +251,24 @@ describe('agent CLIs', () => {
     assert.equal(terminal.shown, true);
   });
 
-  /** Runs `body` with an empty PATH, so no catalog agent is found. */
+  /** Runs `body` with an empty PATH and no vendor install folder, so no catalog agent is found. */
   async function withoutPath(body: () => Promise<void>): Promise<void> {
-    const saved = { PATH: process.env.PATH, Path: process.env.Path };
+    const keys = ['PATH', 'Path', 'LOCALAPPDATA', 'HOME'] as const;
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
     process.env.PATH = path.join(home, 'empty-bin');
-    if (process.platform === 'win32') process.env.Path = process.env.PATH;
+    if (process.platform === 'win32') {
+      process.env.Path = process.env.PATH;
+      process.env.LOCALAPPDATA = path.join(home, 'empty-local');
+    } else {
+      process.env.HOME = path.join(home, 'empty-home');
+    }
     try {
       await body();
     } finally {
-      process.env.PATH = saved.PATH;
-      if (process.platform === 'win32') process.env.Path = saved.Path;
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
     }
   }
   const notices = (shell: FakeShell) => shell.posted.flatMap((m) => (m.type === 'event' && m.event.type === 'notice' ? [m.event] : []));
@@ -294,8 +302,8 @@ describe('agent CLIs', () => {
       await tick();
       assert.equal(shell.last('config')!.config.main.effective.provider, 'agent:codex');
       const notice = notices(shell).at(-1);
-      assert.match(notice?.message ?? '', /^Codex \(codex-acp\) is not installed\. Install it \(npm install -g @agentclientprotocol\/codex-acp @openai\/codex\)/);
-      assert.equal(notice?.action, 'agentClis');
+      assert.match(notice?.message ?? '', /^Codex \(codex-acp\) is not installed\. Install it from here, or yourself: .*@agentclientprotocol\/codex-acp/);
+      assert.equal(notice?.action, 'install:codex');
       // Not installed, nothing is sent: the send check names it again.
       await controller.send('hello');
       assert.match(notices(shell).at(-1)?.message ?? '', /Codex \(codex-acp\) is not installed/);

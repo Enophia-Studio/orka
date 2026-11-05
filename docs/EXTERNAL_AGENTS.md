@@ -16,7 +16,7 @@ The agent runs its own loop, with its own model and **its own sign-in**. Orka ke
 
 ## Turning it on
 
-1. Install the agent and sign in with its own login command (see the table below). Orka never installs an agent and never signs in for you.
+1. Install the agent and sign in with its own login command (see the table below). Orka never signs in for you. For Antigravity CLI and Codex (with codex-acp), the **Install…** button runs the vendor's official installer for you, only after you confirm a dialog that shows the exact command, in a terminal you can see (see [Installing from Orka](#installing-from-orka)); the others you install yourself.
 2. Turn the agent on and make it the main agent:
 
 | App | Settings |
@@ -38,7 +38,7 @@ Agent mode needs git: Orka snapshots the folder around every request (see below)
 
 ## Supported agents
 
-The commands below are listed in Orka's source (`packages/core/src/acp/catalog.ts`) and were checked against each vendor's documentation in October 2026 (Antigravity CLI: November 2026). Orka shows the install command; it never runs it.
+The commands below are listed in Orka's source (`packages/core/src/acp/catalog.ts`) and were checked against each vendor's documentation in October 2026 (Antigravity CLI: November 2026). Orka shows the install command, and runs it only as described in [Installing from Orka](#installing-from-orka).
 
 | Agent | id | Command Orka runs | Install | Sign in (the vendor's own login) |
 |---|---|---|---|---|
@@ -57,6 +57,23 @@ What Orka shows with each agent, and the terms it is used under (`packages/core/
 | GitHub Copilot CLI | Runs your installed GitHub Copilot CLI as an ACP server. GitHub documents this mode for other clients; it is a public preview and may change. | [GitHub terms for additional products and features](https://docs.github.com/en/site-policy/github-terms/github-terms-for-additional-products-and-features) · [ACP server](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server) | Public preview |
 | Cursor CLI | Runs your installed Cursor CLI (`agent acp`), which Cursor documents for custom clients. | [Cursor terms of service](https://cursor.com/terms-of-service) · [ACP](https://cursor.com/docs/cli/acp) | |
 | Gemini CLI (legacy) | Legacy: only for a Gemini API key or Code Assist Standard/Enterprise; personal Google accounts moved to Antigravity CLI. Runs your installed Gemini CLI in its ACP mode; Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it. | [Gemini CLI terms and privacy](https://geminicli.com/docs/resources/tos-privacy/) · [ACP mode](https://geminicli.com/docs/cli/acp-mode/) | Legacy |
+
+### Installing from Orka
+
+Claude Code, Antigravity CLI and Codex (with the codex-acp adapter) can be installed from Orka (the **Install…** button on a notice about a missing CLI). Orka runs only the vendor's official installer, exactly as the vendor's install page prints it, and only like this:
+
+1. A dialog shows the exact command, where it comes from, where it installs and the vendor's docs, with **Install**, **Copy command** and **Open docs**. Closing it runs nothing.
+2. For Codex, Orka first checks that Node.js 16 or newer is installed (npm installs codex-acp; 16 is what `@openai/codex` declares, codex-acp names no minimum). Without it, nothing runs and Orka links nodejs.org.
+3. **Install** opens a terminal you can see, in your home folder, and runs the command there. Nothing runs with administrator rights, in the background or on its own, and Orka never updates a CLI by itself.
+4. When the terminal closes (or you click **Check again**; macOS has no close signal), Orka looks for the program again. A program installed after Orka started may not be on Orka's `PATH` yet: Orka then offers to choose it, or restart Orka.
+
+| CLI | Windows | macOS / Linux | Source |
+|---|---|---|---|
+| Claude Code | `powershell -NoProfile -Command "irm https://claude.ai/install.ps1 \| iex"` | `curl -fsSL https://claude.ai/install.sh \| bash` | [code.claude.com/docs/en/setup](https://code.claude.com/docs/en/setup) |
+| Antigravity CLI | `powershell -NoProfile -Command "irm https://antigravity.google/cli/install.ps1 \| iex"` | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | [antigravity.google/docs/getting-started](https://antigravity.google/docs/getting-started) |
+| Codex + codex-acp | `powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 \| iex; npm install -g @agentclientprotocol/codex-acp"` | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh && npm install -g @agentclientprotocol/codex-acp` | [github.com/openai/codex](https://github.com/openai/codex), [codex-acp](https://github.com/agentclientprotocol/codex-acp) |
+
+On Windows the vendor's PowerShell command is started through `powershell`, so it runs from any terminal. GitHub Copilot CLI, Cursor CLI and Gemini CLI are installed by hand: Orka shows the command from the table above with a copy button.
 
 Signing in always happens in the vendor's own login command or app. **Sign in…** on an agent's card opens that command in a terminal, with the program Orka found (or the path you set) by its full path and in your home folder, so nothing in the open project can stand in for it. You sign in there; Orka never sees it. Whether an agent is signed in shows on the first request: if it is not, Orka names the vendor's login command to run in a terminal.
 
@@ -91,8 +108,8 @@ The agent brings its own loop, model and context, so the parts of Orka that need
 These rules hold for every agent and are enforced in code (`packages/core/src/acp/`) and checked by tests (`packages/core/test/compliance.test.ts`):
 
 - **Orka never reads, stores or forwards an agent's sign-in.** It does not touch OAuth or subscription tokens or the vendor's credential files, and never sets an environment variable for the agent whose name looks like a key, token, secret or password. (The agent inherits your environment, as any program you start does.)
-- **Orka only runs the unmodified program you installed**, found on `PATH` or at the path you set.
-- **Orka never downloads an agent.** Install commands are shown to you and never run, and the catalog starts no agent through a download launcher such as `npx`.
+- **Orka only runs the unmodified program you installed**, found on `PATH`, in its vendor's install folder (Antigravity CLI: `%LOCALAPPDATA%\agy\bin` or `~/.local/bin`) or at the path you set.
+- **Orka never downloads an agent on its own.** It runs a vendor's official installer only when you click **Install** in a dialog that shows the exact command (see [Installing from Orka](#installing-from-orka)); every other install command is shown to you and never run. The catalog starts no agent through a download launcher such as `npx`.
 - **Orka never turns on an agent's "approve everything" mode** (no `--yolo`, no permission bypass). It answers each permission request once, with its own rules.
 - Signing in happens in the vendor's own login, in a terminal you type into. Orka does not start an agent's sign-in over ACP.
 
