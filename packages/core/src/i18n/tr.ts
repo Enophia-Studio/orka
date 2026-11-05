@@ -944,6 +944,36 @@ export const TR: Record<string, string> = {
     "Çalışan oturumlar {old} ile biter. Yeni çalışmalar {new} kullanır; bir CLI'ın aynı anda tek Profile'ı çalışır, bu yüzden o çalışmaların bitmesini beklerler.",
   'Another session runs {account}. Orka runs one profile of a CLI at a time: wait for it to finish or stop it, or switch back to that profile.':
     "Başka bir oturum {account} ile çalışıyor. Orka bir CLI'ın aynı anda tek Profile'ını çalıştırır: bitmesini bekleyin, durdurun ya da o Profile'a geri dönün.",
+  // Accounts in the sidebar, the Add account popup and Settings > Accounts
+  Accounts: 'Hesaplar',
+  'Accounts…': 'Hesaplar…',
+  'Accounts: {n} of {total} signed in': "Hesaplar: {total} hesabın {n} tanesinde giriş yapılmış",
+  'Add account': 'Hesap ekle',
+  'More for {account}': '{account} için diğer işlemler',
+  'Use this profile': "Bu Profile'ı kullan",
+  'Sign out…': 'Çıkış yap…',
+  'All accounts…': 'Tüm hesaplar…',
+  Profile: 'Profile',
+  'New profile…': 'Yeni Profile…',
+  'Sign in to {cli}': '{cli} ile giriş yap',
+  "A terminal opens; finish the sign-in there or on the vendor's page. Orka never sees your password or token.":
+    "Bir terminal açılır; girişi orada ya da sağlayıcının sayfasında tamamlayın. Orka parolanızı ya da Token'ınızı hiçbir zaman görmez.",
+  Back: 'Geri',
+  'Open terminal': 'Terminali aç',
+  'No CLI is installed yet.': 'Henüz kurulu bir CLI yok.',
+  'Not installed:': 'Kurulu değil:',
+  'Install {cli}': '{cli} kur',
+  'Sign in with which CLI?': 'Hangi CLI ile giriş yapılsın?',
+  'Check all': 'Tümünü kontrol et',
+  'Signed in': 'Giriş yapılmış',
+  'Signed out': 'Giriş yapılmamış',
+  'in use': 'kullanımda',
+  "Each CLI signs in with its own command, in a terminal you can see. Orka asks only the CLI's own status command and never reads or stores a sign-in.":
+    'Her CLI kendi komutuyla, görebileceğiniz bir terminalde giriş yapar. Orka yalnızca CLI\'ın kendi durum komutunu çalıştırır; giriş bilgilerini hiçbir zaman okumaz ya da saklamaz.',
+  'Claude Code profiles': "Claude Code Profile'ları",
+  'A profile is its own Claude Code sign-in, kept by Claude Code in its own folder (CLAUDE_CONFIG_DIR). One profile runs at a time; you pick it here.':
+    "Her Profile ayrı bir Claude Code girişidir; Claude Code onu kendi klasöründe tutar (CLAUDE_CONFIG_DIR). Aynı anda tek Profile çalışır; hangisi olacağını burada seçersiniz.",
+  'Sign in and out in Settings > Accounts.': 'Giriş ve çıkış: Ayarlar > Hesaplar.',
   'cmd.exe cannot run {part} safely. Run this in a terminal yourself: {command}':
     'cmd.exe {part} öğesini güvenle çalıştıramıyor. Şunu bir terminalde kendiniz çalıştırın: {command}',
   'Choose the {agent} program': '{agent} programını seçin',

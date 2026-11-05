@@ -28,6 +28,7 @@ import { forShownSession, post, saveUiState, setSessionId, shownSessionId, uiSta
 import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
 import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
+import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAccountHtml, type AddAccountState } from './features/accounts';
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
 import { hunksHtml } from './features/hunks';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
@@ -269,6 +270,7 @@ function renderSidebar(): void {
   if (themes) themes.innerHTML = config?.ui ? themeSwitchHtml(config.ui.theme) : '';
   renderRadarEntries();
   renderFilesEntries();
+  renderAccountsEntries();
 }
 
 /**
@@ -336,6 +338,84 @@ function renderRadarEntries(): void {
       slot.innerHTML = html;
     }
   }
+}
+
+/** Accounts in the session list's footer (folds open to one row per account) and in the rail. */
+function renderAccountsEntries(): void {
+  for (const [id, where] of [
+    ['side-accounts', 'list'],
+    ['rail-accounts', 'rail'],
+  ] as const) {
+    const slot = document.getElementById(id);
+    const html = config ? accountsEntryHtml(where, config.accounts ?? [], !!uiState().accountsOpen) : '';
+    if (slot && slot.dataset.html !== html) {
+      slot.dataset.html = html;
+      slot.innerHTML = html;
+    }
+  }
+}
+
+/**
+ * The CLIs' own status commands run when the user first looks at the accounts (the sidebar's
+ * list, the Add account popup, Settings > Accounts), then on Check; never on a timer.
+ */
+let accountsChecked = false;
+
+function checkAccountsOnce(): void {
+  if (accountsChecked) return;
+  accountsChecked = true;
+  post({ type: 'checkAccounts' });
+}
+
+function toggleAccounts(): void {
+  const open = !uiState().accountsOpen;
+  saveUiState({ accountsOpen: open });
+  if (open) checkAccountsOnce();
+  renderAccountsEntries();
+}
+
+/** The Add account popup (both layouts): which CLI, then its sign-in command. */
+let addAccount: AddAccountState | undefined;
+const accountsLayer = document.createElement('div');
+accountsLayer.className = 'accounts-layer';
+document.body.appendChild(accountsLayer);
+
+function openAddAccount(state: AddAccountState = {}): void {
+  closeSessionMenu();
+  addAccount = state;
+  checkAccountsOnce();
+  renderAddAccount();
+}
+
+function closeAddAccount(): void {
+  if (!addAccount) return;
+  addAccount = undefined;
+  renderAddAccount();
+}
+
+/** Rebuilt only when it changed (a status answering), so the focused button keeps its focus. */
+function renderAddAccount(): void {
+  const html = addAccount && config ? `<div class="modal-backdrop" data-action="add-account-close">${addAccountHtml(config.accounts ?? [], addAccount)}</div>` : '';
+  if (accountsLayer.dataset.html === html) return;
+  const stepChanged = accountsLayer.dataset.step !== (addAccount?.cli ?? '');
+  accountsLayer.dataset.html = html;
+  accountsLayer.dataset.step = addAccount?.cli ?? '';
+  accountsLayer.innerHTML = html;
+  if (stepChanged || !accountsLayer.contains(document.activeElement)) (accountsLayer.querySelector<HTMLElement>('.btn.primary') ?? accountsLayer.querySelector<HTMLElement>('.pick-item, .btn'))?.focus();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && addAccount && !modalOpen()) {
+    e.preventDefault();
+    closeAddAccount();
+  }
+});
+
+/** The … menu of an account row in the sidebar, under its button. */
+function openAccountMenu(button: HTMLElement): void {
+  closeSessionMenu();
+  const account = config?.accounts?.find((a) => accountKey(a) === button.dataset.key);
+  if (account) showMenuAt(button, accountMenuHtml(account));
 }
 
 /** The plan and the changes have their own panel on the right; it shows while there is either. */
@@ -508,12 +588,17 @@ function openSessionMenu(button: HTMLElement): void {
   closeSessionMenu();
   const { id, folder, session: open, state, draft } = button.dataset;
   if (!id || !folder) return;
+  // An open session that is not shown: Stop while it runs, else Close.
+  const live = open ? { id: open, running: state === 'running' || state === 'approval', draft: draft === 'true' } : undefined;
+  showMenuAt(button, sessionMenuHtml(id, folder, ui.organizer, live));
+}
+
+/** A menu of the session list (a session's or an account's …) under its button. */
+function showMenuAt(button: HTMLElement, html: string): void {
   sessionMenu = document.createElement('div');
   sessionMenu.className = 'composer-menu session-menu';
   sessionMenu.setAttribute('role', 'menu');
-  // An open session that is not shown: Stop while it runs, else Close.
-  const live = open ? { id: open, running: state === 'running' || state === 'approval', draft: draft === 'true' } : undefined;
-  sessionMenu.innerHTML = sessionMenuHtml(id, folder, ui.organizer, live);
+  sessionMenu.innerHTML = html;
   document.body.appendChild(sessionMenu);
   const at = button.getBoundingClientRect();
   const menu = sessionMenu.getBoundingClientRect();
@@ -1742,11 +1827,64 @@ document.addEventListener('click', (e) => {
     case 'check-agent':
       post({ type: 'checkAgentCli', id: id! });
       break;
-    case 'login-agent':
-      post({ type: 'loginAgentCli', id: id! });
-      break;
     case 'install-cli':
+      closeAddAccount();
       post({ type: 'installCli', id: id! });
+      break;
+    case 'toggle-accounts':
+      toggleAccounts();
+      break;
+    case 'account-menu':
+      if (target.getAttribute('aria-expanded') === 'true') closeSessionMenu();
+      else openAccountMenu(target);
+      break;
+    case 'add-account':
+      openAddAccount();
+      break;
+    case 'add-account-pick':
+      openAddAccount({ cli: target.dataset.cli, profile: target.dataset.profile });
+      break;
+    case 'add-account-back':
+      openAddAccount();
+      break;
+    case 'add-account-close':
+      // The backdrop closes the popup only when clicked itself, not through the popup.
+      if (target === clicked || target.tagName === 'BUTTON') closeAddAccount();
+      break;
+    case 'check-accounts':
+      accountsChecked = true;
+      post({ type: 'checkAccounts' });
+      break;
+    case 'account-check':
+      closeSessionMenu();
+      post({ type: 'checkAccount', cli: target.dataset.cli!, profile: target.dataset.profile });
+      break;
+    case 'account-login':
+      closeSessionMenu();
+      closeAddAccount();
+      post({ type: 'loginAccount', cli: target.dataset.cli!, profile: target.dataset.profile });
+      break;
+    case 'account-logout':
+      closeSessionMenu();
+      post({ type: 'logoutAccount', cli: target.dataset.cli!, profile: target.dataset.profile });
+      break;
+    case 'account-use-profile':
+      closeSessionMenu();
+      post({ type: 'setClaudeProfile', id: target.dataset.profile ?? '' });
+      break;
+    case 'add-claude-profile':
+      closeAddAccount();
+      post({ type: 'addClaudeProfile' });
+      break;
+    case 'remove-claude-profile':
+      if (target.dataset.profile) post({ type: 'removeClaudeProfile', id: target.dataset.profile });
+      break;
+    case 'open-accounts':
+      closeSessionMenu();
+      ui.view = 'settings';
+      ui.tab = 'accounts';
+      checkAccountsOnce();
+      renderView();
       break;
     case 'check-install':
       post({ type: 'checkInstall', id: id! });
@@ -1861,6 +1999,7 @@ document.addEventListener('click', (e) => {
       ui.agentsOpen = false;
       if (target.dataset.tab) ui.tab = target.dataset.tab as SettingsTab;
       if (ui.tab === 'skills') post({ type: 'reloadSkills' });
+      if (ui.tab === 'accounts') checkAccountsOnce();
       renderView();
       break;
     case 'close-settings':
@@ -1870,6 +2009,7 @@ document.addEventListener('click', (e) => {
     case 'tab':
       ui.tab = target.dataset.tab as SettingsTab;
       if (ui.tab === 'skills') post({ type: 'reloadSkills' });
+      if (ui.tab === 'accounts') checkAccountsOnce();
       renderSettings();
       break;
     case 'toggle-sidebar':
@@ -2583,7 +2723,7 @@ function mainCard(): string {
   const catalog = (config.agentClis ?? []).filter((a) => !a.custom);
   const noCli =
     catalog.length && catalog.every((a) => a.status.state === 'not_found')
-      ? `<div class="hint">${icon('info')}<span>${escapeHtml(t('No agent CLI installed yet.'))}</span><button class="link" data-action="open-settings" data-tab="providers">${escapeHtml(t('Set up'))}</button></div>`
+      ? `<div class="hint">${icon('info')}<span>${escapeHtml(t('No agent CLI installed yet.'))}</span><button class="link" data-action="add-account">${escapeHtml(t('Install…'))}</button><button class="link" data-action="open-accounts">${escapeHtml(t('Accounts…'))}</button></div>`
       : '';
   return `<div class="card">
     <div class="card-head"><strong>${escapeHtml(t('Main agent'))}</strong><span class="muted">${escapeHtml(t('plans, edits, runs'))}</span></div>
@@ -2866,6 +3006,7 @@ function claudeCodeCard(s: SettingsView, cc: ProviderView | undefined): string {
       )}<br><span class="muted">${escapeHtml(t('Runs "claude update" once a day, and right away when a model needs a newer version.'))}</span></span></label>
       <div class="key-row">
         <button class="btn" data-action="check-claude-code">${escapeHtml(t('Test connection'))}</button>
+        <button class="btn" data-action="open-accounts" title="${attr(t('Sign in and out in Settings > Accounts.'))}">${icon('user')}${escapeHtml(t('Accounts…'))}</button>
         <button class="btn" data-action="update-claude-code"${s.claudeCode.updating || st.state === 'not_found' ? ' disabled' : ''}>${escapeHtml(s.claudeCode.updating ? t('Updating…') : t('Update'))}</button>
       </div>
       ${notice}
@@ -2907,7 +3048,7 @@ function agentClisSection(): string {
         }
         <div class="key-row">
           <button class="btn" data-action="check-agent" ${id}>${escapeHtml(t('Check'))}</button>
-          ${a.loginCommand ? `<button class="btn" data-action="login-agent" ${id} title="${attr(t('Opens {command} in a terminal; you sign in there, Orka never sees it.', { command: a.loginCommand }))}">${escapeHtml(t('Sign in…'))}</button>` : ''}
+          ${a.custom ? '' : `<button class="btn" data-action="open-accounts" title="${attr(t('Sign in and out in Settings > Accounts.'))}">${icon('user')}${escapeHtml(t('Accounts…'))}</button>`}
           ${a.custom ? `<button class="btn danger-outline" data-action="remove-custom-agent" ${id}>${escapeHtml(t('Remove'))}</button>` : ''}
         </div>`
       : '';
@@ -3266,13 +3407,24 @@ function renderSettings(): void {
   const scroll = el.settings.scrollTop;
   const tabs: Array<[SettingsTab, string]> = [
     ['agents', 'Agents'],
+    ['accounts', t('Accounts')],
     ['providers', 'Providers'],
     ['skills', 'Skills'],
     ['mcp', 'MCP'],
     ['control', t('Control')],
   ];
   const body =
-    ui.tab === 'agents' ? agentsHtml() : ui.tab === 'providers' ? providersTab(config.settings) : ui.tab === 'skills' ? skillsTab() : ui.tab === 'mcp' ? mcpTab() : controlTab(config.settings);
+    ui.tab === 'agents'
+      ? agentsHtml()
+      : ui.tab === 'accounts'
+        ? accountsTabHtml(config.accounts ?? [])
+        : ui.tab === 'providers'
+          ? providersTab(config.settings)
+          : ui.tab === 'skills'
+            ? skillsTab()
+            : ui.tab === 'mcp'
+              ? mcpTab()
+              : controlTab(config.settings);
   el.settings.innerHTML = `
     <nav class="tabs" role="tablist">${tabs
       .map(([id, label]) => `<button role="tab" aria-selected="${ui.tab === id}" class="${ui.tab === id ? 'on' : ''}" data-action="tab" data-tab="${id}">${escapeHtml(label)}</button>`)
@@ -3903,6 +4055,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       renderChrome();
       renderAgentsPanel();
       renderSidebar();
+      renderAddAccount();
       if (!(typing && el.settings.contains(active))) renderSettings();
       if (!session.items.length) renderTranscript();
       // Radar's model pickers list the providers.
@@ -3975,6 +4128,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       ui.view = 'settings';
       if (message.tab) ui.tab = message.tab;
       if (ui.tab === 'skills') post({ type: 'reloadSkills' });
+      if (ui.tab === 'accounts') checkAccountsOnce();
       renderView();
       break;
     case 'event':

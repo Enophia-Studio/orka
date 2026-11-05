@@ -323,7 +323,7 @@ export type DialogView =
   | { kind: 'pick'; title?: string; items: Array<{ label: string; description?: string; detail?: string; separator?: boolean; picked?: boolean }> }
   | { kind: 'diff'; title: string; diff: string };
 
-export type SettingsTab = 'agents' | 'providers' | 'skills' | 'mcp' | 'control';
+export type SettingsTab = 'agents' | 'accounts' | 'providers' | 'skills' | 'mcp' | 'control';
 
 /** One feed Radar reads, and how its last poll went. */
 export interface RadarSourceView {

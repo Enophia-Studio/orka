@@ -797,6 +797,79 @@
   font-size: var(--fs-10);
 }
 
+/* ---------------------------------------------------------------- Accounts (session list footer, rail) */
+
+.side-accounts .side-link {
+  width: 100%;
+}
+
+.side-accounts .fold-chevron.folded {
+  transform: rotate(-90deg);
+}
+
+.accounts-count {
+  margin-left: auto;
+  font-size: var(--fs-11);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.account-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 30vh;
+  overflow-y: auto;
+}
+
+.account-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 32px 0 16px;
+  font-size: var(--fs-12-5);
+  border-radius: var(--radius-sm);
+}
+
+.account-row:hover {
+  background: var(--hover);
+}
+
+.account-row:hover .side-more {
+  opacity: 1;
+}
+
+.account-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1px solid var(--muted);
+}
+
+.account-dot.signed_in {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+
+.account-dot.signed_out {
+  background: var(--warn);
+  border-color: var(--warn);
+}
+
+.account-dot.checking {
+  border-style: dashed;
+}
+
+.account-add {
+  height: 28px;
+  padding-left: 14px;
+  font-size: var(--fs-12-5);
+  color: var(--muted);
+}
+
 .radar-dot {
   width: 6px;
   height: 6px;

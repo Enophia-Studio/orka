@@ -151,6 +151,7 @@
         if (message.type === 'searchFiles') setTimeout(() => deliver({ type: 'fileMatches', query: message.query, files: ['Assets/Scripts/Net/LobbyManager.cs', 'Assets/Scripts/UI/LobbyView.cs'].filter((f) => f.toLowerCase().includes(message.query.toLowerCase())) }), 0);
         if (ide) radarMock(message);
         if (ide) filesMock(message);
+        accountsMock(message);
       },
       getState: () => ({
         ...(params.has('collapsed') ? { sidebarClosed: true } : {}),
@@ -324,6 +325,39 @@
       }
     }
 
+    // ---- Accounts: what each CLI's status command would say, after a short "checking" (?noaccounts: nothing checked yet).
+    const account = (cli, label, login, logout, extra = {}) => ({ cli, label, status: { state: 'unknown' }, loginCommand: login, ...(logout ? { logoutCommand: logout } : {}), installable: ['claude-code', 'antigravity', 'codex'].includes(cli), ...extra });
+    const accounts = [
+      account('claude-code', 'Claude Code', 'claude auth login', 'claude auth logout', { profile: { id: '', name: L('Default profile', 'Varsayılan Profile'), dir: '', chosen: true } }),
+      account('claude-code', 'Claude Code', 'claude auth login', 'claude auth logout', { profile: { id: 'work', name: 'Work', dir: 'C:/Users/you/.claude-work', chosen: false } }),
+      account('antigravity', 'Antigravity CLI', 'agy', undefined, { logoutHint: L('Sign out inside agy (see its docs).', "agy'nin içinden çıkış yapın (belgelerine bakın).") }),
+      account('codex', 'Codex (codex-acp)', 'codex login', 'codex logout'),
+      account('copilot', 'GitHub Copilot CLI', 'copilot login', undefined),
+      account('cursor', 'Cursor CLI', 'cursor-agent login', 'cursor-agent logout'),
+      account('gemini', 'Gemini CLI (legacy)', 'gemini', undefined),
+    ];
+    const answers = {
+      'claude-code:': { state: 'signed_in', label: 'you@example.com · claude.ai (max)' },
+      'claude-code:work': { state: 'signed_out', label: 'Not logged in' },
+      'antigravity:': { state: 'unknown', hint: L('Antigravity CLI has no status command: its sign-in is chosen inside the CLI.', "Antigravity CLI için durum komutu yok: giriş yöntemi CLI'ın içinde seçilir.") },
+      'codex:': { state: 'not_installed' },
+      'copilot:': { state: 'unknown', hint: L('Copilot CLI has no status command: type /user in it to see the account.', "Copilot CLI'ın durum komutu yok: hesabı görmek için içinde /user yazın.") },
+      'cursor:': { state: 'not_installed' },
+      'gemini:': { state: 'signed_in', label: 'Gemini API key' },
+    };
+    const accountsPost = () => deliver({ type: 'config', config: makeConfig(params.has('empty')) });
+    function accountsMock(message) {
+      const key = (a) => `${a.cli}:${a.profile?.id ?? ''}`;
+      const check = (rows) => {
+        for (const a of rows) a.status = { state: 'checking' };
+        accountsPost();
+        setTimeout(() => { for (const a of rows) a.status = answers[key(a)] ?? { state: 'unknown' }; accountsPost(); }, 600);
+      };
+      if (message.type === 'checkAccounts') check(accounts);
+      if (message.type === 'checkAccount') check(accounts.filter((a) => a.cli === message.cli && (a.profile?.id ?? '') === (message.profile ?? '')));
+      if (message.type === 'setClaudeProfile') { for (const a of accounts) if (a.profile) a.profile.chosen = a.profile.id === message.id; accountsPost(); }
+    }
+
     function makeConfig(empty) {
       const providers = [
         { kind: 'claude', label: 'Claude API', local: false, ready: !empty, models: CLAUDE, model: 'claude-opus-5-5', key: empty ? undefined : { source: 'stored', hint: 'sk-ant••••4f2a' } },
@@ -353,6 +387,7 @@
           { id: 'cursor', label: 'Cursor CLI', vendor: 'Cursor', custom: false, enabled: false, status: { state: 'unknown' }, path: '', note: 'Runs your installed Cursor CLI ("agent acp"), which Cursor documents for custom clients.', termsUrl: 'https://cursor.com/terms-of-service', faqUrl: '', docsUrl: 'https://cursor.com/docs/cli/acp', installHint: '', loginCommand: 'agent login', preview: false },
           { id: 'gemini', label: 'Gemini CLI (legacy)', vendor: 'Google', custom: false, enabled: false, status: { state: 'ready', version: '0.66.0', executable: 'C:/Users/you/AppData/Roaming/npm/gemini.cmd' }, path: '', note: "Legacy: only for a Gemini API key or Code Assist Standard/Enterprise; personal Google accounts moved to Antigravity CLI. Runs your installed Gemini CLI in its ACP mode; Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it.", termsUrl: 'https://geminicli.com/docs/resources/tos-privacy/', faqUrl: '', docsUrl: 'https://geminicli.com/docs/cli/acp-mode/', installHint: 'npm install -g @google/gemini-cli', loginCommand: 'gemini', preview: false },
         ],
+        accounts: JSON.parse(JSON.stringify(accounts)),
         agentClisLeftOut: [{ id: 'claude-agent-acp', reason: "The Claude ACP adapter's licence is unclear. Claude stays available through the Claude API provider and the opt-in Claude Code provider." }],
         ui: ide ? { layout: 'ide', theme, maxRunning: 3 } : undefined,
         skillsEnabled: true,

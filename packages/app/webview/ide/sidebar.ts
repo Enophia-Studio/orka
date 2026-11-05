@@ -45,6 +45,7 @@ export function sidebarFrame(logo: string): string {
     <div class="side-foot">
       <div class="side-files" id="side-files"></div>
       <div class="side-radar" id="side-radar"></div>
+      <div class="side-accounts" id="side-accounts"></div>
       <button class="side-link" data-action="open-folder">${icon('folder')}<span>${escapeHtml(t('Open folder…'))}</span></button>
       <div class="side-foot-row">
         <button class="side-link" data-action="open-settings">${icon('gear')}<span>${escapeHtml(t('Settings'))}</span></button>
@@ -60,6 +61,7 @@ export function sidebarFrame(logo: string): string {
       <span class="spacer"></span>
       <span class="rail-files" id="rail-files"></span>
       <span class="rail-radar" id="rail-radar"></span>
+      <span class="rail-accounts" id="rail-accounts"></span>
       ${railButton('open-folder', 'folder', t('Open folder…'))}
       ${railButton('open-settings', 'gear', t('Settings'))}
     </div>`;

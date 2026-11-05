@@ -829,13 +829,19 @@ textarea {
   position: sticky;
   top: 0;
   z-index: 1;
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  /* Six tabs share the width; a narrow panel scrolls them sideways instead of cutting their names. */
+  display: flex;
+  flex: none;
+  overflow-x: auto;
+  scrollbar-width: none;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
 
 .tabs button {
+  flex: 1 0 auto;
+  padding: 0 6px;
+  white-space: nowrap;
   height: 34px;
   border: none;
   background: none;
@@ -2225,4 +2231,46 @@ input.num.wide {
 
 .diff-view .file {
   font-weight: 600;
+}
+
+/* ---------------------------------------------------------------- Accounts (Add account popup, Settings > Accounts) */
+
+.add-account .pick-item {
+  align-items: stretch;
+}
+
+.account-pick-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.account-command {
+  display: block;
+  padding: 6px 8px;
+  overflow-x: auto;
+  white-space: pre;
+  background: var(--code-bg);
+  border-radius: var(--radius-sm);
+}
+
+.account-missing {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+
+.account-card > .ellipsis {
+  display: block;
+}
+
+.account-card .card-head strong {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.account-card .key-row {
+  flex-wrap: wrap;
 }

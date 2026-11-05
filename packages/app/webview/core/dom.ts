@@ -70,6 +70,7 @@ const ICON: Record<string, string> = {
   monitor: '<rect x="2" y="3" width="12" height="8" rx="1.2"/><path d="M6 13.5h4M8 11v2.5"/>',
   files: '<path d="M6 2.5h4.5L13 5v7.5H6z"/><path d="M10.5 2.5V5H13"/><path d="M3.5 5v8.5h6"/>',
   radar: '<circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2.5"/><path d="M8 8l3.9-3.9"/>',
+  user: '<circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c.6-2.6 2.6-4 5-4s4.4 1.4 5 4"/>',
 };
 
 export function icon(name: string, cls = ''): string {
