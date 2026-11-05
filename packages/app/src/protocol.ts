@@ -96,6 +96,24 @@ export interface AgentView {
   unavailable?: string;
 }
 
+/** The composer's model menu for the session shown: what its next request runs on. */
+export interface SessionModelView {
+  /** The main agent's provider the choice is for. */
+  provider: string;
+  /** '' = the provider's default model. */
+  model: string;
+  effort: string;
+  /** Effort levels the provider takes ('' = its own default); empty: the menu has no effort row. */
+  efforts: string[];
+  /** The settings' default effort for the provider (what '' or a new session gets). */
+  defaultEffort: string;
+  /** Claude Code profiles ('' = the default one), when a role runs on Claude Code and the user added profiles. */
+  profiles: Array<{ id: string; name: string }>;
+  profile: string;
+  /** The choice differs from the settings' defaults ("Use as default" would change them). */
+  differs: boolean;
+}
+
 export interface ClaudeCodeStatus {
   state: 'unknown' | 'checking' | 'ready' | 'not_found' | 'logged_out' | 'error';
   version?: string;
@@ -162,6 +180,8 @@ export interface ConfigView {
   /** Desktop: the user picks the folder in the app ("Open folder…"); VS Code opens folders itself. */
   canOpenFolder?: boolean;
   providers: ProviderView[];
+  /** The model menu of the session shown (none while no folder is open). */
+  sessionModel?: SessionModelView;
   main: AgentView;
   supervisor: AgentView;
   /** Where the main agent continues when its provider hits a limit (provider "inherit" = off). */
@@ -494,6 +514,8 @@ const SESSION_MESSAGE_TYPES = [
   'saveFile',
   'openExternalFile',
   'initMemory',
+  'setSessionModel',
+  'useModelAsDefault',
 ] as const;
 
 export const SESSION_MESSAGES: ReadonlySet<string> = new Set<string>(SESSION_MESSAGE_TYPES);
@@ -567,6 +589,13 @@ export type FromWebview =
   | { type: 'pickClaudeExecutable' }
   | { type: 'resetClaudeExecutable' }
   | Scoped<{ type: 'initMemory' }>
+  /**
+   * The composer's model menu: this session's model ('' = the provider's default), effort ('' =
+   * the provider's own) or Claude Code profile ('' = the default one), from its next request on.
+   */
+  | Scoped<{ type: 'setSessionModel'; model?: string; effort?: string; profile?: string }>
+  /** Save this session's model, effort and profile as the settings' defaults for new sessions. */
+  | Scoped<{ type: 'useModelAsDefault' }>
   | { type: 'openSettings' }
   | { type: 'listTasks' }
   | { type: 'listSessions' }

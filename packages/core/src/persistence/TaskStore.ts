@@ -25,6 +25,8 @@ export interface TaskSnapshot {
   checkpoint?: ChangeCheckpoint[];
   /** Front-end view of the task (e.g. a SessionView) for replaying the chat. */
   view?: unknown;
+  /** The app's model menu choice for the task (model, effort, profile), checked by the app when read back. */
+  modelChoice?: unknown;
 }
 
 export interface TaskSummary {

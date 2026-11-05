@@ -329,10 +329,12 @@ describe('accounts: compliance', () => {
       const source = readFileSync(file, 'utf8');
       for (const pattern of forbidden) assert.doesNotMatch(source, pattern, `${path.relative(APP_SRC, file)} mentions ${pattern}`);
     }
-    // The profile changes only where the user picks or removes it; sessions (and their usage-limit
-    // handling, fallback and notices) never touch it.
+    // The profile changes only where the user picks or removes it (or saves a session's as the
+    // default); sessions (and their usage-limit handling, fallback and notices) never touch it.
     const controller = readFileSync(path.join(APP_SRC, 'AppController.ts'), 'utf8');
-    assert.equal(controller.match(/updateSetting\('accounts\.claudeProfile'/g)?.length, 2);
+    assert.equal(controller.match(/updateSetting\('accounts\.claudeProfile'/g)?.length, 3);
+    // A session sets its own choice only when it starts and when it opens a saved task.
+    assert.equal(readFileSync(path.join(APP_SRC, 'SessionController.ts'), 'utf8').match(/this\.choice =/g)?.length, 2);
     for (const name of ['SessionController.ts', 'runGate.ts']) assert.doesNotMatch(readFileSync(path.join(APP_SRC, name), 'utf8'), /claudeProfile|setClaudeProfile|CLAUDE_CONFIG_DIR/);
   });
 });

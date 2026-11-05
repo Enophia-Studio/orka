@@ -76,6 +76,7 @@ import type {
   SessionOrganizeOp,
   SessionOrganizerView,
   SessionMessage,
+  SessionModelView,
   SettingsTab,
   SkillView,
 } from './protocol';
@@ -110,6 +111,7 @@ import {
 } from './accounts';
 import { type InstallRecipe, installRecipe, nodeIsRecent, nodeVersion } from './install';
 import { RunGate } from './runGate';
+import { EFFORT_SETTING, effortLevels, type SessionChoice, settingsEffort } from './sessionModel';
 import { dropNotices, samePath, type SessionContext, SessionController } from './SessionController';
 import type { AppShell, PickItem } from './shell';
 
@@ -564,7 +566,7 @@ export class AppController implements Disposable {
       settings: () => this.settings,
       isActive: (session) => session.id === this.activeId,
       show: (session) => void this.showSession(session),
-      providerFor: (name) => this.providerFor(name),
+      providerFor: (name, session) => this.providerFor(name, session),
       externalAgent: (root) => this.externalAgent(root),
       mcpTools: (session) => this.mcpTools(session),
       skills: () => this.skills,
@@ -590,7 +592,11 @@ export class AppController implements Disposable {
         if (this.providersStale && !this.anyRunning()) this.disposeProviders();
       },
       gate: this.gate,
-      runAccounts: () => this.runAccounts(),
+      runAccounts: (session) => this.runAccounts(session),
+      defaultChoice: () => this.defaultChoice(),
+      sessionChoice: (session) => this.sessionChoice(session),
+      setSessionModel: (session, change) => this.setSessionModel(session, change),
+      useModelAsDefault: (session) => this.useModelAsDefault(session),
       accountLabel: (account) => this.accountLabel(account),
     };
   }
@@ -1445,11 +1451,16 @@ export class AppController implements Disposable {
     if (!this.activeSession && dropNotices(this.idleView, stale)) this.postInit();
   }
 
-  /** Provider/model an agent ("main", "supervisor" or a sub-agent) will actually run on. */
-  private resolveAgent(name: string): { provider: ProviderRef; model: string } {
+  /**
+   * Provider/model an agent ("main", "supervisor" or a sub-agent) will actually run on. With a
+   * session's model menu choice, the main agent and the roles that inherit it run on its model and
+   * effort (`effort` is set then).
+   */
+  private resolveAgent(name: string, session?: SessionChoice): { provider: ProviderRef; model: string; effort?: string } {
     const s = this.settings;
     const mainRef = this.mainProvider();
-    const main = { provider: mainRef, model: this.defaultModel(mainRef) };
+    const own = session?.provider === mainRef ? session : undefined;
+    const main = own ? { provider: mainRef, model: own.model || this.defaultModel(mainRef), effort: own.effort } : { provider: mainRef, model: this.defaultModel(mainRef) };
     if (name === 'main') return main;
     const choice: AgentChoice | undefined =
       name === 'supervisor' ? s.supervisor : name === 'fallback' ? s.fallback : name === 'light' ? s.light : s.subagents.agents[name];
@@ -1459,8 +1470,13 @@ export class AppController implements Disposable {
     return { provider: choice.provider, model: choice.model || this.defaultModel(choice.provider) };
   }
 
-  private providerConfig(ref: string, model: string): ProviderConfig {
+  /**
+   * `use`: a session's effort (undefined = the settings' default, '' = the provider's own) and
+   * Claude Code profile (undefined = the settings' default).
+   */
+  private providerConfig(ref: string, model: string, use: { effort?: string; profile?: string } = {}): ProviderConfig {
     const s = this.settings;
+    const level = <T extends string>(fallback: T | undefined): T | undefined => (use.effort === undefined ? fallback : (use.effort as T) || undefined);
     const key = () => {
       const value = this.apiKey(ref);
       if (!value) throw new Error(t('No API key set for {provider}. Run "Orka: Set API Key".', { provider: this.providerLabel(ref) }));
@@ -1480,23 +1496,29 @@ export class AppController implements Disposable {
     }
     switch (ref as ProviderKind) {
       case 'claude':
-        return { kind: 'claude', apiKey: key(), model, effort: s.claude.effort, refusalFallback: s.claude.refusalFallback };
+        return { kind: 'claude', apiKey: key(), model, effort: level(s.claude.effort) ?? s.claude.effort, refusalFallback: s.claude.refusalFallback };
       case 'openai':
-        return { kind: 'openai', apiKey: key(), model, baseURL: s.openai.baseUrl, reasoningEffort: s.openai.reasoningEffort };
+        return { kind: 'openai', apiKey: key(), model, baseURL: s.openai.baseUrl, reasoningEffort: level(s.openai.reasoningEffort) };
       case 'gemini':
-        return { kind: 'gemini', apiKey: key(), model, thinkingLevel: s.gemini.thinkingLevel };
+        return { kind: 'gemini', apiKey: key(), model, thinkingLevel: level(s.gemini.thinkingLevel) };
       case 'claude-code':
         if (!s.claudeCode.enabled) throw new Error(t('Claude Code is turned off. Turn it on in Settings > Providers.'));
-        return { kind: 'claude-code', model, effort: s.claudeCode.effort, executable: s.claudeCode.path, configDir: this.claudeConfigDir() };
+        return { kind: 'claude-code', model, effort: level(s.claudeCode.effort), executable: s.claudeCode.path, configDir: this.claudeConfigDir(use.profile) };
       default:
         throw new Error(`Unknown provider "${ref}".`);
     }
   }
 
-  private providerFor(name: string): AIProvider {
-    const { provider: ref, model } = this.resolveAgent(name);
+  /**
+   * A role's provider; for a session's run, on the choice the run started with (a change made in
+   * the model menu meanwhile gets a provider of its own from the next request: a running process
+   * is never stopped for it).
+   */
+  private providerFor(name: string, session?: SessionController): AIProvider {
+    const choice = session ? (session.runChoice ?? this.sessionChoice(session)) : undefined;
+    const { provider: ref, model, effort } = this.resolveAgent(name, choice);
     if (!model && this.customDef(ref)) throw new Error(t('Pick a model for {provider} (Settings > Providers).', { provider: this.providerLabel(ref) }));
-    const config = this.providerConfig(ref, model);
+    const config = this.providerConfig(ref, model, { effort, profile: choice?.profile });
     const cacheKey = JSON.stringify(config);
     let provider = this.providers.get(cacheKey);
     if (!provider) {
@@ -1678,7 +1700,11 @@ export class AppController implements Disposable {
       }
       if (provider !== this.settings.provider || !this.settings.providerExplicit) await this.updateSetting('provider', provider);
       if (!agentEntry && model && model !== this.defaultModel(provider)) await this.setDefaultModel(provider, model);
+      // The session shown follows the Agents panel's pick; the other sessions keep their own choice.
+      const shown = this.activeSession;
+      if (shown) shown.choice = { ...this.defaultChoice(), profile: shown.choice.profile };
       if (agentEntry) await this.noteAgentNotInstalled(agentEntry);
+      this.postConfig();
       return;
     }
     if (agent === 'light') {
@@ -2224,20 +2250,110 @@ export class AppController implements Disposable {
     return found ? { CLAUDE_CONFIG_DIR: found.dir } : undefined;
   }
 
-  /** The folder Claude Code runs on now: the chosen profile's, or undefined for the default one. */
-  private claudeConfigDir(): string | undefined {
-    const { claudeProfiles, claudeProfile } = this.settings.accounts;
-    return claudeProfiles.find((p) => p.id === claudeProfile)?.dir;
+  /** The folder Claude Code runs on for a profile (by default the settings' one), or undefined for the default profile. */
+  private claudeConfigDir(profile = this.settings.accounts.claudeProfile): string | undefined {
+    return this.settings.accounts.claudeProfiles.find((p) => p.id === profile)?.dir;
   }
 
   private accountKey(cli: AccountCli, profile = ''): string {
     return cli === 'claude-code' ? `claude-code:${profile}` : cli;
   }
 
-  /** The accounts a run would use now, for the gate: Claude Code's chosen profile when any role runs on Claude Code. */
-  private runAccounts(): string[] {
+  /**
+   * The accounts a run would use now, for the gate: the Claude Code profile of the session's run
+   * (by default the settings' one) when any role runs on Claude Code. A fallback runs on the same
+   * profile: no role ever goes on with another account.
+   */
+  private runAccounts(session?: SessionController): string[] {
+    const choice = session ? (session.runChoice ?? this.sessionChoice(session)) : undefined;
+    const profile = choice ? choice.profile : this.settings.accounts.claudeProfile;
+    return this.usesClaudeCode(choice) ? [`claude-code:${profile}`] : [];
+  }
+
+  /** Some role runs on Claude Code (with a session's choice: in that session). */
+  private usesClaudeCode(choice?: SessionChoice): boolean {
     const roles = ['main', 'supervisor', 'fallback', 'light', ...Object.keys(this.settings.subagents.agents)];
-    return roles.some((name) => this.resolveAgent(name).provider === 'claude-code') ? [`claude-code:${this.settings.accounts.claudeProfile}`] : [];
+    return roles.some((name) => this.resolveAgent(name, choice).provider === 'claude-code');
+  }
+
+  // ---------------------------------------------------------------- the composer's model menu (per session)
+
+  /** A new session's choice: a copy of the settings (the main agent's model and effort, Claude Code's profile). */
+  private defaultChoice(): SessionChoice {
+    const provider = this.mainProvider();
+    return { provider, model: this.defaultModel(provider), effort: settingsEffort(this.settings, provider), profile: this.settings.accounts.claudeProfile };
+  }
+
+  /**
+   * The session's choice as it holds now: when the main agent's provider changed since (in the
+   * Agents panel, or a CLI became ready), it starts again from the settings for that provider; a
+   * profile that was removed becomes the default one, and a value the provider does not take its
+   * default.
+   */
+  private sessionChoice(session: SessionController): SessionChoice {
+    const c = session.choice;
+    const main = this.mainProvider();
+    const profile = !c.profile || this.settings.accounts.claudeProfiles.some((p) => p.id === c.profile) ? c.profile : '';
+    const next: SessionChoice =
+      c.provider !== main
+        ? { ...this.defaultChoice(), profile }
+        : {
+            provider: main,
+            model: isAgentRef(main) ? '' : c.model && isModelId(c.model) ? c.model : this.defaultModel(main),
+            effort: effortLevels(main).includes(c.effort) ? c.effort : settingsEffort(this.settings, main),
+            profile,
+            ...(c.options ? { options: c.options } : {}),
+          };
+    session.choice = next;
+    return next;
+  }
+
+  /** The model menu changed a session's model, effort or profile: from its next request on. */
+  private async setSessionModel(session: SessionController, change: { model?: unknown; effort?: unknown; profile?: unknown }): Promise<void> {
+    const c = { ...this.sessionChoice(session) };
+    if (change.model !== undefined) {
+      if (isAgentRef(c.provider) || typeof change.model !== 'string' || (change.model && !isModelId(change.model))) return;
+      c.model = change.model || this.defaultModel(c.provider);
+    }
+    if (change.effort !== undefined) {
+      if (typeof change.effort !== 'string' || !effortLevels(c.provider).includes(change.effort)) return;
+      c.effort = change.effort;
+    }
+    if (change.profile !== undefined) {
+      if (typeof change.profile !== 'string' || (change.profile && !this.settings.accounts.claudeProfiles.some((p) => p.id === change.profile))) return;
+      c.profile = change.profile;
+    }
+    session.choice = c;
+    if (session.id === this.activeId) this.postConfig();
+  }
+
+  /** "Use as default": the session's model, effort and profile become the settings' defaults; other sessions keep theirs. */
+  private async useModelAsDefault(session: SessionController): Promise<void> {
+    const c = this.sessionChoice(session);
+    if (!isAgentRef(c.provider) && c.model && c.model !== this.defaultModel(c.provider)) await this.setDefaultModel(c.provider, c.model);
+    const key = EFFORT_SETTING[c.provider];
+    if (key && c.effort !== settingsEffort(this.settings, c.provider)) await this.updateSetting(key, c.effort);
+    if (c.profile !== this.settings.accounts.claudeProfile) await this.updateSetting('accounts.claudeProfile', c.profile, { preferGlobal: true });
+    this.postConfig();
+  }
+
+  /** The model menu of the session shown. */
+  private sessionModelView(session: SessionController): SessionModelView {
+    const c = this.sessionChoice(session);
+    const provider = c.provider;
+    const defaults = this.defaultChoice();
+    const profiles = this.settings.accounts.claudeProfiles;
+    const onClaudeCode = this.usesClaudeCode(c);
+    return {
+      provider,
+      model: c.model,
+      effort: c.effort,
+      efforts: effortLevels(provider),
+      defaultEffort: settingsEffort(this.settings, provider),
+      profiles: onClaudeCode && profiles.length ? [{ id: '', name: t('Default profile') }, ...profiles.map((p) => ({ id: p.id, name: p.name }))] : [],
+      profile: c.profile,
+      differs: defaults.provider === provider && (defaults.model !== c.model || defaults.effort !== c.effort || defaults.profile !== c.profile),
+    };
   }
 
   /** "Claude Code (Work)" for "claude-code:work"; "Claude Code (Default profile)" for "claude-code:". */
@@ -2418,6 +2534,9 @@ export class AppController implements Disposable {
     if (id && !this.settings.accounts.claudeProfiles.some((p) => p.id === id)) return;
     if (id === this.settings.accounts.claudeProfile) return;
     await this.updateSetting('accounts.claudeProfile', id, { preferGlobal: true });
+    // The default for new sessions, and the session shown (other sessions keep their profile).
+    const shown = this.activeSession;
+    if (shown) shown.choice = { ...shown.choice, profile: id };
     const inUse = this.gate.profileInUse('claude-code');
     if (inUse !== undefined && inUse !== id) {
       this.publishNotice(
@@ -2694,13 +2813,12 @@ export class AppController implements Disposable {
 
   private configView(): ConfigView {
     const s = this.settings;
-    const agentView = (name: string, choice: AgentChoice, extra: Partial<AgentView> = {}): AgentView => ({
-      name,
-      provider: choice.provider,
-      model: choice.model,
-      effective: this.resolveAgent(name),
-      ...extra,
-    });
+    // What runs is what the session shown would run on (its model menu choice).
+    const shownChoice = this.activeSession ? this.sessionChoice(this.activeSession) : undefined;
+    const agentView = (name: string, choice: AgentChoice, extra: Partial<AgentView> = {}): AgentView => {
+      const { provider, model } = this.resolveAgent(name, shownChoice);
+      return { name, provider: choice.provider, model: choice.model, effective: { provider, model }, ...extra };
+    };
     const keyInfo = (ref: string): ProviderView['key'] => {
       const stored = this.apiKeys.get(ref);
       if (stored) return { source: 'stored', hint: stored.length > 8 ? `${stored.slice(0, 6)}••••${stored.slice(-4)}` : '••••' };
@@ -2767,6 +2885,7 @@ export class AppController implements Disposable {
       externalAgents: this.externalAgentsView(),
       pricing: s.pricing,
       providers: [...builtIns, ...customs, ...agents],
+      sessionModel: session ? this.sessionModelView(session) : undefined,
       main: agentView('main', { provider: this.mainProvider(), model: this.defaultModel(this.mainProvider()) }),
       supervisor: agentView(
         'supervisor',
