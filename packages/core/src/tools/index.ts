@@ -16,6 +16,7 @@ export { outlineText } from './OutlineTools';
 export { applyEdit } from './FileTools';
 export { runGit } from './GitTools';
 export { stripAnsi } from './TerminalTools';
+export { insideWorkspace, type ReadInsideResult, readInsideWorkspace, replaceInsideWorkspace, type ReplaceInsideResult, writeInsideWorkspace } from './safeFs';
 export { globToRegExp, IGNORED_DIRS, resolveInWorkspace, toRelative, walkFiles } from './workspace';
 
 /**

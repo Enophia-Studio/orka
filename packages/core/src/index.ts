@@ -7,7 +7,7 @@ export { browserFor, closeBrowser, findBrowser, HeadlessBrowser } from './browse
 export * from './permissions/PermissionManager';
 export { classifyCommand, type CommandClassification, type CommandContext } from './permissions/commandRisk';
 export * from './changes/ChangeTracker';
-export { type CommandChange, ShadowGit } from './changes/ShadowGit';
+export { type CommandChange, mergeText, ShadowGit } from './changes/ShadowGit';
 export { type DiffHunk, type DiffLine, hunkHeader, hunksBetween, lineText, unifiedDiff } from './changes/diff';
 export * from './planning/Plan';
 export * from './tools';
