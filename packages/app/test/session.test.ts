@@ -1,5 +1,6 @@
 import { type ApprovalRequest, FileTaskStore, type Tool } from '@orka/core';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -711,5 +712,134 @@ describe('run gate', () => {
     await until(() => !(controller as unknown as { gate: { busyNear(root: string): string | undefined } }).gate.busyNear(inner), 'the folder to be free');
     await controller.send('Task inside alpha');
     assert.ok(said(shell, nested, 'Inner is done.'));
+  });
+
+  const gateOf = (controller: AppController) => (controller as unknown as { gate: { busyNear(root: string): string | undefined } }).gate;
+  const sessionsOf = (controller: AppController) => (controller as unknown as { sessions: Map<string, SessionController> }).sessions;
+  const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex');
+
+  it('counts a send as running until its agent starts, and a session closed meanwhile never starts it', async () => {
+    const log = path.join(home, 'acp.log');
+    process.env.FAKE_ACP_LOG = log;
+    script([{ chunk: 'Alpha is done.' }, { stop: 'end_turn' }]);
+    const { shell, controller } = await start('desktop', agentSettings);
+    const a = controller.activeSession!;
+    // The send waits in its prelude (a new task reloads the skills first).
+    let resume!: () => void;
+    let held = false;
+    (controller as unknown as { reloadSkills: () => Promise<void> }).reloadSkills = () => {
+      held = true;
+      return new Promise<void>((resolve) => (resume = resolve));
+    };
+    const sent = controller.send('Task in alpha');
+    await until(() => held, 'the send to start');
+    assert.ok(a.isRunning);
+    assert.equal(a.state, 'running');
+
+    // Shown elsewhere, it is neither closed nor given a new host.
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    await controller.handleMessage({ type: 'closeSession', sessionId: a.id });
+    await shell.settings.update('shell', SHELL_CHOICES[1]);
+    assert.ok(shell.last('live')!.sessions.some((s) => s.id === a.id), 'the starting session stays open');
+
+    // It goes away anyway (the app closes): its run never starts, and nothing holds its folder.
+    sessionsOf(controller).delete(a.id);
+    await a.dispose();
+    resume();
+    await sent;
+    assert.ok(!a.isRunning);
+    assert.ok(!logged(log).some((e) => e.event === 'initialize'), 'no agent process for alpha');
+    assert.equal(gateOf(controller).busyNear(folderA), undefined);
+  });
+
+  it('keeps a session with an open hand-off open: no close, no eviction, no new host', async () => {
+    const { shell, controller } = await start('desktop', agentSettings);
+    const a = controller.activeSession!;
+    (controller as unknown as { isInstalled: () => boolean }).isInstalled = () => true;
+    await controller.handOff('freebuff');
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    await controller.handleMessage({ type: 'closeSession', sessionId: a.id });
+    assert.ok(shell.asked.some((q) => q.text === 'This session has a hand-off open. Close its terminal first, then close the session.'));
+    await shell.settings.update('shell', SHELL_CHOICES[1]);
+    assert.ok(shell.last('live')!.sessions.some((s) => s.id === a.id));
+    assert.ok(a.handoffAgentId, 'the hand-off is still open');
+    assert.ok(gateOf(controller).busyNear(folderA), 'its folder is still held');
+    (shell.terminals[0] as unknown as { onClose(): void }).onClose();
+    // Once its changes are read, it may close.
+    await until(() => !a.busy, 'the hand-off to end');
+    await controller.handleMessage({ type: 'closeSession', sessionId: a.id });
+    assert.ok(!shell.last('live')!.sessions.some((s) => s.id === a.id));
+  });
+
+  it("notes a save as the user's in an overlapping session that tracks the file, so its Revert keeps it", async () => {
+    const inner = path.join(folderA, 'sub');
+    mkdirSync(inner);
+    const file = path.join(inner, 'x.txt');
+    writeFileSync(file, 'agent\n');
+    const { controller } = await start('desktop', agentSettings, [folderA, folderB, inner]);
+    const a = controller.activeSession!;
+    a.orchestrator.changes.recordOriginal(file, 'original\n');
+
+    await controller.handleMessage({ type: 'selectFolder', path: inner });
+    await controller.handleMessage({ type: 'saveFile', path: 'x.txt', text: 'agent\nand mine\n', baseHash: sha(readFileSync(file)) });
+    assert.equal(readFileSync(file, 'utf8'), 'agent\nand mine\n');
+    assert.ok(a.orchestrator.changes.isUserEdited(file));
+    assert.deepEqual(await a.orchestrator.changes.revertAll(), []);
+    assert.equal(readFileSync(file, 'utf8'), 'agent\nand mine\n');
+  });
+
+  it('refuses Revert, hunk Revert and Go back while a session in an overlapping folder runs', async () => {
+    const inner = path.join(folderA, 'sub');
+    mkdirSync(inner);
+    const file = path.join(inner, 'x.txt');
+    writeFileSync(file, 'agent\n');
+    const { shell, controller } = await start('desktop', agentSettings, [folderA, folderB, inner]);
+    const a = controller.activeSession!;
+    a.orchestrator.changes.recordOriginal(file, 'original\n');
+
+    await controller.handleMessage({ type: 'selectFolder', path: inner });
+    const nested = controller.activeSession!;
+    script([{ chunk: 'Working.' }, { hang: true }]);
+    const sent = controller.send('A long request');
+    await until(() => said(shell, nested, 'Working.'), 'the nested session to work');
+
+    await controller.handleMessage({ type: 'switchSession', sessionId: a.id });
+    shell.answer = 'Revert All';
+    await controller.handleMessage({ type: 'revertAll' });
+    await controller.handleMessage({ type: 'revertChange', path: file });
+    await controller.handleMessage({ type: 'revertHunk', path: file, index: 0 });
+    assert.equal(readFileSync(file, 'utf8'), 'agent\n');
+    assert.equal(notices(shell, a).filter((n) => n === 'Another session is working in sub, which overlaps this folder. Revert and Go back wait until it finishes.').length, 3);
+
+    await controller.handleMessage({ type: 'stop', sessionId: nested.id });
+    await sent;
+    await controller.handleMessage({ type: 'revertAll' });
+    assert.equal(readFileSync(file, 'utf8'), 'original\n');
+  });
+
+  it('ends idle sessions left from the IDE layout at a folder change in the classic layout', async () => {
+    const { shell, controller } = await start('desktop', agentSettings);
+    const a = controller.activeSession!;
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    await shell.settings.update('desktop.layout', 'classic');
+    await controller.handleMessage({ type: 'selectFolder', path: folderA });
+    assert.notEqual(controller.activeSession, a, 'a new empty task, not the old session');
+    assert.deepEqual([...sessionsOf(controller).values()], [controller.activeSession]);
+  });
+
+  it('lists an open session whose folder dropped out of the recent folders', async () => {
+    const { shell, controller } = await start('desktop', agentSettings);
+    const a = controller.activeSession!;
+    await controller.handleMessage({ type: 'selectFolder', path: folderB });
+    (shell as unknown as { recent: string[] }).recent.splice(0, 1);
+    await (controller as unknown as { postSessions(): Promise<void> }).postSessions();
+    const groups = shell.last('sessions')!.groups;
+    assert.deepEqual(
+      groups.map((g) => [g.name, path.resolve(g.folder)]),
+      [
+        ['beta', path.resolve(folderB)],
+        ['alpha', path.resolve(a.root)],
+      ],
+    );
   });
 });

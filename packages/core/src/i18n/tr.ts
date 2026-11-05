@@ -873,6 +873,10 @@ export const TR: Record<string, string> = {
     'Zaten {n} oturum çalışıyor (sınır {max}, Ayarlar > Kontrol bölümünde). Birinin bitmesini bekleyin ya da birini durdurun.',
   'Another session is working in {folder}, which overlaps this folder. Orka runs one session at a time there.':
     'Başka bir oturum bu klasörle çakışan {folder} klasöründe çalışıyor. Orka orada aynı anda tek oturum çalıştırır.',
+  'Another session is working in {folder}, which overlaps this folder. Revert and Go back wait until it finishes.':
+    'Başka bir oturum bu klasörle çakışan {folder} klasöründe çalışıyor. Geri alma ve geri dönme o bitene kadar bekler.',
+  'This session has a hand-off open. Close its terminal first, then close the session.':
+    "Bu oturum görevi terminaldeki bir agent'a devretti. Önce o terminali kapatın, sonra oturumu kapatın.",
 
   // Agent CLIs in the app (settings, pickers, notices)
   '{agent} is not installed. Install it ({hint}), then check it again in Settings > Providers.':

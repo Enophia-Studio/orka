@@ -517,6 +517,9 @@ export class AppController implements Disposable {
         this.updateStatus();
         this.postLive();
       },
+      userSaved: (session, real, before, after) => {
+        for (const other of this.sessions.values()) if (other !== session) other.noteOutsideSave(real, before, after);
+      },
       runFinished: () => {
         // Providers waiting for an idle moment are rebuilt once no session uses them.
         if (this.providersStale && !this.anyRunning()) this.disposeProviders();
@@ -549,7 +552,15 @@ export class AppController implements Disposable {
    * session is shown as it is; otherwise the one shown before ends first (see endActive).
    */
   private onFolderChanged(): void {
-    if (!this.parallel()) this.endActive();
+    if (!this.parallel()) {
+      this.endActive();
+      // Idle sessions left from the IDE layout end too: the folder gets a new empty task, as a folder change gives.
+      for (const session of [...this.sessions.values()]) {
+        if (session.busy) continue;
+        this.sessions.delete(session.id);
+        void session.dispose();
+      }
+    }
     const folder = this.shell.currentFolder();
     if (!folder) {
       this.activeId = undefined;
@@ -590,16 +601,17 @@ export class AppController implements Disposable {
   /**
    * Idle sessions end, so the next ones get a host with the new settings: the session shown is
    * created again with an empty task (as a folder change does), the others close (their tasks stay
-   * in the list). A running session keeps its host.
+   * in the list). A running session, and in the IDE layout one with a hand-off open, keeps its host.
    */
   private renewHosts(): void {
     for (const session of [...this.sessions.values()]) {
-      if (session.isRunning || session.id === this.activeId) continue;
+      if (session.busy || session.id === this.activeId) continue;
       this.sessions.delete(session.id);
       void session.dispose();
     }
     const shown = this.activeSession;
-    if (shown?.isRunning) {
+    // The VS Code panel and the classic layout renew a shown session with a hand-off, as before.
+    if (shown && (this.parallel() ? shown.busy : shown.isRunning)) {
       this.postLive();
       return;
     }
@@ -622,8 +634,8 @@ export class AppController implements Disposable {
 
   /**
    * Room for one more open session: at the cap, the least recently used idle session that is not
-   * shown is closed (one without changes to review or a hand-off first); its task stays in the list.
-   * False when every other session runs.
+   * shown is closed (one without changes to review first); its task stays in the list. A session
+   * that runs or has a hand-off open is never closed: false when every other session does.
    */
   private makeRoom(): boolean {
     if (this.sessions.size < MAX_LIVE_SESSIONS) return true;
@@ -640,7 +652,7 @@ export class AppController implements Disposable {
 
   /** The session makeRoom closes, if any. */
   private closable(): SessionController | undefined {
-    const idle = [...this.sessions.values()].filter((s) => s.id !== this.activeId && !s.isRunning);
+    const idle = [...this.sessions.values()].filter((s) => s.id !== this.activeId && !s.busy);
     return idle.sort((a, b) => Number(a.hasPendingWork) - Number(b.hasPendingWork) || a.lastActive - b.lastActive)[0];
   }
 
@@ -664,11 +676,18 @@ export class AppController implements Disposable {
     else await this.selectFolder(session.root);
   }
 
-  /** Close an idle session that is not shown (desktop IDE layout); its task stays in the list. */
+  /**
+   * Close an idle session that is not shown (desktop IDE layout); its task stays in the list. One
+   * with a hand-off open stays: the external agent still changes files in its folder.
+   */
   private async closeSession(id: unknown): Promise<void> {
     if (!this.parallel() || typeof id !== 'string') return;
     const session = this.sessions.get(id);
     if (!session || session.id === this.activeId || session.isRunning) return;
+    if (session.busy) {
+      void this.shell.message('info', t('This session has a hand-off open. Close its terminal first, then close the session.'));
+      return;
+    }
     this.sessions.delete(session.id);
     await session.dispose();
     this.postLive();
@@ -1066,11 +1085,18 @@ export class AppController implements Disposable {
     await this.postSessions();
   }
 
-  /** The desktop app's session list: the newest tasks of each recent folder. */
+  /**
+   * The desktop app's session list: the newest tasks of each recent folder, and of each folder with
+   * an open session that dropped out of the recent list (so that session keeps its row).
+   */
   private async postSessions(): Promise<void> {
     if (this.shell.kind !== 'desktop' || this.settings.desktop.layout !== 'ide') return;
+    const folders = [...this.shell.folders()];
+    for (const session of this.sessions.values()) {
+      if (!folders.some((f) => samePath(f.path, session.root))) folders.push({ name: path.basename(session.root) || session.root, path: session.root });
+    }
     const groups: SessionGroup[] = await Promise.all(
-      this.shell.folders().map(async (folder) => ({
+      folders.map(async (folder) => ({
         folder: folder.path,
         name: folder.name,
         tasks: (await new FileTaskStore(this.shell.storage(folder.path).tasks).list().catch(() => [])).slice(0, MAX_SESSION_TASKS),
