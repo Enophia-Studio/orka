@@ -1108,16 +1108,17 @@ export class Orchestrator {
 
   /**
    * Go back to just before a user message: the conversation from that message on is dropped, the
-   * plan is what it was then, and files the agents changed since are restored. Returns the
-   * message's text (to edit and send again) and the restored files; undefined when that point is
-   * gone (the task was compacted or reopened since).
+   * plan is what it was then, and files the agents changed since are restored. Files the user
+   * edited by hand since are kept. Returns the message's text (to edit and send again), the
+   * restored files and the kept ones; undefined when that point is gone (the task was compacted
+   * or reopened since).
    */
-  async rewind(id: string): Promise<{ text: string; restored: string[] } | undefined> {
+  async rewind(id: string): Promise<{ text: string; restored: string[]; kept: string[] } | undefined> {
     if (this.abort) throw new Error('Stop the agent before going back.');
     const index = this.rewindPoints.findIndex((p) => p.id === id);
     if (index === -1) return undefined;
     const point = this.rewindPoints[index];
-    const restored = await this.changes.rewindTo(point.epoch);
+    const { restored, kept } = await this.changes.rewindTo(point.epoch);
     // An ACP agent's conversation cannot be cut back: the next request starts a fresh session with a brief.
     if (this.acp) this.acp.stale = true;
     this.rewindPoints = this.rewindPoints.slice(0, index);
@@ -1131,7 +1132,21 @@ export class Orchestrator {
     this.supervisor?.reset();
     this.emit({ type: 'rewound', id });
     this.emit({ type: 'plan', plan: this.plan });
-    return { text: point.text, restored };
+    return { text: point.text, restored, kept };
+  }
+
+  /** What going back to before a user message would restore and keep, without changing anything. */
+  async rewindPreview(id: string): Promise<{ restore: string[]; keep: string[] } | undefined> {
+    const point = this.rewindPoints.find((p) => p.id === id);
+    return point ? this.changes.rewindPreview(point.epoch) : undefined;
+  }
+
+  /**
+   * The user put a file that may hold secrets into the context by hand (an editor selection): from
+   * then on web access always asks, as after the agent read it.
+   */
+  noteSecretContext(relPath: string): void {
+    this.secretFile ??= relPath;
   }
 
   /** Compact the conversation now (e.g. the user's /compact). */

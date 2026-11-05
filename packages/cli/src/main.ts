@@ -549,7 +549,10 @@ async function slash(line: string, session: Session, rl: readline.Interface | un
       const answer = (await question(rl, `${s.yellow('?')} ${t('Revert {n} changed file(s)?', { n: files.length })} (y/n) `)).trim().toLowerCase();
       if (answer !== 'y' && answer !== 'yes' && answer !== 'e' && answer !== 'evet') return 'handled';
       const reverted = await session.orchestrator.changes.revertAll();
-      out(s.green(`${t('Reverted')}: ${reverted.join(', ')}`));
+      // Files the user edited by hand after the agent (in the desktop editor) are left alone.
+      const skipped = session.orchestrator.changes.skippedUserEdited();
+      if (reverted.length || !skipped.length) out(s.green(`${t('Reverted')}: ${reverted.join(', ')}`));
+      if (skipped.length) out(s.yellow(t('Kept {n} file(s) you edited: {files}.', { n: skipped.length, files: skipped.join(', ') })));
       return 'handled';
     }
     case 'rewind':
@@ -576,6 +579,7 @@ async function slash(line: string, session: Session, rl: readline.Interface | un
       const result = await session.orchestrator.rewind(target.id);
       if (!result) return 'handled';
       out(s.green(result.restored.length ? `${t('Restored')}: ${result.restored.join(', ')}` : t('Went back.')));
+      if (result.kept.length) out(s.yellow(t('Kept {n} file(s) you edited: {files}.', { n: result.kept.length, files: result.kept.join(', ') })));
       // The message comes back at the prompt, to edit and send again.
       return { prefill: result.text };
     }

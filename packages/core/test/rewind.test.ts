@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import { ChangeTracker } from '../src/changes/ChangeTracker';
 import { NodeHost } from '../src/host/NodeHost';
 import { Orchestrator, type OrchestratorSettings } from '../src/orchestrator/Orchestrator';
 import { PermissionManager } from '../src/permissions/PermissionManager';
@@ -93,5 +94,123 @@ describe('Rewind', () => {
     orchestrator.reset();
     assert.deepEqual(orchestrator.rewindTargets, []);
     assert.equal(await orchestrator.rewind(first.id), undefined);
+  });
+});
+
+describe('Rewind keeps files the user edited by hand', () => {
+  let ws: ReturnType<typeof tempWorkspace>;
+  let host: NodeHost;
+  let changes: ChangeTracker;
+  const file = () => path.join(ws.root, 'a.txt');
+  const read = () => readFileSync(file(), 'utf8');
+  /** The agent changes the file (the tracker records it first). */
+  const agentWrites = async (content: string) => {
+    await changes.recordBefore(file());
+    writeFileSync(file(), content);
+  };
+  /** The user saves the file in the editor. */
+  const userSaves = (content: string, at = file()) => {
+    const before = read();
+    writeFileSync(file(), content);
+    changes.noteUserEdit(at, before, content);
+  };
+  beforeEach(() => {
+    ws = tempWorkspace();
+    writeFileSync(file(), 'a0\n');
+    host = new NodeHost({ workspaceRoot: ws.root, approve: async () => ({ approved: true }) });
+    changes = new ChangeTracker(host);
+  });
+  afterEach(() => ws.cleanup());
+
+  it('keeps a file the user saved after the capture it would go back to', async () => {
+    changes.startEpoch();
+    await agentWrites('agent\n');
+    userSaves('mine\n');
+    assert.deepEqual(await changes.rewindPreview(0), { restore: [], keep: ['a.txt'] });
+    assert.deepEqual(await changes.rewindTo(0), { restored: [], kept: ['a.txt'] });
+    assert.equal(read(), 'mine\n');
+  });
+
+  it("restores a capture taken after the user's save: it holds the user's content", async () => {
+    changes.startEpoch();
+    await agentWrites('agent\n');
+    changes.startEpoch();
+    userSaves('mine\n');
+    changes.startEpoch();
+    await agentWrites('agent again\n');
+    assert.deepEqual(await changes.rewindTo(2), { restored: ['a.txt'], kept: [] });
+    assert.equal(read(), 'mine\n');
+    // Going further back would undo the save: kept.
+    await agentWrites('agent once more\n');
+    assert.deepEqual(await changes.rewindTo(0), { restored: [], kept: ['a.txt'] });
+    assert.equal(read(), 'agent once more\n');
+  });
+
+  it('a new rewind point after going back is captured after the save', async () => {
+    changes.startEpoch();
+    changes.startEpoch();
+    await agentWrites('agent\n');
+    userSaves('mine\n');
+    // Epoch 1 is dropped; the next request reuses its number and captures the user's content.
+    assert.deepEqual(await changes.rewindTo(1), { restored: [], kept: ['a.txt'] });
+    changes.startEpoch();
+    await agentWrites('agent again\n');
+    assert.deepEqual(await changes.rewindTo(1), { restored: ['a.txt'], kept: [] });
+    assert.equal(read(), 'mine\n');
+  });
+
+  it('protects a kept change: saved after Keep All, or saved before it', async () => {
+    changes.startEpoch();
+    await agentWrites('agent\n');
+    changes.acceptAll();
+    userSaves('mine\n');
+    assert.equal(changes.isUserEdited(file()), false, 'nothing to revert, so no Revert guard');
+    assert.deepEqual(await changes.rewindTo(0), { restored: [], kept: ['a.txt'] });
+    assert.equal(read(), 'mine\n');
+
+    changes.startEpoch();
+    await agentWrites('agent 2\n');
+    userSaves('mine 2\n');
+    changes.acceptAll();
+    assert.deepEqual(await changes.rewindPreview(0), { restore: [], keep: ['a.txt'] });
+    assert.deepEqual(await changes.rewindTo(0), { restored: [], kept: ['a.txt'] });
+    assert.equal(read(), 'mine 2\n');
+  });
+
+  it('after Compact, a save is followed by new rewind points that capture it', async () => {
+    changes.startEpoch();
+    await agentWrites('agent\n');
+    userSaves('mine\n');
+    changes.clearEpochs();
+    assert.equal(changes.isUserEdited(file()), true, 'Revert still leaves the file alone');
+    changes.startEpoch();
+    await agentWrites('agent again\n');
+    assert.deepEqual(await changes.rewindTo(0), { restored: ['a.txt'], kept: [] });
+    assert.equal(read(), 'mine\n');
+  });
+
+  it('matches a path that differs only in case (Windows)', async (t) => {
+    if (process.platform !== 'win32') return t.skip('paths are case-sensitive here');
+    changes.startEpoch();
+    await agentWrites('agent\n');
+    userSaves('mine\n', path.join(ws.root, 'A.TXT'));
+    assert.equal(changes.isUserEdited(file()), true);
+    assert.deepEqual(await changes.rewindTo(0), { restored: [], kept: ['a.txt'] });
+    assert.equal(read(), 'mine\n');
+  });
+
+  it('the orchestrator reports kept files, and previews them before going back', async () => {
+    const provider = new ScriptedProvider([() => [call('edit_file', { path: 'a.txt', old_string: 'a0', new_string: 'a1' })], () => [text('a is a1.')]]);
+    const orchestrator = new Orchestrator({ host, getProvider: () => provider, permissions: new PermissionManager('autonomous'), getSettings: () => SETTINGS });
+    await orchestrator.run('make it a1');
+    const before = read();
+    writeFileSync(file(), 'mine\n');
+    orchestrator.changes.noteUserEdit(file(), before, 'mine\n');
+    const [first] = orchestrator.rewindTargets;
+    assert.deepEqual(await orchestrator.rewindPreview(first.id), { restore: [], keep: ['a.txt'] });
+    const result = await orchestrator.rewind(first.id);
+    assert.deepEqual([result?.restored, result?.kept], [[], ['a.txt']]);
+    assert.equal(read(), 'mine\n');
+    assert.equal(await orchestrator.rewindPreview(first.id), undefined);
   });
 });

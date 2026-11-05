@@ -743,6 +743,7 @@ export const TR: Record<string, string> = {
   'Go back to before "{text}"? Later messages are removed and the files the agents changed since are restored.':
     "\"{text}\" öncesine dönülsün mü? Sonraki mesajlar silinir ve agent'ların o zamandan beri değiştirdiği dosyalar geri yüklenir.",
   Restored: 'Geri yüklendi',
+  'Kept {n} file(s) you edited: {files}.': 'Düzenlediğiniz {n} dosya korundu: {files}.',
   'Went back.': 'Geri dönüldü.',
   'Summarize the conversation to save tokens': 'Token tasarrufu için konuşmayı özetle',
   'Show or change the permission mode': 'İzin modunu göster ya da değiştir',
