@@ -100,6 +100,26 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
     assert.match(log[1].text, /conversation so far[\s\S]*<assistant_turn>\nAn answer from another model\.\n<\/assistant_turn>[\s\S]*Latest message:\n\nand now\?$/);
   });
 
+  it("runs a profile's CLI with CLAUDE_CONFIG_DIR set to its folder, and the default one with the environment as it is", async () => {
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    try {
+      const messages: ChatMessage[] = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
+      setup(['Default profile.']);
+      await provider.chat({ system: 'SYS', messages, tools }, () => {});
+      provider.dispose();
+      const dir = path.join(ws.root, 'claude-work');
+      provider = new ClaudeCodeProvider({ executable: process.execPath, executableArgs: [FAKE_CLI], configDir: dir });
+      await provider.chat({ system: 'SYS', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], tools }, () => {});
+      assert.deepEqual(
+        received().map((r) => (r as unknown as { configDir: string | null }).configDir),
+        [null, dir],
+      );
+    } finally {
+      if (saved !== undefined) process.env.CLAUDE_CONFIG_DIR = saved;
+    }
+  });
+
   it('asks the model to rewrite a tool call it could not parse, once', async () => {
     setup([
       'Checking the file.\n<function_calls>\n<invoke name=read_file>\n<parameter name=path>src/a.ts</parameter>\n</invoke>\n</function_calls>',

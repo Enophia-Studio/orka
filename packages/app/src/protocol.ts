@@ -61,6 +61,26 @@ export interface AgentCliView {
   preview: boolean;
 }
 
+/**
+ * One CLI account as its own status command reports it (Settings > Accounts): one row per CLI,
+ * and per Claude Code profile. Kept in memory only.
+ */
+export interface AccountView {
+  /** "claude-code" or a catalog agent id. */
+  cli: string;
+  label: string;
+  /** Claude Code: the profile ('' id = the default, no CLAUDE_CONFIG_DIR). */
+  profile?: { id: string; name: string; dir: string; chosen: boolean };
+  status: { state: 'unknown' | 'checking' | 'signed_in' | 'signed_out' | 'not_installed'; label?: string; hint?: string };
+  /** The vendor's sign-in and sign-out as the user would type them ('' = opens the CLI itself). */
+  loginCommand: string;
+  logoutCommand?: string;
+  /** No sign-out command: what to do inside the CLI instead. */
+  logoutHint?: string;
+  /** Orka can install it from its recipes (after the user's consent). */
+  installable: boolean;
+}
+
 export interface AgentView {
   /** "main", "supervisor" or a sub-agent name. */
   name: string;
@@ -163,6 +183,8 @@ export interface ConfigView {
   app: AppVersionView;
   /** Coding agents Orka can drive as the main agent, and which are turned on. */
   agentClis: AgentCliView[];
+  /** Each CLI's account, as last reported by its own status command. */
+  accounts: AccountView[];
   /** Why some well-known agents are not offered (shown under the list). */
   agentClisLeftOut: Array<{ id: string; reason: string }>;
   /** Desktop only: the window's layout and color theme, and how many sessions may run at once (sessions.maxRunning). */
@@ -520,6 +542,19 @@ export type FromWebview =
   | { type: 'installCli'; id: string }
   /** Look again whether a CLI being installed is there now (no close signal on macOS). */
   | { type: 'checkInstall'; id: string }
+  /**
+   * Accounts: ask each CLI's own status command (all, or one CLI and Claude Code profile), or open
+   * the vendor's sign-in or sign-out in a terminal. `cli` is "claude-code" or a catalog agent id;
+   * `profile` a Claude Code profile id ('' or none = the default).
+   */
+  | { type: 'checkAccounts' }
+  | { type: 'checkAccount'; cli: string; profile?: string }
+  | { type: 'loginAccount'; cli: string; profile?: string }
+  | { type: 'logoutAccount'; cli: string; profile?: string }
+  /** Claude Code profiles (CLAUDE_CONFIG_DIR): add one (asks for a name when none is given), remove one, or pick the one Claude Code runs on ('' = default). */
+  | { type: 'addClaudeProfile'; name?: string }
+  | { type: 'removeClaudeProfile'; id: string }
+  | { type: 'setClaudeProfile'; id: string }
   /** Open an agent's documentation or terms (the URLs come from Orka's catalog, never from the page). */
   | { type: 'openAgentLink'; id: string; link: 'docs' | 'terms' | 'faq' }
   /** Continue the task in an external agent; text: what the user typed but did not send. */

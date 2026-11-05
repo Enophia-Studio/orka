@@ -23,7 +23,7 @@ process.stdin.on('data', (chunk) => {
 
 function handle(message) {
   const text = message.message.content;
-  if (log) appendFileSync(log, `${JSON.stringify({ pid: process.pid, turn, text, argv })}\n`);
+  if (log) appendFileSync(log, `${JSON.stringify({ pid: process.pid, turn, text, argv, configDir: process.env.CLAUDE_CONFIG_DIR ?? null })}\n`);
   const reply = replies[turn++] ?? 'no more scripted replies';
   out({ type: 'system', subtype: 'init', model: 'claude-fake-1', tools: [] });
   if (reply.startsWith('__ERROR__:')) {

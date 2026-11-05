@@ -2,7 +2,7 @@ export * from './types';
 export * from './providers';
 export * from './host/Host';
 export { NodeHost, type NodeHostOptions, shellEnv } from './host/NodeHost';
-export { BackgroundProcess } from './host/processes';
+export { BackgroundProcess, killTree } from './host/processes';
 export { browserFor, closeBrowser, findBrowser, HeadlessBrowser } from './browser/HeadlessBrowser';
 export * from './permissions/PermissionManager';
 export { classifyCommand, type CommandClassification, type CommandContext } from './permissions/commandRisk';

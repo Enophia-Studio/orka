@@ -55,10 +55,11 @@ import {
   VERSION,
 } from '@orka/core';
 import { execFile } from 'node:child_process';
-import { existsSync, promises as fs } from 'node:fs';
+import { existsSync, mkdirSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import type {
+  AccountView,
   AgentCliView,
   AgentView,
   AppVersionView,
@@ -95,6 +96,18 @@ import {
   SHELL_CHOICES,
   WEBVIEW_SETTINGS,
 } from './settings';
+import {
+  ACCOUNT_CLIS,
+  ACCOUNT_COMMANDS,
+  type AccountCli,
+  type AccountStatus,
+  copilotTokenVariable,
+  isAccountCli,
+  parseStatus,
+  type ProbeRunner,
+  profileId,
+  runProbe,
+} from './accounts';
 import { type InstallRecipe, installRecipe, nodeIsRecent, nodeVersion } from './install';
 import { RunGate } from './runGate';
 import { dropNotices, samePath, type SessionContext, SessionController } from './SessionController';
@@ -140,6 +153,8 @@ export const USER_SKILLS_DIR = path.join(homedir(), '.orka', 'skills');
 export interface AppControllerOptions {
   /** Tests: Radar's network, clock, timers and feeds. */
   radar?: RadarHooks;
+  /** Tests: what runs a CLI's account status command. */
+  probe?: ProbeRunner;
 }
 
 /**
@@ -189,11 +204,18 @@ export class AppController implements Disposable {
   private readonly droppedMainNoted = new Set<string>();
   /** The desktop app's Radar (VS Code and the CLI have none). */
   private readonly radar?: RadarController;
+  /**
+   * What each CLI's own status command last said, by "<cli>" or "claude-code:<profile>": in memory
+   * only, asked when the settings ask and after a sign-in terminal closes, never on a timer.
+   */
+  private readonly accountStatus = new Map<string, AccountStatus>();
+  private readonly probe: ProbeRunner;
 
   constructor(
     private readonly shell: AppShell,
     options: AppControllerOptions = {},
   ) {
+    this.probe = options.probe ?? runProbe;
     this.settings = readSettings(shell.settings);
     this.sessionContext = this.createSessionContext();
     this.applyLocale();
@@ -348,6 +370,27 @@ export class AppController implements Disposable {
         break;
       case 'checkInstall':
         await this.checkInstalled(message.id);
+        break;
+      case 'checkAccounts':
+        await this.checkAccounts();
+        break;
+      case 'checkAccount':
+        await this.checkAccount(message.cli, message.profile);
+        break;
+      case 'loginAccount':
+        this.loginAccount(message.cli, message.profile);
+        break;
+      case 'logoutAccount':
+        await this.logoutAccount(message.cli, message.profile);
+        break;
+      case 'addClaudeProfile':
+        await this.addClaudeProfile(message.name);
+        break;
+      case 'removeClaudeProfile':
+        await this.removeClaudeProfile(message.id);
+        break;
+      case 'setClaudeProfile':
+        await this.setClaudeProfile(message.id);
         break;
       case 'openAgentLink': {
         const entry = this.agentEntry(message.id);
@@ -547,6 +590,8 @@ export class AppController implements Disposable {
         if (this.providersStale && !this.anyRunning()) this.disposeProviders();
       },
       gate: this.gate,
+      runAccounts: () => this.runAccounts(),
+      accountLabel: (account) => this.accountLabel(account),
     };
   }
 
@@ -1442,7 +1487,7 @@ export class AppController implements Disposable {
         return { kind: 'gemini', apiKey: key(), model, thinkingLevel: s.gemini.thinkingLevel };
       case 'claude-code':
         if (!s.claudeCode.enabled) throw new Error(t('Claude Code is turned off. Turn it on in Settings > Providers.'));
-        return { kind: 'claude-code', model, effort: s.claudeCode.effort, executable: s.claudeCode.path };
+        return { kind: 'claude-code', model, effort: s.claudeCode.effort, executable: s.claudeCode.path, configDir: this.claudeConfigDir() };
       default:
         throw new Error(`Unknown provider "${ref}".`);
     }
@@ -1762,9 +1807,12 @@ export class AppController implements Disposable {
       this.postConfig();
       return;
     }
+    // The chosen profile's account (CLAUDE_CONFIG_DIR), as the runs will use it.
+    const configDir = this.claudeConfigDir();
+    const env = configDir ? { ...process.env, CLAUDE_CONFIG_DIR: configDir } : undefined;
     const run = (args: string[]) =>
       new Promise<string>((resolve, reject) =>
-        execFile(executable, args, { timeout: 20_000, windowsHide: true }, (error, stdout) => (error && !stdout ? reject(error) : resolve(stdout))),
+        execFile(executable, args, { timeout: 20_000, windowsHide: true, env }, (error, stdout) => (error && !stdout ? reject(error) : resolve(stdout))),
       );
     try {
       const version = (await run(['--version'])).trim().split(/\s/)[0];
@@ -2155,6 +2203,260 @@ export class AppController implements Disposable {
       .show();
   }
 
+  // ---------------------------------------------------------------- accounts
+
+  /** The program a CLI's account commands run: Claude Code's executable, or the agent's sign-in program (Codex: the Codex CLI). */
+  private accountProgram(cli: AccountCli): string | undefined {
+    if (cli === 'claude-code') return resolveClaudeExecutable(this.settings.claudeCode.path) || undefined;
+    const entry = this.agentEntry(cli);
+    return entry ? agentLogin(entry, this.settings.agentClis.paths[cli])?.file : undefined;
+  }
+
+  /**
+   * The extra environment for a CLI's account commands: a Claude Code profile's CLAUDE_CONFIG_DIR
+   * ('' = the default profile, no variable). Undefined for a profile that does not exist, or a
+   * profile asked of another CLI.
+   */
+  private accountEnv(cli: AccountCli, profile = ''): Record<string, string> | undefined {
+    if (!profile) return {};
+    if (cli !== 'claude-code') return undefined;
+    const found = this.settings.accounts.claudeProfiles.find((p) => p.id === profile);
+    return found ? { CLAUDE_CONFIG_DIR: found.dir } : undefined;
+  }
+
+  /** The folder Claude Code runs on now: the chosen profile's, or undefined for the default one. */
+  private claudeConfigDir(): string | undefined {
+    const { claudeProfiles, claudeProfile } = this.settings.accounts;
+    return claudeProfiles.find((p) => p.id === claudeProfile)?.dir;
+  }
+
+  private accountKey(cli: AccountCli, profile = ''): string {
+    return cli === 'claude-code' ? `claude-code:${profile}` : cli;
+  }
+
+  /** The accounts a run would use now, for the gate: Claude Code's chosen profile when any role runs on Claude Code. */
+  private runAccounts(): string[] {
+    const roles = ['main', 'supervisor', 'fallback', 'light', ...Object.keys(this.settings.subagents.agents)];
+    return roles.some((name) => this.resolveAgent(name).provider === 'claude-code') ? [`claude-code:${this.settings.accounts.claudeProfile}`] : [];
+  }
+
+  /** "Claude Code (Work)" for "claude-code:work"; "Claude Code (Default profile)" for "claude-code:". */
+  private accountLabel(account: string): string {
+    const colon = account.indexOf(':');
+    const cli = colon < 0 ? account : account.slice(0, colon);
+    const profile = colon < 0 ? '' : account.slice(colon + 1);
+    const label = cli === 'claude-code' ? 'Claude Code' : (this.agentEntry(cli)?.label ?? cli);
+    if (cli !== 'claude-code') return label;
+    const name = profile ? (this.settings.accounts.claudeProfiles.find((p) => p.id === profile)?.name ?? profile) : t('Default profile');
+    return `${label} (${name})`;
+  }
+
+  /** Ask every CLI's own status command (and each Claude Code profile's) at once. */
+  private async checkAccounts(): Promise<void> {
+    const targets: Array<[AccountCli, string]> = ACCOUNT_CLIS.map((cli) => [cli, '']);
+    for (const p of this.settings.accounts.claudeProfiles) targets.push(['claude-code', p.id]);
+    for (const [cli, profile] of targets) this.accountStatus.set(this.accountKey(cli, profile), { state: 'checking' });
+    this.postConfig();
+    await Promise.all(targets.map(([cli, profile]) => this.probeAccount(cli, profile)));
+    this.postConfig();
+  }
+
+  /** Ask one CLI's status command (`cli` and `profile` come from the page: only known ids are used). */
+  private async checkAccount(cli: string, profile?: string): Promise<void> {
+    if (!isAccountCli(cli) || !this.accountEnv(cli, profile)) return;
+    this.accountStatus.set(this.accountKey(cli, profile), { state: 'checking' });
+    this.postConfig();
+    await this.probeAccount(cli, profile);
+    this.postConfig();
+  }
+
+  /**
+   * Run the CLI's own status command and keep what it said (in memory only). A CLI without one
+   * stays "unknown" with what to do instead; Copilot also says when a token variable stands in
+   * for its stored sign-in (the variable's name, never its value).
+   */
+  private async probeAccount(cli: AccountCli, profile = ''): Promise<void> {
+    const key = this.accountKey(cli, profile);
+    const env = this.accountEnv(cli, profile);
+    const file = this.accountProgram(cli);
+    const status = ACCOUNT_COMMANDS[cli].status;
+    if (!env) return;
+    if (!file) {
+      this.accountStatus.set(key, { state: 'not_installed' });
+      return;
+    }
+    if (!status) {
+      const token = cli === 'copilot' ? copilotTokenVariable() : undefined;
+      this.accountStatus.set(key, {
+        state: 'unknown',
+        label: token ? t('{name} is set: Copilot CLI signs in with that token instead.', { name: token }) : undefined,
+        hint:
+          cli === 'copilot'
+            ? t('Copilot CLI has no status command: type /user in it to see the account.')
+            : t('{cli} has no status command: its sign-in is chosen inside the CLI.', { cli: this.accountLabel(cli) }),
+      });
+      return;
+    }
+    const output = await this.probe(file, status, env).catch((error: unknown) => ({
+      code: null,
+      stdout: '',
+      stderr: error instanceof Error ? error.message : String(error),
+    }));
+    this.accountStatus.set(key, parseStatus(cli, output));
+  }
+
+  /**
+   * The vendor's own sign-in, in a terminal the user types into (for a Claude Code profile, with
+   * its CLAUDE_CONFIG_DIR); its status is asked again when the terminal closes. Orka never sees
+   * the password or the token.
+   */
+  private loginAccount(cli: string, profile?: string): void {
+    if (!isAccountCli(cli)) return;
+    this.runAccountCommand(cli, profile, ACCOUNT_COMMANDS[cli].login, t('{account}: sign in', { account: this.accountLabel(this.accountKey(cli, profile)) }));
+  }
+
+  /**
+   * The vendor's own sign-out, after the user confirms. A CLI that signs out only from inside
+   * itself is opened in a terminal, with what to type there.
+   */
+  private async logoutAccount(cli: string, profile?: string): Promise<void> {
+    if (!isAccountCli(cli) || !this.accountEnv(cli, profile)) return;
+    const commands = ACCOUNT_COMMANDS[cli];
+    const account = this.accountLabel(this.accountKey(cli, profile));
+    if (!commands.logout) {
+      this.runAccountCommand(cli, profile, [], t('{account}: sign out', { account }));
+      if (commands.logoutHint) this.publishNotice('info', t(commands.logoutHint));
+      return;
+    }
+    const signOut = t('Sign out');
+    if ((await this.shell.message('warning', t('Sign out of {account}?', { account }), { modal: true }, signOut)) !== signOut) return;
+    this.runAccountCommand(cli, profile, commands.logout, t('{account}: sign out', { account }));
+  }
+
+  /** One of the CLI's own commands, by its full path, in the home folder, in a terminal the user sees. */
+  private runAccountCommand(cli: AccountCli, profile: string | undefined, args: readonly string[], name: string): void {
+    const env = this.accountEnv(cli, profile);
+    if (!env) return;
+    const file = this.accountProgram(cli);
+    if (!file) {
+      const recipe = installRecipe(cli);
+      this.publishNotice(
+        'warning',
+        t('{cli} is not installed. Install it first, then sign in.', { cli: this.accountLabel(cli) }),
+        recipe ? `install:${recipe.id}` : undefined,
+      );
+      return;
+    }
+    if (env.CLAUDE_CONFIG_DIR) mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+    this.shell
+      .runInTerminal({
+        name,
+        cwd: homedir(),
+        command: { file, args: [...args] },
+        env: Object.keys(env).length ? env : undefined,
+        onClose: () => void this.checkAccount(cli, profile),
+      })
+      .show();
+  }
+
+  /**
+   * A Claude Code profile: a name, and a config folder of its own (~/.claude-<id>) that Orka
+   * creates empty; Claude Code keeps that account's sign-in there. Separate accounts are for
+   * separate work, which the dialog says.
+   */
+  private async addClaudeProfile(given?: string): Promise<void> {
+    const taken = new Set(this.settings.accounts.claudeProfiles.map((p) => p.id));
+    const invalid = (v: string) => {
+      const id = profileId(v);
+      if (!id) return t('Enter a name with letters or digits.');
+      if (taken.has(id)) return t('A profile with this name exists.');
+      return undefined;
+    };
+    const notice = t("Separate accounts are for separate work, such as work and personal. Using them to get around a usage limit may break the vendor's terms.");
+    let name = typeof given === 'string' ? given.trim().slice(0, 40) : '';
+    if (name) {
+      const add = t('Add profile');
+      if (invalid(name) || (await this.shell.message('info', t('Add the Claude Code profile "{name}"?', { name }), { modal: true, detail: notice }, add)) !== add) return;
+    } else {
+      name = (await this.shell.input({ title: t('Add a Claude Code profile'), prompt: notice, placeHolder: t('e.g. Work'), validate: invalid }))?.trim().slice(0, 40) ?? '';
+      if (!name || invalid(name)) return;
+    }
+    const id = profileId(name);
+    const dir = path.join(homedir(), `.claude-${id}`);
+    mkdirSync(dir, { recursive: true });
+    await this.updateSetting('accounts.claudeProfiles', [...this.settings.accounts.claudeProfiles, { id, name, dir }], { preferGlobal: true });
+    const signIn = t('Sign in');
+    if ((await this.shell.message('info', t('Profile "{name}" added. Sign in to its account now?', { name }), {}, signIn)) === signIn) this.loginAccount('claude-code', id);
+    else this.postConfig();
+  }
+
+  /**
+   * Forget a Claude Code profile (not while a run uses it). Its folder stays: it holds that
+   * account's sign-in, which only Claude Code touches.
+   */
+  private async removeClaudeProfile(id: string): Promise<void> {
+    const profile = this.settings.accounts.claudeProfiles.find((p) => p.id === id);
+    if (!profile) return;
+    if (this.gate.profileInUse('claude-code') === id) {
+      this.publishNotice('warning', t('A session runs on the profile {name}. Remove it when the run ends.', { name: profile.name }));
+      return;
+    }
+    const remove = t('Remove');
+    const text = t('Remove the profile {name}? Its folder {dir} stays, with its sign-in: sign out first, or delete the folder yourself.', { name: profile.name, dir: profile.dir });
+    if ((await this.shell.message('warning', text, { modal: true }, remove)) !== remove) return;
+    if (this.settings.accounts.claudeProfile === id) await this.updateSetting('accounts.claudeProfile', '', { preferGlobal: true });
+    await this.updateSetting('accounts.claudeProfiles', this.settings.accounts.claudeProfiles.filter((p) => p.id !== id), { preferGlobal: true });
+    this.accountStatus.delete(this.accountKey('claude-code', id));
+    this.postConfig();
+  }
+
+  /**
+   * The profile Claude Code runs on from the next run ('' = the default). Only by the user's
+   * choice: no code path switches it on its own (a usage limit never does).
+   */
+  private async setClaudeProfile(id: string): Promise<void> {
+    if (id && !this.settings.accounts.claudeProfiles.some((p) => p.id === id)) return;
+    if (id === this.settings.accounts.claudeProfile) return;
+    await this.updateSetting('accounts.claudeProfile', id, { preferGlobal: true });
+    const inUse = this.gate.profileInUse('claude-code');
+    if (inUse !== undefined && inUse !== id) {
+      this.publishNotice(
+        'info',
+        t('Running sessions finish on {old}. New runs use {new}; one profile of a CLI runs at a time, so they wait for those runs to end.', {
+          old: this.accountLabel(`claude-code:${inUse}`),
+          new: this.accountLabel(`claude-code:${id}`),
+        }),
+      );
+    }
+    void this.checkClaudeCode();
+  }
+
+  /** Settings > Accounts: one row per CLI, and per Claude Code profile. */
+  private accountsView(): AccountView[] {
+    const { claudeProfiles, claudeProfile } = this.settings.accounts;
+    const row = (cli: AccountCli, profile?: AccountView['profile']): AccountView => {
+      const commands = ACCOUNT_COMMANDS[cli];
+      const entry = cli === 'claude-code' ? undefined : this.agentEntry(cli);
+      const program = cli === 'claude-code' ? 'claude' : entry?.login?.bin ?? entry?.bin ?? cli;
+      const line = (args: readonly string[]) => [program, ...args].join(' ');
+      return {
+        cli,
+        label: cli === 'claude-code' ? 'Claude Code' : (entry?.label ?? cli),
+        profile,
+        status: this.accountStatus.get(this.accountKey(cli, profile?.id)) ?? { state: 'unknown' },
+        loginCommand: line(commands.login),
+        logoutCommand: commands.logout ? line(commands.logout) : undefined,
+        logoutHint: commands.logoutHint ? t(commands.logoutHint) : undefined,
+        installable: !!installRecipe(cli)?.runnable,
+      };
+    };
+    const claude = [
+      row('claude-code', { id: '', name: t('Default profile'), dir: '', chosen: !claudeProfile }),
+      ...claudeProfiles.map((p) => row('claude-code', { ...p, chosen: p.id === claudeProfile })),
+    ];
+    return [...claude, ...ACCOUNT_CLIS.filter((cli) => cli !== 'claude-code' && this.agentEntry(cli)).map((cli) => row(cli))];
+  }
+
   private async pickAgentExecutable(id: string): Promise<void> {
     const entry = this.agentEntry(id);
     if (!entry) return;
@@ -2525,6 +2827,7 @@ export class AppController implements Disposable {
       },
       app: this.appVersionView(),
       agentClis: this.agentClisView(),
+      accounts: this.accountsView(),
       agentClisLeftOut: NOT_IN_CATALOG.map((a) => ({ id: a.id, reason: t(a.reason) })),
       ui: this.shell.kind === 'desktop' ? { layout: s.desktop.layout, theme: s.desktop.theme, maxRunning: s.sessions.maxRunning } : undefined,
     };

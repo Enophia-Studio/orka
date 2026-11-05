@@ -103,9 +103,10 @@ export interface AppShell {
   writeClipboard(text: string): Promise<void>;
   /**
    * Run a command in a terminal the user can type into; onClose when it is closed. `command` is a
-   * line for the user's shell, or a program by its full path that the host quotes itself.
+   * line for the user's shell, or a program by its full path that the host quotes itself. `env`:
+   * variables to set for it on top of the terminal's own (a Claude Code profile's CLAUDE_CONFIG_DIR).
    */
-  runInTerminal(options: { name: string; cwd: string; command: string | TerminalProgram; onClose?: () => void }): TerminalHandle;
+  runInTerminal(options: { name: string; cwd: string; command: string | TerminalProgram; env?: Record<string, string>; onClose?: () => void }): TerminalHandle;
 
   // ---- diffs
   openChangeDiff(absPath: string): Promise<void>;

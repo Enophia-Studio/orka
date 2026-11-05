@@ -13,6 +13,8 @@ import {
   type ProviderKind,
   type SupervisorSettings,
 } from '@orka/core';
+import * as path from 'node:path';
+import { PROFILE_ID } from './accounts';
 
 export interface Disposable {
   dispose(): void;
@@ -140,6 +142,12 @@ export interface AppSettings {
    * user's own settings only: a folder's settings can neither turn it on nor pick its provider.
    */
   radar: { enabled: boolean; provider: ProviderRef | ''; model: string; autoAnalyze: boolean };
+  /**
+   * Claude Code profiles: config folders of their own (CLAUDE_CONFIG_DIR), each signed in to a
+   * separate account, and the one Claude Code runs on ('' = the default, no variable set). From
+   * the user's own settings only: a folder's settings can point Claude Code at no other folder.
+   */
+  accounts: { claudeProfiles: Array<{ id: string; name: string; dir: string }>; claudeProfile: string };
 }
 
 export function isCustomRef(ref: string): ref is `custom:${string}` {
@@ -264,7 +272,23 @@ export function readSettings(c: SettingsStore): AppSettings {
       model: typeof radarModel === 'string' && MODEL_ID.test(radarModel.trim()) ? radarModel.trim() : '',
       autoAnalyze: userOnly('radar.autoAnalyze') === true,
     },
+    accounts: readAccounts(userOnly('accounts.claudeProfiles'), userOnly('accounts.claudeProfile')),
   };
+}
+
+/** Claude Code profiles: an id, a name and an absolute folder each; the chosen one only when it is listed. */
+function readAccounts(rawProfiles: unknown, rawChosen: unknown): AppSettings['accounts'] {
+  const claudeProfiles: AppSettings['accounts']['claudeProfiles'] = [];
+  for (const item of Array.isArray(rawProfiles) ? rawProfiles : []) {
+    if (!item || typeof item !== 'object') continue;
+    const p = item as Record<string, unknown>;
+    if (typeof p.id !== 'string' || !PROFILE_ID.test(p.id) || claudeProfiles.some((o) => o.id === p.id)) continue;
+    if (typeof p.dir !== 'string' || !path.isAbsolute(p.dir.trim())) continue;
+    const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim().slice(0, 40) : p.id;
+    claudeProfiles.push({ id: p.id, name, dir: p.dir.trim() });
+  }
+  const claudeProfile = typeof rawChosen === 'string' && claudeProfiles.some((p) => p.id === rawChosen) ? rawChosen : '';
+  return { claudeProfiles, claudeProfile };
 }
 
 /** MCP server entries: a command (stdio) or a url (Streamable HTTP); anything malformed is skipped. */
@@ -414,6 +438,8 @@ export const MACHINE_SETTINGS = new Set([
   'claudeCode.path',
   'agentClis.paths',
   'agentClis.custom',
+  'accounts.claudeProfiles',
+  'accounts.claudeProfile',
   'browser.path',
   'mcpServers',
   'customProviders',

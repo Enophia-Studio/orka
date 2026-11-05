@@ -84,6 +84,23 @@ describe('RunGate', () => {
     assert.ok(gate.acquire('b', app).ok);
   });
 
+  it('runs one profile of a CLI at a time, and any number of runs on the same profile', () => {
+    const gate = new RunGate(() => 5);
+    const work = gate.acquire('a', dir('a'), ['claude-code:work']);
+    assert.ok(work.ok);
+    assert.equal(gate.profileInUse('claude-code'), 'work');
+    assert.equal(gate.profileInUse('codex'), undefined);
+    const other = gate.acquire('b', dir('b'), ['claude-code:']);
+    assert.deepEqual(other.ok ? undefined : [other.reason, (other as { account?: string }).account], ['account', 'claude-code:work']);
+    assert.ok(gate.acquire('c', dir('c'), ['claude-code:work']).ok, 'the same profile runs side by side');
+    assert.ok(gate.acquire('d', dir('d'), ['codex']).ok, 'another CLI is not held up');
+    assert.ok(gate.acquire('e', dir('e')).ok, 'a run on no CLI account is not held up');
+    gate.releaseAll('a');
+    gate.releaseAll('c');
+    assert.ok(gate.acquire('b', dir('b'), ['claude-code:']).ok, 'free once the other profile ends');
+    assert.equal(gate.profileInUse('claude-code'), '');
+  });
+
   it("lets go of everything of a session that goes away", () => {
     const gate = new RunGate(() => 1);
     const app = dir('app');

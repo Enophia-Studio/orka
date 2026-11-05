@@ -188,9 +188,12 @@ export class VSCodeShell implements AppShell, vscode.Disposable {
     await vscode.env.clipboard.writeText(text);
   }
 
-  runInTerminal(options: { name: string; cwd: string; command: string | TerminalProgram; onClose?: () => void }): TerminalHandle {
+  runInTerminal(options: { name: string; cwd: string; command: string | TerminalProgram; env?: Record<string, string>; onClose?: () => void }): TerminalHandle {
     const { command } = options;
-    const terminal = vscode.window.createTerminal({ name: options.name, cwd: options.cwd, iconPath: new vscode.ThemeIcon('rocket'), ...editorTerminal(command) });
+    const shell = editorTerminal(command);
+    // Extra variables (a Claude Code profile's folder) on top of what the terminal has.
+    if (options.env) shell.env = { ...shell.env, ...options.env };
+    const terminal = vscode.window.createTerminal({ name: options.name, cwd: options.cwd, iconPath: new vscode.ThemeIcon('rocket'), ...shell });
     if (options.onClose) this.terminalClosers.set(terminal, options.onClose);
     if (typeof command === 'string') terminal.sendText(command);
     return { show: () => terminal.show() };

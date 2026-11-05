@@ -37,6 +37,12 @@ export interface ClaudeCodeProviderOptions {
   executableArgs?: string[];
   /** Kill a conversation's CLI process after this long without use. */
   idleTimeoutMs?: number;
+  /**
+   * A profile's config folder (CLAUDE_CONFIG_DIR, which Claude Code documents for separate
+   * accounts). Unset: the CLI's own default, as the environment has it. Only the folder's path is
+   * passed; Orka never reads what the CLI keeps there.
+   */
+  configDir?: string;
 }
 
 const PROVIDER_ID = 'claude-code';
@@ -184,7 +190,13 @@ export class ClaudeCodeProvider implements AIProvider {
     ];
     if (this.model !== 'default') flags.push('--model', this.model);
     if (this.options.effort) flags.push('--effort', this.options.effort);
-    return { executable, prefixArgs: this.options.executableArgs ?? [], flags, idleTimeoutMs: this.options.idleTimeoutMs ?? 15 * 60_000 };
+    return {
+      executable,
+      prefixArgs: this.options.executableArgs ?? [],
+      flags,
+      idleTimeoutMs: this.options.idleTimeoutMs ?? 15 * 60_000,
+      configDir: this.options.configDir,
+    };
   }
 
   private evict(keep: object): void {
@@ -202,6 +214,7 @@ interface SpawnSpec {
   prefixArgs: string[];
   flags: string[];
   idleTimeoutMs: number;
+  configDir?: string;
 }
 
 type CliStreamEvent = { type: 'text'; text: string } | { type: 'thinking'; text: string };
@@ -251,6 +264,8 @@ class CliSession {
     // Use the CLI's own login (subscription or configured auth), not a key meant for the API provider.
     delete env.ANTHROPIC_API_KEY;
     delete env.ELECTRON_RUN_AS_NODE;
+    // A profile: the CLI keeps that account's sign-in and settings in this folder.
+    if (spec.configDir) env.CLAUDE_CONFIG_DIR = spec.configDir;
     this.child = spawn(spec.executable, [...spec.prefixArgs, ...spec.flags, '--system-prompt-file', systemFile], {
       cwd: this.dir,
       env,

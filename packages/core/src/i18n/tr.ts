@@ -913,6 +913,37 @@ export const TR: Record<string, string> = {
     'Görebileceğiniz bir terminalde, yönetici hakları olmadan çalışır. Orka sizin yerinize giriş yapmaz.',
   'Install…': 'Kur…',
   'Check again': 'Yeniden kontrol et',
+  // Accounts (each CLI's own status, sign-in and sign-out commands; Claude Code profiles)
+  'Default profile': 'Varsayılan Profile',
+  'The status command did not answer within {n} seconds.': 'Durum komutu {n} saniye içinde yanıt vermedi.',
+  '{name} is set: Copilot CLI signs in with that token instead.': '{name} tanımlı: Copilot CLI bunun yerine o Token ile giriş yapar.',
+  'Copilot CLI has no status command: type /user in it to see the account.': "Copilot CLI'ın durum komutu yok: hesabı görmek için içinde /user yazın.",
+  '{cli} has no status command: its sign-in is chosen inside the CLI.': "{cli} için durum komutu yok: giriş yöntemi CLI'ın içinde seçilir.",
+  'Type /logout in Copilot CLI to sign out; /user shows the account.': "Çıkış için Copilot CLI'da /logout yazın; /user hesabı gösterir.",
+  'Sign out inside agy (see its docs).': "agy'nin içinden çıkış yapın (belgelerine bakın).",
+  'Sign out inside Gemini CLI (see its docs).': "Gemini CLI'ın içinden çıkış yapın (belgelerine bakın).",
+  '{account}: sign in': '{account}: giriş',
+  '{account}: sign out': '{account}: çıkış',
+  'Sign in': 'Giriş yap',
+  'Sign out': 'Çıkış yap',
+  'Sign out of {account}?': '{account} hesabından çıkış yapılsın mı?',
+  '{cli} is not installed. Install it first, then sign in.': '{cli} kurulu değil. Önce kurun, sonra giriş yapın.',
+  'Enter a name with letters or digits.': 'Harf veya rakam içeren bir ad girin.',
+  'A profile with this name exists.': 'Bu adda bir Profile zaten var.',
+  "Separate accounts are for separate work, such as work and personal. Using them to get around a usage limit may break the vendor's terms.":
+    'Ayrı hesaplar iş ve kişisel gibi ayrı işler içindir. Bunları bir kullanım limitini aşmak için kullanmak sağlayıcının koşullarını ihlal edebilir.',
+  'Add profile': 'Profile ekle',
+  'Add the Claude Code profile "{name}"?': '"{name}" Claude Code Profile\'ı eklensin mi?',
+  'Add a Claude Code profile': 'Claude Code Profile ekle',
+  'e.g. Work': 'örn. İş',
+  'Profile "{name}" added. Sign in to its account now?': '"{name}" Profile\'ı eklendi. Hesabına şimdi giriş yapılsın mı?',
+  'A session runs on the profile {name}. Remove it when the run ends.': '{name} Profile\'ında çalışan bir oturum var. Çalışma bitince kaldırın.',
+  'Remove the profile {name}? Its folder {dir} stays, with its sign-in: sign out first, or delete the folder yourself.':
+    '{name} Profile\'ı kaldırılsın mı? {dir} klasörü girişiyle birlikte kalır: önce çıkış yapın ya da klasörü kendiniz silin.',
+  'Running sessions finish on {old}. New runs use {new}; one profile of a CLI runs at a time, so they wait for those runs to end.':
+    "Çalışan oturumlar {old} ile biter. Yeni çalışmalar {new} kullanır; bir CLI'ın aynı anda tek Profile'ı çalışır, bu yüzden o çalışmaların bitmesini beklerler.",
+  'Another session runs {account}. Orka runs one profile of a CLI at a time: wait for it to finish or stop it, or switch back to that profile.':
+    "Başka bir oturum {account} ile çalışıyor. Orka bir CLI'ın aynı anda tek Profile'ını çalıştırır: bitmesini bekleyin, durdurun ya da o Profile'a geri dönün.",
   'cmd.exe cannot run {part} safely. Run this in a terminal yourself: {command}':
     'cmd.exe {part} öğesini güvenle çalıştıramıyor. Şunu bir terminalde kendiniz çalıştırın: {command}',
   'Choose the {agent} program': '{agent} programını seçin',

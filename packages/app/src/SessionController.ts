@@ -103,8 +103,12 @@ export interface SessionContext {
   userSaved(session: SessionController, real: string, before: string, after: string): void;
   /** A run of this session ended (providers waiting for an idle moment are rebuilt). */
   runFinished(session: SessionController): void;
-  /** Which sessions may run at once (the process budget and the folder lock). */
+  /** Which sessions may run at once (the process budget, the folder lock and one profile per CLI). */
   readonly gate: RunGate;
+  /** The CLI account profiles a run would use now ("claude-code:<profile>"), for the gate. */
+  runAccounts(): string[];
+  /** "Claude Code (Work)" for "claude-code:work", for notices. */
+  accountLabel(account: string): string;
 }
 
 /**
@@ -527,20 +531,24 @@ export class SessionController {
    * sessions run or another one works in an overlapping folder (the session says so).
    */
   private startRun(): (() => void) | undefined {
-    const gate = this.ctx.gate.acquire(this.id, this.root);
+    const gate = this.ctx.gate.acquire(this.id, this.root, this.ctx.runAccounts());
     if (gate.ok) return gate.release;
     this.publishNotice(
       'warning',
-      gate.reason === 'budget'
-        ? tn(
-            '{n} session is already running (the limit is {max}, in Settings > Control). Wait for it to finish or stop it.',
-            '{n} sessions are already running (the limit is {max}, in Settings > Control). Wait for one to finish or stop one.',
-            gate.running,
-            { max: gate.max },
-          )
-        : t('Another session is working in {folder}, which overlaps this folder. Orka runs one session at a time there.', {
-            folder: path.basename(gate.holder) || gate.holder,
-          }),
+      gate.reason === 'account'
+        ? t('Another session runs {account}. Orka runs one profile of a CLI at a time: wait for it to finish or stop it, or switch back to that profile.', {
+            account: this.ctx.accountLabel(gate.account),
+          })
+        : gate.reason === 'budget'
+          ? tn(
+              '{n} session is already running (the limit is {max}, in Settings > Control). Wait for it to finish or stop it.',
+              '{n} sessions are already running (the limit is {max}, in Settings > Control). Wait for one to finish or stop one.',
+              gate.running,
+              { max: gate.max },
+            )
+          : t('Another session is working in {folder}, which overlaps this folder. Orka runs one session at a time there.', {
+              folder: path.basename(gate.holder) || gate.holder,
+            }),
     );
     return undefined;
   }

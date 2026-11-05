@@ -80,12 +80,15 @@ export function openExternal(target: string): Promise<boolean> {
  * window is closed (Windows, Linux). The command is Orka's own (e.g. "freebuff"), never model
  * output; a program (a vendor's sign-in) runs by its full path.
  */
-export function openTerminalWindow(options: { title: string; cwd: string; command: string | TerminalProgram; onClose?: () => void }): void {
+export function openTerminalWindow(options: { title: string; cwd: string; command: string | TerminalProgram; env?: Record<string, string>; onClose?: () => void }): void {
   const { command } = options;
+  // Only plain variable names: the extra variables are Orka's own (a Claude Code profile's folder).
+  const extra = Object.entries(options.env ?? {}).filter(([name]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
   let child: ChildProcess;
   if (process.platform === 'win32') {
     // windowsHide only hides the cmd that runs "start"; the console window it opens is shown.
-    const { file, args, env } = terminalWindow(options.title, command);
+    // The window's cmd.exe, and what it runs, inherit the variables.
+    const { file, args, env } = terminalWindow(options.title, command, { ...process.env, ...Object.fromEntries(extra) });
     child = spawn(file, args, {
       cwd: options.cwd,
       env,
@@ -101,13 +104,19 @@ export function openTerminalWindow(options: { title: string; cwd: string; comman
       return;
     }
     if (process.platform === 'darwin') {
-      const script = `cd ${shQuote(options.cwd)} && ${typeof command === 'string' ? command : shLine(command)}`;
+      // Terminal.app starts the user's own shell, which does not inherit Orka's environment.
+      const exports = extra.map(([name, value]) => `export ${name}=${shQuote(value)} && `).join('');
+      const script = `cd ${shQuote(options.cwd)} && ${exports}${typeof command === 'string' ? command : shLine(command)}`;
       child = spawn(terminal, ['-e', 'on run argv', '-e', 'tell application "Terminal" to do script (item 1 of argv)', '-e', 'end run', script], { stdio: 'ignore' });
       child.once('exit', () => undefined); // Terminal.app keeps the window; there is no close signal.
       return;
     }
     const line = typeof command === 'string' ? command : shLine(command);
-    child = spawn(terminal, ['-e', '/bin/sh', '-c', `${line}; exec "\${SHELL:-sh}"`], { cwd: options.cwd, stdio: 'ignore' });
+    child = spawn(terminal, ['-e', '/bin/sh', '-c', `${line}; exec "\${SHELL:-sh}"`], {
+      cwd: options.cwd,
+      env: { ...process.env, ...Object.fromEntries(extra) },
+      stdio: 'ignore',
+    });
   }
   child.once('error', () => options.onClose?.());
   child.once('exit', () => options.onClose?.());
