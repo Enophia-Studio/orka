@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { AppController } from '../src/AppController';
-import { checkFolderPath, folderNameProblem, folderSegments, MAX_FOLDER_ENTRIES, NodeFolderBrowser } from '../src/folderBrowser';
+import { checkFolderPath, folderNameProblem, folderSegments, MAX_FOLDER_ENTRIES, NodeFolderBrowser, parseDriveList, volumeEntries } from '../src/folderBrowser';
 import type { FolderBrowser } from '../src/shell';
 import { FakeShell } from './fakeShell';
 
@@ -157,6 +157,59 @@ describe('folder picker: listing', () => {
     const root = path.parse(home).root;
     if (process.platform === 'win32') assert.ok(places.some((p) => p.kind === 'drive' && p.path.toLowerCase() === root.toLowerCase()), 'the drive of the temp folder');
     else assert.ok(places.some((p) => p.kind === 'root' && p.path === '/'));
+  });
+
+  it('reads the drive letters from what fsutil prints', () => {
+    assert.deepEqual(parseDriveList('Drives: C:\\ D:\\ z:\\ \r\n'), ['C:\\', 'D:\\', 'Z:\\']);
+    assert.deepEqual(parseDriveList('Laufwerke: C:\\ C:\\ \n'), ['C:\\'], 'a translated label, a letter once');
+    assert.deepEqual(parseDriveList('Access is denied.'), []);
+  });
+
+  it('asks for the drives once while the answer is fresh, with the home drive when there is no answer', { skip: process.platform !== 'win32' && 'Windows drives' }, async () => {
+    let asked = 0;
+    const browser = new NodeFolderBrowser(home, async () => {
+      asked++;
+      return ['C:\\', 'Q:\\'];
+    });
+    await browser.places([]);
+    const places = await browser.places([]);
+    assert.equal(asked, 1);
+    assert.deepEqual(
+      places.filter((p) => p.kind === 'drive').map((p) => [p.name, p.path]),
+      [
+        ['C:', 'C:\\'],
+        ['Q:', 'Q:\\'],
+      ],
+      'listed without a stat (Q: does not exist)',
+    );
+    const none = await new NodeFolderBrowser(home, async () => undefined).places([]);
+    assert.ok(none.some((p) => p.kind === 'drive' && p.path === path.parse(home).root.toUpperCase()));
+  });
+
+  it("leaves the user's own /media folder out of the volumes", () => {
+    const entries = [
+      { name: 'alice', path: '/media/alice' },
+      { name: 'usb', path: '/media/usb' },
+    ];
+    assert.deepEqual(
+      volumeEntries('/media', entries, 'alice').map((e) => e.name),
+      ['usb'],
+    );
+    assert.equal(volumeEntries('/mnt', entries, 'alice').length, 2);
+  });
+
+  it("hides the profiles Windows hides beside the user's folder", { skip: process.platform !== 'win32' && 'Windows folders' }, async () => {
+    const users = path.join(home, 'Users');
+    const me = path.join(users, 'me');
+    for (const name of ['me', 'Default', 'Public']) mkdirSync(path.join(users, name), { recursive: true });
+    linkFolder(path.join(users, 'Default'), path.join(users, 'Default User'));
+    linkFolder(path.join(users, 'Public'), path.join(users, 'All Users'));
+    const browser = new NodeFolderBrowser(me);
+    assert.deepEqual(
+      (await browser.list(users, { hidden: false })).entries.map((e) => e.name),
+      ['me', 'Public'],
+    );
+    assert.equal((await browser.list(users, { hidden: true })).entries.length, 5);
   });
 });
 

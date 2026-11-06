@@ -1,3 +1,5 @@
+import { programPath } from '@orka/core';
+import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -10,6 +12,8 @@ export const MAX_FOLDER_ENTRIES = 2000;
 const MAX_NAME = 255;
 /** How long a drive or place may take to answer before the picker leaves it out (a disconnected network drive). */
 const PLACE_TIMEOUT_MS = 800;
+/** How long the list of Windows drives is reused (a drive plugged in later shows up after this). */
+const DRIVES_FRESH_MS = 10_000;
 
 /** One listing as the controller sends it on (the places are added there). */
 export interface FolderListing {
@@ -41,6 +45,8 @@ const WINDOWS_LEGACY_JUNCTIONS = new Set([
   'my videos',
   'nethood',
   'printhood',
+  'all users',
+  'default user',
   'recent',
   'sendto',
   'start menu',
@@ -69,6 +75,34 @@ export function folderNameProblem(name: unknown): CreateFolderError | undefined 
   return undefined;
 }
 
+/** The drive roots in what `fsutil fsinfo drives` prints ("Drives: C:\ D:\", the label translated). */
+export function parseDriveList(output: string): string[] {
+  const roots = new Set<string>();
+  for (const match of output.matchAll(/(?:^|\s)([A-Za-z]):\\/g)) roots.add(`${match[1].toUpperCase()}:\\`);
+  return [...roots].sort();
+}
+
+/**
+ * The drive letters Windows has, from one fsutil run that is killed when it takes too long. Never a
+ * stat per letter: a stat of a disconnected network drive holds one of Node's few file-system
+ * threads until the system gives up, and every later file operation waits behind it.
+ */
+function windowsDrives(): Promise<string[] | undefined> {
+  const file = programPath('fsutil.exe');
+  if (!file) return Promise.resolve(undefined);
+  return new Promise((resolve) => {
+    execFile(file, ['fsinfo', 'drives'], { windowsHide: true, timeout: 3000, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      const drives = error ? [] : parseDriveList(String(stdout));
+      resolve(drives.length ? drives : undefined);
+    });
+  });
+}
+
+/** Entries of a mount folder that are volumes: /media/<user> is where the user's own volumes are, not one. */
+export function volumeEntries(dir: string, entries: FolderEntryView[], user: string): FolderEntryView[] {
+  return dir === '/media' ? entries.filter((e) => e.name !== user) : entries;
+}
+
 /** The breadcrumb of a folder: its root first, then each folder down to it. */
 export function folderSegments(dir: string): FolderSegment[] {
   const root = path.parse(dir).root;
@@ -87,7 +121,13 @@ export function folderSegments(dir: string): FolderSegment[] {
  * name or a file's contents), the usual places to start from, and a new folder in the folder shown.
  */
 export class NodeFolderBrowser implements FolderBrowser {
-  constructor(readonly home: string = os.homedir()) {}
+  private drives?: { at: number; list: Promise<string[] | undefined> };
+
+  /** `listDrives`: the Windows drive roots (undefined when they cannot be found). */
+  constructor(
+    readonly home: string = os.homedir(),
+    private readonly listDrives: () => Promise<string[] | undefined> = windowsDrives,
+  ) {}
 
   /** A folder's subfolders, sorted by name; links (and junctions) to folders are marked. */
   async list(dir: string, options: { hidden: boolean }): Promise<FolderListing> {
@@ -101,11 +141,12 @@ export class NodeFolderBrowser implements FolderBrowser {
     }
     const atRoot = parentDir === dir;
     const inHome = samePath(dir, this.home);
+    const aboveHome = samePath(dir, path.dirname(this.home)) && !samePath(this.home, path.dirname(this.home));
     const found = await Promise.all(
       dirents.map(async (dirent): Promise<FolderEntryView | undefined> => {
         const name = dirent.name;
         const link = dirent.isSymbolicLink();
-        if (!options.hidden && hiddenFolder(name, link, atRoot, inHome)) return undefined;
+        if (!options.hidden && hiddenFolder(name, link, atRoot, inHome, aboveHome)) return undefined;
         const full = path.join(dir, name);
         if (dirent.isDirectory()) return { name, path: full };
         if (!link) return undefined;
@@ -133,20 +174,29 @@ export class NodeFolderBrowser implements FolderBrowser {
     const ownFound = await Promise.all(own.map(async ([kind, p]): Promise<FolderPlaceView | undefined> => ((await isFolder(p)) ? { kind, name: path.basename(p) || p, path: p } : undefined)));
     for (const place of ownFound) if (place) places.push(place);
     if (process.platform === 'win32') {
-      // Every drive letter at once; one that does not answer in time (an empty card reader, a
-      // disconnected network drive) is left out.
-      const letters = Array.from({ length: 26 }, (_, i) => `${String.fromCharCode(65 + i)}:\\`);
-      const drives = await Promise.all(letters.map(async (root) => ((await isFolder(root)) ? root : undefined)));
-      for (const root of drives) if (root) places.push({ kind: 'drive', name: root.slice(0, 2), path: root });
+      for (const root of await this.windowsDrives()) places.push({ kind: 'drive', name: root.slice(0, 2), path: root });
     } else {
       places.push({ kind: 'root', name: '/', path: '/' });
-      const mounts = process.platform === 'darwin' ? ['/Volumes'] : ['/mnt', '/media', path.join('/media', path.basename(this.home))];
+      const user = path.basename(this.home);
+      const mounts = process.platform === 'darwin' ? ['/Volumes'] : ['/mnt', '/media', path.join('/media', user)];
       for (const dir of mounts) {
         const listing = await withTimeout(this.list(dir, { hidden: false }), undefined);
-        for (const entry of listing?.entries ?? []) places.push({ kind: 'volume', name: entry.name, path: entry.path });
+        for (const entry of volumeEntries(dir, listing?.entries ?? [], user)) places.push({ kind: 'volume', name: entry.name, path: entry.path });
       }
     }
     return places;
+  }
+
+  /**
+   * The drive roots, reused for a few seconds (and while a lookup runs). Without a list, the drive
+   * of the home folder and of Windows.
+   */
+  private async windowsDrives(): Promise<string[]> {
+    if (!this.drives || Date.now() - this.drives.at > DRIVES_FRESH_MS) this.drives = { at: Date.now(), list: this.listDrives().catch(() => undefined) };
+    const found = await this.drives.list;
+    if (found) return found;
+    const roots = [path.parse(this.home).root, path.parse(process.env.SystemRoot ?? process.env.windir ?? '').root].filter((r) => /^[A-Za-z]:\\$/.test(r));
+    return [...new Set(roots.map((r) => r.toUpperCase()))].sort();
   }
 
   /** A new folder named `name` in `parent` (never its parents, never over something that exists). */
@@ -173,12 +223,14 @@ function listingError(error: unknown): FolderListingError {
   return 'unreadable';
 }
 
-function hiddenFolder(name: string, link: boolean, atRoot: boolean, inHome: boolean): boolean {
+function hiddenFolder(name: string, link: boolean, atRoot: boolean, inHome: boolean, aboveHome: boolean): boolean {
   if (name.startsWith('.')) return true;
   if (process.platform !== 'win32') return false;
   const lower = name.toLowerCase();
   if (atRoot && (lower.startsWith('$') || WINDOWS_ROOT_HIDDEN.has(lower))) return true;
   if (inHome && WINDOWS_HOME_HIDDEN.has(lower)) return true;
+  // C:\Users\Default, the hidden profile new users are copied from.
+  if (aboveHome && lower === 'default') return true;
   return link && WINDOWS_LEGACY_JUNCTIONS.has(lower);
 }
 

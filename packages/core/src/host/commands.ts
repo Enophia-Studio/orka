@@ -63,6 +63,7 @@ function systemRoot(env: NodeJS.ProcessEnv): string {
 const WINDOWS_PROGRAMS: Readonly<Record<string, string>> = {
   'powershell.exe': 'System32\\WindowsPowerShell\\v1.0\\powershell.exe',
   'explorer.exe': 'explorer.exe',
+  'fsutil.exe': 'System32\\fsutil.exe',
   'reg.exe': 'System32\\reg.exe',
   'taskkill.exe': 'System32\\taskkill.exe',
 };
