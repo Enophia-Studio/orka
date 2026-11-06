@@ -12,6 +12,8 @@ export const TR: Record<string, string> = {
     'Ana agent artık {model} üzerinde çalışıyor. Bu göreve aynı konuşmayla devam ediyor.',
   'The model declined this request ({detail}). Try rephrasing it.': 'Model bu isteği reddetti ({detail}). Farklı şekilde ifade etmeyi deneyin.',
   'The model declined this request. Try rephrasing it.': 'Model bu isteği reddetti. Farklı şekilde ifade etmeyi deneyin.',
+  'The model wrote the same line ("{line}") {n} times in a row, so Orka stopped this request. Send your message again, or pick another model.':
+    'Model aynı satırı ("{line}") art arda {n} kez yazdı; Orka bu isteği durdurdu. Mesajınızı yeniden gönderin ya da başka bir model seçin.',
   'The response hit the output limit. Send "continue" to resume.': 'Yanıt çıktı sınırına ulaştı. Devam etmek için "devam" yazın.',
   'Changes were not verified yet - asking the agent to build/test before finishing.':
     'Değişiklikler henüz doğrulanmadı - agent\'tan bitirmeden önce build/test çalıştırması isteniyor.',

@@ -43,6 +43,7 @@ import { JsonRpcError } from '../rpc/JsonRpcStdio';
 import { appendLessons, LESSONS_FILE, MEMORY_DIR, parseLessons } from '../memory/ProjectMemory';
 import { describeHookResult, type HookCommand, type HookResult, hooksForFile, type HooksConfig, runHook } from '../hooks/Hooks';
 import { toRelative } from '../tools/workspace';
+import { collapseRepeats, REPEAT_LIMIT, RepeatGuard } from './repeatGuard';
 import { isSimpleRequest } from './routing';
 
 export interface OrchestratorSettings {
@@ -614,12 +615,28 @@ export class Orchestrator {
       const assistantId = this.nextId('a');
       this.emit({ type: 'assistant_start', id: assistantId });
       let response: ChatResponse;
+      // A model that writes the same line over and over is stopped (this request only).
+      const guard = new RepeatGuard();
+      const turn = new AbortController();
+      const stopTurn = () => turn.abort();
+      signal.addEventListener('abort', stopTurn, { once: true });
+      let looped: string | undefined;
+      let shown = '';
       try {
-        response = await provider.chat(
-          { system: this.systemPrompt!, messages: this.messages, tools: this.taskTools.map(toSpec), signal },
-          (event) => this.forwardStreamEvent(assistantId, event),
-        );
+        response = await provider.chat({ system: this.systemPrompt!, messages: this.messages, tools: this.taskTools.map(toSpec), signal: turn.signal }, (event) => {
+          if (looped) return;
+          if (event.type === 'text_delta') {
+            shown += event.text;
+            looped = guard.push(event.text);
+            if (looped) {
+              turn.abort();
+              return;
+            }
+          }
+          this.forwardStreamEvent(assistantId, event);
+        });
       } catch (error) {
+        if (looped && !signal.aborted) return this.endLoop(assistantId, shown, looped);
         const next = !fallback && !signal.aborted ? this.fallbackFor(provider, error) : undefined;
         if (!next) throw error;
         fallback = next;
@@ -636,7 +653,11 @@ export class Orchestrator {
         // The switch is announced here; don't announce it again as a provider change.
         this.lastProviderKey = `${next.id}|${next.model}`;
         continue;
+      } finally {
+        signal.removeEventListener('abort', stopTurn);
       }
+      // A provider that finished anyway: its looping answer is still not used.
+      if (looped) return this.endLoop(assistantId, shown, looped);
       this.messages.push(response.message);
       this.lastModel = response.model;
       this.lastPromptTokens = response.usage.inputTokens + response.usage.cacheReadTokens + response.usage.cacheWriteTokens;
@@ -1798,6 +1819,21 @@ export class Orchestrator {
       ctx.signal.removeEventListener('abort', stopChild);
       child.dispose();
     }
+  }
+
+  /**
+   * The model repeated `line` over and over: its answer keeps the line once, the request ends
+   * with an error that says why (the conversation keeps nothing of that answer).
+   */
+  private endLoop(assistantId: string, shown: string, line: string): RunEndReason {
+    this.emit({ type: 'assistant_end', id: assistantId, text: collapseRepeats(shown, line) || line, model: '' });
+    const quoted = line.length > 60 ? `${line.slice(0, 57)}...` : line;
+    this.lastError = t('The model wrote the same line ("{line}") {n} times in a row, so Orka stopped this request. Send your message again, or pick another model.', {
+      line: quoted,
+      n: REPEAT_LIMIT,
+    });
+    this.emit({ type: 'notice', level: 'error', message: this.lastError });
+    return 'error';
   }
 
   private forwardStreamEvent(assistantId: string, event: ProviderStreamEvent): void {
