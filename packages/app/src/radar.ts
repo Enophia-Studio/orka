@@ -9,10 +9,13 @@ import {
   type RadarItem,
   radarLinkTarget,
   type RadarReport,
+  radarReportFileName,
   type RadarStage,
   type RadarStatus,
   t,
   validateReport,
+  writeRadarNote,
+  writeReportMarkdown,
 } from '@orka/core';
 import { promises as fs, type Stats } from 'node:fs';
 import * as path from 'node:path';
@@ -69,6 +72,13 @@ export interface RadarHost {
   /** A new task in the current folder with `text` in the message box, never sent. */
   startSession(text: string): Promise<void>;
   openExternal(url: string): Promise<boolean>;
+  /**
+   * The system's save dialog for "Save as Markdown…", starting at `suggested`; undefined when the
+   * user cancelled. Without one, the report goes to the notes folder.
+   */
+  pickSaveFile?(suggested: string): Promise<string | undefined>;
+  /** A short notice for the user (where a file was saved). */
+  info(text: string): void;
 }
 
 interface Analysis {
@@ -90,6 +100,8 @@ export class RadarController {
   private readonly radar: Radar;
   private readonly timers: RadarTimers;
   private readonly reportFile: string;
+  /** The Markdown notes of each analysis (and LATEST.md), for the user to hand to a coding assistant. */
+  private readonly notesDir: string;
   private readonly lock: RadarLock;
   private timer?: unknown;
   private poller?: AbortController;
@@ -113,6 +125,7 @@ export class RadarController {
     // Nothing is read or fetched here: the engine reads its state file when it is used.
     this.radar = new Radar({ statePath: path.join(dir, 'state.json'), sources: hooks.sources, fetchImpl: hooks.fetchImpl, now: hooks.now, pacer: hooks.pacer });
     this.reportFile = path.join(dir, 'report.json');
+    this.notesDir = path.join(dir, 'notes');
     this.lock = new RadarLock(path.join(dir, 'lock'));
     this.timers = hooks.timers ?? NODE_TIMERS;
   }
@@ -324,6 +337,44 @@ export class RadarController {
     }
   }
 
+  /** The notes folder with the system's file manager (created first, so there is something to open). */
+  async openNotes(): Promise<void> {
+    try {
+      await fs.mkdir(this.notesDir, { recursive: true });
+      if (await this.host.openExternal(this.notesDir)) return;
+      this.error = t('Could not open {file}.', { file: this.notesDir });
+    } catch (error) {
+      this.error = t('Could not open {file}.', { file: this.notesDir }) + ` ${messageOf(error)}`;
+    }
+    this.postState();
+  }
+
+  /**
+   * The whole report as Markdown in a file the user picks (the system's save dialog), or, where there
+   * is none, in the notes folder as radar-report-<date>.md; the user is told where it went.
+   */
+  async saveMarkdown(): Promise<void> {
+    const report = this.report;
+    if (!report || this.disposed) return;
+    const suggested = path.join(this.notesDir, radarReportFileName(this.now()));
+    let file = suggested;
+    if (this.host.pickSaveFile) {
+      // The dialog starts in the notes folder.
+      await fs.mkdir(this.notesDir, { recursive: true }).catch(() => undefined);
+      const picked = await this.host.pickSaveFile(suggested);
+      if (!picked) return;
+      file = picked;
+    }
+    try {
+      await writeReportMarkdown(file, report);
+    } catch (error) {
+      this.error = t('The Radar report could not be saved: {error}', { error: messageOf(error) });
+      this.postState();
+      return;
+    }
+    this.host.info(t('Radar report saved as {file}.', { file }));
+  }
+
   stopAnalysis(): void {
     this.analysis?.abort.abort();
   }
@@ -433,7 +484,8 @@ export class RadarController {
     // lock that looked left over): the run goes on top of that report. A file that cannot be read is
     // never written over: the save fails and is tried again with the next analysis.
     const onDisk = await this.diskReport();
-    const next = mergeReports(typeof onDisk === 'object' ? onDisk.report : this.report, report);
+    const previous = typeof onDisk === 'object' ? onDisk.report : this.report;
+    const next = mergeReports(previous, report);
     await fs.mkdir(this.dir, { recursive: true });
     const tmp = `${this.reportFile}.${process.pid}.tmp`;
     try {
@@ -455,6 +507,17 @@ export class RadarController {
     }
     this.report = next;
     this.reportStamp = await fs.stat(this.reportFile).then(stampOf, () => undefined);
+    // What this run added, as a Markdown note on disk (nothing is sent anywhere). The report is kept
+    // already: a note that cannot be written is only reported.
+    if (this.settings.writeNotes) {
+      await writeRadarNote(this.notesDir, previous, report, { now: this.now() }).catch((error: unknown) => {
+        this.error = t('Radar could not write its Markdown note: {error}', { error: messageOf(error) });
+      });
+    }
+  }
+
+  private now(): Date {
+    return this.hooks.now ? this.hooks.now() : new Date();
   }
 
   // ---------------------------------------------------------------- views
@@ -472,6 +535,8 @@ export class RadarController {
     return {
       enabled: this.settings.enabled,
       autoAnalyze: this.settings.autoAnalyze,
+      writeNotes: this.settings.writeNotes,
+      notesDir: this.notesDir,
       hosts: [...hosts].map(([host, products]) => ({ host, products })),
       sources: enabled.map((s) => {
         const state = polled.get(s.id);

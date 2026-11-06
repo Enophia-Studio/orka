@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+**Radar**
+
+- **Markdown notes** (desktop): after each analysis that found or decided something new, Radar writes what is new in that run to `~/.orka/radar/notes/radar-<date>-<time>.md` and to `LATEST.md` beside it, for handing to a coding assistant: each gap with its priority, size, tools, rationale and the proposal text **Start a session** uses, one line per feature Orka has or does not want, and the new changes as summaries with links (never release-note text). The 50 newest notes are kept. `radar.writeNotes` (on by default) turns them off; they stay on your machine.
+- **Open notes folder** and **Save as Markdown…** in the Radar tab and in **Settings → Control**: the second saves the whole report to a file you pick in the system's save dialog (or to the notes folder as `radar-report-<date>.md`) and says where.
+
 **Fixes**
 
 - Windows: **Open folder…** and the other system dialogs (choose a file, an error box) opened behind Orka's window, so the button seemed to do nothing and each click left one more hidden dialog. They now open in front and have a taskbar button, and the folder dialog opens once however often the button is clicked.

@@ -196,7 +196,7 @@
       ['code.visualstudio.com', ['VS Code']], ['github.blog', ['Copilot']], ['learn.chatgpt.com', ['ChatGPT Codex']],
     ].map(([host, products]) => ({ host, products }));
     const radar = {
-      enabled: radarMode !== 'off', autoAnalyze: false, hosts: RADAR_HOSTS, sourceErrors: [], polling: false, maxCalls: 100,
+      enabled: radarMode !== 'off', autoAnalyze: false, writeNotes: true, notesDir: '~/.orka/radar/notes',hosts: RADAR_HOSTS, sourceErrors: [], polling: false, maxCalls: 100,
       sources: RADAR_SOURCES.map(([id, vendor, product, host]) => ({ id, vendor, product, host, lastPolledAt: ago(25 * 60), lastStatus: id === 'kiro' ? 'error' : 'not_modified', ...(id === 'kiro' ? { lastError: 'The server answered 404.' } : {}) })),
       lastPollAt: radarMode === 'off' ? undefined : ago(25 * 60),
       pending: radarMode === 'pending' ? 4 : 0, quarantined: radarMode === 'pending' ? 1 : 0,

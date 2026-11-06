@@ -182,8 +182,13 @@ const localProvider = () => ({ customProviders: [{ id: 'local', label: 'Local', 
 
 // ------------------------------------------------------------------ helpers
 
+/** A save dialog for the next shell start() makes (the desktop app's; the fake shell has none). */
+let nextSaveDialog: ((options: { title: string; suggested: string }) => Promise<string | undefined>) | undefined;
+
 async function start(settings: Record<string, unknown> = {}, hooks: Partial<RadarHooks> = {}, kind: 'desktop' | 'vscode' = 'desktop') {
-  const shell = new FakeShell(kind, home, [folder], settings);
+  const shell: FakeShell & { pickSaveFile?: typeof nextSaveDialog } = new FakeShell(kind, home, [folder], settings);
+  if (nextSaveDialog) shell.pickSaveFile = nextSaveDialog;
+  nextSaveDialog = undefined;
   // The endpoint's model list counts as fresh: no background request to it.
   await shell.globalState.update('orka.modelCache', { 'custom:local': { at: Date.now(), models: ['fake-1'] } });
   const timers = new FakeTimers();
@@ -243,11 +248,16 @@ describe('Radar (desktop)', () => {
   });
 
   it("reads its settings from the user's own settings only", () => {
-    const values = { 'radar.enabled': true, 'radar.provider': 'openai', 'radar.model': 'gpt-6-sol', 'radar.autoAnalyze': true };
+    const values = { 'radar.enabled': true, 'radar.provider': 'openai', 'radar.model': 'gpt-6-sol', 'radar.autoAnalyze': true, 'radar.writeNotes': false };
     const folderScoped = Object.assign(new MemorySettings({ ...values }), { scopeOf: () => 'workspace' as const });
-    assert.deepEqual(readSettings(folderScoped).radar, { enabled: false, provider: '', model: '', autoAnalyze: false }, "a folder's settings cannot turn it on or pick its provider");
+    assert.deepEqual(
+      readSettings(folderScoped).radar,
+      { enabled: false, provider: '', model: '', autoAnalyze: false, writeNotes: true },
+      "a folder's settings cannot turn it on, pick its provider or turn its notes off",
+    );
     const userScoped = Object.assign(new MemorySettings({ ...values }), { scopeOf: () => 'user' as const });
-    assert.deepEqual(readSettings(userScoped).radar, { enabled: true, provider: 'openai', model: 'gpt-6-sol', autoAnalyze: true });
+    assert.deepEqual(readSettings(userScoped).radar, { enabled: true, provider: 'openai', model: 'gpt-6-sol', autoAnalyze: true, writeNotes: false });
+    assert.equal(readSettings(new MemorySettings({})).radar.writeNotes, true, 'notes are on by default');
     // Only a real true turns it on; an agent CLI is never its provider, Claude Code only once it is turned on.
     const odd = readSettings(new MemorySettings({ 'radar.enabled': 'true', 'radar.autoAnalyze': 1, 'radar.provider': 'claude-code', 'claudeCode.enabled': true }));
     assert.deepEqual([odd.radar.enabled, odd.radar.autoAnalyze, odd.radar.provider], [false, false, 'claude-code']);
@@ -371,6 +381,72 @@ describe('Radar (desktop)', () => {
     assert.deepEqual(shell.opened, []);
     await controller.handleMessage({ type: 'radarOpenLink', url });
     assert.deepEqual(shell.opened, [url]);
+  });
+
+  it('writes a Markdown note of what an analysis found, and LATEST.md; none when nothing is new or the setting is off', async () => {
+    const { controller, view } = await analyzed();
+    const notes = path.join(home, 'radar', 'notes');
+    assert.equal(view().notesDir, notes);
+    assert.equal(view().writeNotes, true);
+    const files = readdirSync(notes).sort();
+    assert.equal(files.length, 2, files.join());
+    assert.equal(files[0], 'LATEST.md');
+    assert.match(files[1], /^radar-\d{4}-\d{2}-\d{2}-\d{4}\.md$/);
+    const md = readFileSync(path.join(notes, files[1]), 'utf8');
+    assert.equal(readFileSync(path.join(notes, 'LATEST.md'), 'utf8'), md);
+    assert.match(md, /^# Radar notes, /m);
+    assert.match(md, /^Analysis with custom\\:local \/ fake\\-1\\\.$/m);
+    assert.match(md, /^### Background tasks$|^### Background agents$/m);
+    assert.match(md, /^Implement this feature in Orka: Background tasks$/m, 'the proposal spec for a coding assistant');
+    assert.match(md, /\]\(<https:\/\/github\.com\/example\/agent-cli\/releases\/tag\/v1\.4\.0>\)/);
+    assert.doesNotMatch(md, /keep working in the|\/tasks/, 'summaries only, never release-note text');
+    // Nothing waiting: no analysis, no new note.
+    await controller.handleMessage({ type: 'radar', action: 'analyze' });
+    assert.equal(readdirSync(notes).length, 2);
+
+    await controller.dispose();
+    rmSync(path.join(home, 'radar'), { recursive: true, force: true });
+    const off = await analyzed({ 'radar.writeNotes': false });
+    assert.ok(off.report.clusters.length, 'the analysis ran');
+    assert.equal(off.view().writeNotes, false);
+    assert.equal(existsSync(notes), false, 'no notes with radar.writeNotes off');
+  });
+
+  it('opens the notes folder, and saves the report as Markdown: in the notes folder without a save dialog, else where the user picks', async () => {
+    const { shell, controller } = await analyzed();
+    const notes = path.join(home, 'radar', 'notes');
+    rmSync(notes, { recursive: true, force: true });
+    await controller.handleMessage({ type: 'radar', action: 'openNotes' });
+    assert.deepEqual(shell.opened, [notes]);
+    assert.ok(existsSync(notes), 'created before it is opened');
+
+    await controller.handleMessage({ type: 'radar', action: 'saveMarkdown' });
+    const saved = readdirSync(notes).filter((n) => n.startsWith('radar-report-'));
+    assert.equal(saved.length, 1);
+    assert.match(saved[0], /^radar-report-\d{4}-\d{2}-\d{2}\.md$/);
+    const md = readFileSync(path.join(notes, saved[0]), 'utf8');
+    assert.match(md, /^# Radar report$/m);
+    assert.match(md, /^## What Orka lacks$/m);
+    assert.ok(shell.asked.some((a) => a.level === 'info' && a.text.includes(path.join(notes, saved[0]))), 'the user is told where it went');
+    await controller.dispose();
+
+    const picked = path.join(home, 'elsewhere', 'radar.md');
+    mkdirSync(path.dirname(picked));
+    const offered: string[] = [];
+    let answer: string | undefined;
+    nextSaveDialog = async (options) => {
+      offered.push(options.suggested);
+      return answer;
+    };
+    const withDialog = await start({ 'radar.enabled': true });
+    await withDialog.controller.handleMessage({ type: 'radar', action: 'saveMarkdown' });
+    assert.equal(offered.length, 1, 'the report saved before is read back');
+    assert.match(offered[0], /radar[\\/]notes[\\/]radar-report-\d{4}-\d{2}-\d{2}\.md$/);
+    assert.equal(existsSync(picked), false, 'cancelled: nothing written');
+    answer = picked;
+    await withDialog.controller.handleMessage({ type: 'radar', action: 'saveMarkdown' });
+    assert.equal(readFileSync(picked, 'utf8'), md);
+    assert.ok(withDialog.shell.asked.some((a) => a.text.includes(picked)));
   });
 
   it('never runs on an agent CLI, nor on Claude Code before its check passed', async () => {
@@ -632,7 +708,22 @@ describe('Radar panel', () => {
     quarantined: 0,
     choice: { provider: '', model: '' },
     maxCalls: 100,
+    writeNotes: true,
+    notesDir: '/home/me/.orka/radar/notes',
     ...patch,
+  });
+
+  it('offers the notes folder and "Save as Markdown…" in the panel and in Settings, with the notes switch', () => {
+    const on = radarPanelHtml(view(), undefined, deps);
+    assert.match(on, /data-action="radar-open-notes"/);
+    assert.match(on, /data-action="radar-save-markdown" disabled/, 'no report yet: nothing to save');
+    assert.doesNotMatch(radarPanelHtml(view({ enabled: false }), undefined, deps), /radar-open-notes/, 'off and no report: no notes to show');
+    const card = radarSettingsCard(view(), true, true);
+    assert.match(card, /data-setting="radar\.writeNotes" checked>/);
+    assert.match(card, /data-action="radar-save-markdown" title=/);
+    assert.ok(card.includes('/home/me/.orka/radar/notes'), 'says where the notes go');
+    assert.match(radarSettingsCard(view({ writeNotes: false, notesDir: '<b>x</b>' }), true), /data-setting="radar\.writeNotes">/);
+    assert.ok(radarSettingsCard(view({ notesDir: '<b>x</b>' }), true).includes('&lt;b&gt;x&lt;/b&gt;'), 'escaped');
   });
 
   it('lists the hosts while off, and offers Claude Code first, then model providers', () => {

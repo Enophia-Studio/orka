@@ -2,6 +2,7 @@ import { shLine, shQuote, terminalWindow, type TerminalProgram } from '@orka/app
 import { findBrowser, programPath } from '@orka/core';
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
+import * as path from 'node:path';
 
 function output(name: string, args: string[], env: Record<string, string> = {}): Promise<string | undefined> {
   const file = programPath(name);
@@ -66,6 +67,28 @@ export async function pickFile(title: string, filters?: Record<string, string[]>
     picked = (await output('zenity', ['--file-selection', `--title=${title}`]))?.trim();
   }
   return picked && existsSync(picked) ? picked : undefined;
+}
+
+/**
+ * The operating system's save dialog, starting in the folder of `suggested` with its name; it asks
+ * before replacing a file. Undefined when cancelled.
+ */
+export async function pickSaveFile(title: string, suggested: string, filters?: Record<string, string[]>): Promise<string | undefined> {
+  let picked: string | undefined;
+  if (process.platform === 'win32') {
+    const filter = [...Object.entries(filters ?? {}).map(([name, exts]) => `${name}|${exts.map((e) => `*.${e}`).join(';')}`), 'All files|*.*'].join('|');
+    picked = await windowsDialog(
+      `${OWNER}; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.Title = $env:ORKA_TITLE; $d.Filter = $env:ORKA_FILTER; $d.InitialDirectory = $env:ORKA_DIR; $d.FileName = $env:ORKA_NAME; $d.OverwritePrompt = $true; if ($d.ShowDialog($o) -eq 'OK') { $p = $d.FileName; ${ANSWER} }`,
+      { ORKA_TITLE: title, ORKA_FILTER: filter, ORKA_DIR: path.dirname(suggested), ORKA_NAME: path.basename(suggested) },
+    );
+  } else if (process.platform === 'darwin') {
+    picked = (await output('osascript', ['-e', 'on run argv', '-e', 'POSIX path of (choose file name with prompt (item 1 of argv) default name (item 2 of argv))', '-e', 'end run', title, path.basename(suggested)]))?.trim();
+  } else {
+    picked = (await output('zenity', ['--file-selection', '--save', '--confirm-overwrite', `--title=${title}`, `--filename=${suggested}`]))?.trim();
+  }
+  if (!picked || !path.isAbsolute(picked)) return undefined;
+  // A file in a folder that exists, not a folder itself.
+  return existsSync(path.dirname(picked)) && statSync(path.dirname(picked)).isDirectory() && !(existsSync(picked) && statSync(picked).isDirectory()) ? picked : undefined;
 }
 
 /** An error in a message box of its own (Windows only), for when there is no Orka window to show it in. */

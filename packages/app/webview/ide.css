@@ -1168,6 +1168,13 @@
   align-self: flex-start;
 }
 
+.radar-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 8px;
+}
+
 /* ---------------------------------------------------------------- conversation */
 
 :root[data-layout='ide'] .transcript {

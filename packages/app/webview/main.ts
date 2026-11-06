@@ -563,7 +563,7 @@ function restoreRadarFocus(panel: HTMLElement, selector: string | undefined): vo
 let radarCardShown = '';
 
 function radarCard(): string {
-  radarCardShown = radar ? radarSettingsCard(radar, radarAvailable()) : '';
+  radarCardShown = radar ? radarSettingsCard(radar, radarAvailable(), !!radarReport) : '';
   return radarCardShown;
 }
 
@@ -574,7 +574,7 @@ function radarChanged(): void {
   renderRadarEntries();
   if (layout === 'ide') renderTopbar();
   // Settings > Control is rebuilt only when Radar's card would look different, so focus and an open list elsewhere on the page stay.
-  if (ui.view === 'settings' && ui.tab === 'control' && radar && radarSettingsCard(radar, radarAvailable()) !== radarCardShown) {
+  if (ui.view === 'settings' && ui.tab === 'control' && radar && radarSettingsCard(radar, radarAvailable(), !!radarReport) !== radarCardShown) {
     const active = document.activeElement;
     const typing = active instanceof HTMLTextAreaElement || (active instanceof HTMLInputElement && active.type !== 'checkbox' && active.type !== 'radio');
     if (!(typing && el.settings.contains(active))) renderSettings();
@@ -2120,6 +2120,12 @@ document.addEventListener('click', (e) => {
       break;
     case 'radar-retry':
       post({ type: 'radar', action: 'retry' });
+      break;
+    case 'radar-open-notes':
+      post({ type: 'radar', action: 'openNotes' });
+      break;
+    case 'radar-save-markdown':
+      post({ type: 'radar', action: 'saveMarkdown' });
       break;
     case 'radar-start':
       // The app puts the proposal in the message box of a new session; nothing is sent.
@@ -4168,7 +4174,9 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       break;
     case 'radarReport':
       radarReport = message.report;
-      renderRadar();
+      // Settings > Control too: its "Save as Markdown…" needs a report.
+      if (radar) radarChanged();
+      else renderRadar();
       break;
     case 'sessions':
       ui.sessions = message.groups;

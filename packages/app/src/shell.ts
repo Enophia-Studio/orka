@@ -94,6 +94,8 @@ export interface AppShell {
   /** Index of the picked item. */
   pick(items: PickItem[], options: { title?: string; matchOnDescription?: boolean }): Promise<number | undefined>;
   pickFile(options: { title: string; filters?: Record<string, string[]> }): Promise<string | undefined>;
+  /** The system's save dialog, starting at the absolute path `suggested`; undefined when cancelled. Only where the app has one (desktop). */
+  pickSaveFile?(options: { title: string; suggested: string; filters?: Record<string, string[]> }): Promise<string | undefined>;
 
   // ---- opening things
   openFile(absPath: string, options?: { preview?: boolean }): Promise<void>;
