@@ -204,6 +204,17 @@ describe('installing a CLI', () => {
     });
   });
 
+  it('after the Codex install, says when the Codex CLI that signs in is not found yet, instead of "installed"', async () => {
+    await withPath([], async () => {
+      // Node stands in for codex-acp (found by its path); "codex" itself is on no PATH.
+      const { shell, controller } = await start({ 'agentClis.paths': { codex: process.execPath } });
+      await controller.handleMessage({ type: 'checkInstall', id: 'codex' });
+      const last = notices(shell).at(-1);
+      assert.equal(last?.level, 'warning');
+      assert.equal(last?.message, 'codex was not found yet, so Codex (codex-acp) cannot sign in. If the installer finished, restart Orka so it sees the new PATH.');
+    });
+  });
+
   it('after Claude Code is installed, offers to turn it on', async () => {
     // The node binary stands in for claude: "--version" answers, "auth status" does not (an older CLI).
     const { shell, controller } = await start({ 'claudeCode.path': process.execPath });

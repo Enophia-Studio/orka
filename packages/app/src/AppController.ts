@@ -111,7 +111,7 @@ import {
   runProbe,
 } from './accounts';
 import { type InstallRecipe, installRecipe, nodeIsRecent, nodeVersion } from './install';
-import { RunGate } from './runGate';
+import { RunGate, SharedAccounts } from './runGate';
 import { EFFORT_SETTING, effortLevels, isOptionText, type SessionChoice, settingsEffort } from './sessionModel';
 import { dropNotices, samePath, type SessionContext, SessionController } from './SessionController';
 import type { AppShell, PickItem } from './shell';
@@ -185,6 +185,10 @@ export class AppController implements Disposable {
   private idleView: SessionView = emptySession();
   private readonly idleTaskId = newTaskId();
   private claudeCodeStatus: ClaudeCodeStatus = { state: 'unknown' };
+  /** Claude Code was ready when its check under way started (it counts as ready until that check says otherwise). */
+  private claudeCodeWasReady = false;
+  /** Agent CLIs that were ready when their check under way started. */
+  private readonly agentsWereReady = new Set<string>();
   /** Built-in and user skills (all of them; disabled ones are filtered when a task starts). */
   private skills: Skill[] = [];
   private builtinSkillNames = new Set<string>();
@@ -194,7 +198,7 @@ export class AppController implements Disposable {
   private appUpdateCheck?: Promise<void>;
   private appUpdateTimer?: ReturnType<typeof setInterval>;
   /** Sessions that may run at once: the process budget and one session per folder (and the folders inside it). */
-  private readonly gate = new RunGate(() => this.maxRunning());
+  private readonly gate: RunGate;
   /**
    * Agent CLI processes (ACP), shared by the tasks of every folder; and what their last check found.
    * The cap stays above the session budget, so a session the gate lets run finds room for its agent.
@@ -219,6 +223,8 @@ export class AppController implements Disposable {
     options: AppControllerOptions = {},
   ) {
     this.probe = options.probe ?? runProbe;
+    // One profile of a CLI at a time across every Orka window and app: they share <orka home>/accounts.
+    this.gate = new RunGate(() => this.maxRunning(), new SharedAccounts(path.join(shell.orkaHome ?? (process.env.ORKA_HOME || path.join(homedir(), '.orka')), 'accounts')));
     this.settings = readSettings(shell.settings);
     this.sessionContext = this.createSessionContext();
     this.applyLocale();
@@ -1432,10 +1438,20 @@ export class AppController implements Disposable {
     return this.allProviderRefs().find((ref) => ref !== 'claude-code' && this.isReady(ref)) ?? s.provider;
   }
 
-  /** The first CLI that is ready right now: Claude Code when turned on, else an agent CLI the user turned on. */
+  /** A provider that can still run: a model provider set up (Claude Code turned on), or an agent CLI turned on. */
+  private providerSetUp(ref: string): boolean {
+    return isAgentRef(ref) ? !!this.agentFor(ref) : this.allProviderRefs().includes(ref as ProviderRef);
+  }
+
+  /**
+   * The first CLI that is ready right now: Claude Code when turned on, else an agent CLI the user
+   * turned on. One that was ready stays ready while it is checked again: only a check that fails
+   * moves the main agent.
+   */
   private readyCli(): ProviderRef | undefined {
-    if (this.settings.claudeCode.enabled && this.claudeCodeStatus.state === 'ready') return 'claude-code';
-    const id = this.settings.agentClis.enabled.find((a) => this.agentStatus.get(a)?.state === 'ready' && this.agentEntry(a));
+    const ready = (state: string | undefined, before: boolean) => state === 'ready' || (state === 'checking' && before);
+    if (this.settings.claudeCode.enabled && ready(this.claudeCodeStatus.state, this.claudeCodeWasReady)) return 'claude-code';
+    const id = this.settings.agentClis.enabled.find((a) => ready(this.agentStatus.get(a)?.state, this.agentsWereReady.has(a)) && this.agentEntry(a));
     return id ? (`agent:${id}` as ProviderRef) : undefined;
   }
 
@@ -1460,9 +1476,11 @@ export class AppController implements Disposable {
    * session's model menu choice, the main agent and the roles that inherit it run on its model and
    * effort (`effort` is set then).
    */
-  private resolveAgent(name: string, session?: SessionChoice): { provider: ProviderRef; model: string; effort?: string } {
+  private resolveAgent(name: string, session?: SessionChoice, pinned = false): { provider: ProviderRef; model: string; effort?: string } {
     const s = this.settings;
-    const mainRef = this.mainProvider();
+    // `pinned`: a run under way stays on the provider it started with while that is still set up
+    // (a CLI that became ready meanwhile takes the main agent from the next run on).
+    const mainRef = pinned && session && this.providerSetUp(session.provider) ? (session.provider as ProviderRef) : this.mainProvider();
     const own = session?.provider === mainRef ? session : undefined;
     const main = own ? { provider: mainRef, model: own.model || this.defaultModel(mainRef), effort: own.effort } : { provider: mainRef, model: this.defaultModel(mainRef) };
     if (name === 'main') return main;
@@ -1513,6 +1531,11 @@ export class AppController implements Disposable {
     }
   }
 
+  /** A run of the session is under way: it stays on the provider it started with (resolveAgent's `pinned`). */
+  private runUnderWay(session?: SessionController): boolean {
+    return !!session?.runChoice && session.isRunning;
+  }
+
   /**
    * A role's provider; for a session's run, on the choice the run started with (a change made in
    * the model menu meanwhile gets a provider of its own from the next request: a running process
@@ -1520,7 +1543,7 @@ export class AppController implements Disposable {
    */
   private providerFor(name: string, session?: SessionController): AIProvider {
     const choice = session ? (session.runChoice ?? this.sessionChoice(session)) : undefined;
-    const { provider: ref, model, effort } = this.resolveAgent(name, choice);
+    const { provider: ref, model, effort } = this.resolveAgent(name, choice, this.runUnderWay(session));
     if (!model && this.customDef(ref)) throw new Error(t('Pick a model for {provider} (Settings > Providers).', { provider: this.providerLabel(ref) }));
     const config = this.providerConfig(ref, model, { effort, profile: choice?.profile });
     const cacheKey = JSON.stringify(config);
@@ -1563,10 +1586,38 @@ export class AppController implements Disposable {
     return !isAgentRef(ref) && this.allProviderRefs().includes(ref as ProviderRef);
   }
 
-  /** A provider of its own for one analysis (disposed after it), on the user's own key or Claude Code login. */
+  /**
+   * A provider of its own for one analysis (disposed after it), on the user's own key or Claude Code
+   * login. On Claude Code it holds the settings' profile in the run gate until it is disposed, so a
+   * session on another profile waits for it, and it is refused while one runs.
+   */
   private radarProvider(ref: string, model: string): AIProvider {
     if (isAgentRef(ref)) throw new Error(t('Radar cannot run on an agent CLI: its own tools cannot be turned off.'));
-    return createProvider(this.providerConfig(ref, model));
+    const config = this.providerConfig(ref, model);
+    if (ref !== 'claude-code') return createProvider(config);
+    const hold = this.gate.holdAccounts('radar', [this.accountKey('claude-code', this.settings.accounts.claudeProfile)]);
+    if (!hold.ok) {
+      throw new Error(
+        t('A session runs {account}. Orka runs one profile of a CLI at a time: analyze when it ends.', { account: this.accountLabel(hold.account) }),
+      );
+    }
+    let provider: AIProvider;
+    try {
+      provider = createProvider(config);
+    } catch (error) {
+      hold.release();
+      throw error;
+    }
+    return {
+      id: provider.id,
+      label: provider.label,
+      model: provider.model,
+      chat: (request, onEvent) => provider.chat(request, onEvent),
+      dispose: () => {
+        hold.release();
+        provider.dispose?.();
+      },
+    };
   }
 
   /**
@@ -1827,6 +1878,7 @@ export class AppController implements Disposable {
 
   /** Detect the Claude Code CLI, its version and login state (shown in Settings > Providers). */
   async checkClaudeCode(): Promise<void> {
+    this.claudeCodeWasReady = this.claudeCodeStatus.state === 'ready' || (this.claudeCodeStatus.state === 'checking' && this.claudeCodeWasReady);
     this.claudeCodeStatus = { state: 'checking' };
     this.postConfig();
     const executable = resolveClaudeExecutable(this.settings.claudeCode.path);
@@ -2171,6 +2223,15 @@ export class AppController implements Disposable {
       found = !!status && status.state !== 'not_found';
       version = status?.version;
     }
+    // An adapter that signs in with the vendor's other program (codex-acp: "codex login") needs that one too.
+    const entry = recipe.verify.kind === 'agent' ? this.agentEntry(recipe.verify.id) : undefined;
+    if (found && entry?.login?.bin && !agentLogin(entry, this.settings.agentClis.paths[entry.id])) {
+      this.publishNotice(
+        'warning',
+        t('{program} was not found yet, so {cli} cannot sign in. If the installer finished, restart Orka so it sees the new PATH.', { program: entry.login.bin, cli: recipe.label }),
+      );
+      return;
+    }
     if (found) {
       this.publishNotice('info', t('{cli} is installed ({version}).', { cli: recipe.label, version: version ?? '?' }));
       if (recipe.verify.kind === 'claude-code' && !this.settings.claudeCode.enabled) {
@@ -2197,6 +2258,9 @@ export class AppController implements Disposable {
   private async checkAgent(id: string): Promise<void> {
     const entry = this.agentEntry(id);
     if (!entry) return;
+    const before = this.agentStatus.get(id)?.state;
+    if (before === 'ready') this.agentsWereReady.add(id);
+    else if (before !== 'checking') this.agentsWereReady.delete(id);
     this.agentStatus.set(id, { state: 'checking' });
     this.postConfig();
     const result = await checkAgentCli(entry, this.settings.agentClis.paths[id]).catch((error: unknown) => ({
@@ -2271,13 +2335,13 @@ export class AppController implements Disposable {
   private runAccounts(session?: SessionController): string[] {
     const choice = session ? (session.runChoice ?? this.sessionChoice(session)) : undefined;
     const profile = choice ? choice.profile : this.settings.accounts.claudeProfile;
-    return this.usesClaudeCode(choice) ? [`claude-code:${profile}`] : [];
+    return this.usesClaudeCode(choice, this.runUnderWay(session)) ? [`claude-code:${profile}`] : [];
   }
 
-  /** Some role runs on Claude Code (with a session's choice: in that session). */
-  private usesClaudeCode(choice?: SessionChoice): boolean {
+  /** Some role runs on Claude Code (with a session's choice: in that session; `pinned`: a run's own choice). */
+  private usesClaudeCode(choice?: SessionChoice, pinned = false): boolean {
     const roles = ['main', 'supervisor', 'fallback', 'light', ...Object.keys(this.settings.subagents.agents)];
-    return roles.some((name) => this.resolveAgent(name, choice).provider === 'claude-code');
+    return roles.some((name) => this.resolveAgent(name, choice, pinned).provider === 'claude-code');
   }
 
   // ---------------------------------------------------------------- the composer's model menu (per session)
@@ -2290,24 +2354,22 @@ export class AppController implements Disposable {
 
   /**
    * The session's choice as it holds now: when the main agent's provider changed since (in the
-   * Agents panel, or a CLI became ready), it starts again from the settings for that provider; a
-   * profile that was removed becomes the default one, and a value the provider does not take its
-   * default.
+   * Agents panel, or a CLI became ready), it starts again from the settings for that provider (the
+   * session keeps its own choice for when that provider comes back); a profile that was removed
+   * becomes the default one, and a value the provider does not take its default.
    */
   private sessionChoice(session: SessionController): SessionChoice {
     const c = session.choice;
     const main = this.mainProvider();
     const profile = !c.profile || this.settings.accounts.claudeProfiles.some((p) => p.id === c.profile) ? c.profile : '';
-    const next: SessionChoice =
-      c.provider !== main
-        ? { ...this.defaultChoice(), profile }
-        : {
-            provider: main,
-            model: isAgentRef(main) ? '' : c.model && isModelId(c.model) ? c.model : this.defaultModel(main),
-            effort: effortLevels(main).includes(c.effort) ? c.effort : settingsEffort(this.settings, main),
-            profile,
-            ...(c.options ? { options: c.options } : {}),
-          };
+    if (c.provider !== main) return { ...this.defaultChoice(), profile };
+    const next: SessionChoice = {
+      provider: main,
+      model: isAgentRef(main) ? '' : c.model && isModelId(c.model) ? c.model : this.defaultModel(main),
+      effort: effortLevels(main).includes(c.effort) ? c.effort : settingsEffort(this.settings, main),
+      profile,
+      ...(c.options ? { options: c.options } : {}),
+    };
     session.choice = next;
     return next;
   }

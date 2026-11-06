@@ -906,6 +906,8 @@ export const TR: Record<string, string> = {
   'Choose file…': 'Dosya seç…',
   '{cli} was not found yet. If the installer finished, restart Orka so it sees the new PATH, or choose the program.':
     "{cli} henüz bulunamadı. Kurulum bittiyse yeni PATH'i görmesi için Orka'yı yeniden başlatın ya da programı seçin.",
+  '{program} was not found yet, so {cli} cannot sign in. If the installer finished, restart Orka so it sees the new PATH.':
+    "{program} henüz bulunamadı, bu yüzden {cli} oturum açamaz. Kurulum bittiyse yeni PATH'i görmesi için Orka'yı yeniden başlatın.",
   'Official installer from {source}.': '{source} kaynağından resmî kurulum.',
   'It installs to {folder}.': '{folder} klasörüne kurulur.',
   'Needs Node.js {min} or newer (npm); Orka checks it first.': 'Node.js {min} veya üstü gerekir (npm); Orka önce bunu kontrol eder.',
@@ -944,6 +946,8 @@ export const TR: Record<string, string> = {
     "Çalışan oturumlar {old} ile biter. Yeni çalışmalar {new} kullanır; bir CLI'ın aynı anda tek Profile'ı çalışır, bu yüzden o çalışmaların bitmesini beklerler.",
   'Another session runs {account}. Orka runs one profile of a CLI at a time: wait for it to finish or stop it, or switch back to that profile.':
     "Başka bir oturum {account} ile çalışıyor. Orka bir CLI'ın aynı anda tek Profile'ını çalıştırır: bitmesini bekleyin, durdurun ya da o Profile'a geri dönün.",
+  'A session runs {account}. Orka runs one profile of a CLI at a time: analyze when it ends.':
+    "Bir oturum {account} ile çalışıyor. Orka bir CLI'ın aynı anda tek Profile'ını çalıştırır: o bitince analiz edin.",
   // Accounts in the sidebar, the Add account popup and Settings > Accounts
   Accounts: 'Hesaplar',
   'Accounts…': 'Hesaplar…',
@@ -1157,6 +1161,7 @@ export const TR: Record<string, string> = {
   Analyze: 'Analiz et',
   'Analyze right after a check finds something': 'Kontrol yeni bir şey bulunca hemen analiz et',
   'Uses your provider and tokens, at most {n} model calls a run.': "Kendi provider'ınızı ve token'larınızı kullanır; çalışma başına en fazla {n} model çağrısı.",
+  'Paused while Radar runs on Claude Code: it analyzes only when you click Analyze.': "Radar Claude Code üzerinde çalıştığı sürece duraklatıldı: yalnızca Analiz et'e tıkladığınızda analiz eder.",
   'Automatic ({provider})': 'Otomatik ({provider})',
   'Choose a provider…': 'Provider seçin…',
   'Analyze with': 'Analizi yapan',

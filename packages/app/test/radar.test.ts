@@ -727,6 +727,12 @@ describe('Radar panel', () => {
     }
     const api = radarPanelHtml(view({ enabled: false, model: { provider: 'anthropic', model: '', label: 'Claude API', inherited: true } }), undefined, deps);
     assert.match(api, /on your own provider and API key\./);
+    // Once on, the Auto analyze check says it is paused on Claude Code, in the panel and in Settings.
+    const paused = /Paused while Radar runs on Claude Code: it analyzes only when you click Analyze\./;
+    assert.match(radarPanelHtml(view({ autoAnalyze: true, model: claude }), undefined, deps), paused);
+    assert.match(radarSettingsCard(view({ autoAnalyze: true, model: claude }), true), paused);
+    assert.doesNotMatch(radarSettingsCard(view({ autoAnalyze: false, model: claude }), true), paused);
+    assert.doesNotMatch(radarPanelHtml(view({ autoAnalyze: true, model: { ...claude, provider: 'anthropic' } }), undefined, deps), paused);
   });
 
   it('keeps its settings card the same while a check or an analysis runs (Settings > Control is not rebuilt for it)', () => {

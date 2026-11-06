@@ -77,8 +77,15 @@ function offHtml(radar: RadarView): string {
 
 function autoAnalyzeCheck(radar: RadarView): string {
   return `<label class="check"><input type="checkbox" data-setting="radar.autoAnalyze"${radar.autoAnalyze ? ' checked' : ''}><span>${escapeHtml(t('Analyze right after a check finds something'))}<br><span class="muted">${escapeHtml(
-    t('Uses your provider and tokens, at most {n} model calls a run.', { n: Number(radar.maxCalls) || 0 }),
+    autoAnalyzeNote(radar),
   )}</span></span></label>`;
+}
+
+/** What automatic analysis costs; on Claude Code it is paused (radar.ts never runs a subscription CLI on its own). */
+function autoAnalyzeNote(radar: RadarView): string {
+  return radar.autoAnalyze && radar.model?.provider === 'claude-code'
+    ? t('Paused while Radar runs on Claude Code: it analyzes only when you click Analyze.')
+    : t('Uses your provider and tokens, at most {n} model calls a run.', { n: Number(radar.maxCalls) || 0 });
 }
 
 function hostsHtml(radar: RadarView): string {
@@ -285,7 +292,7 @@ export function radarSettingsCard(radar: RadarView, panel: boolean): string {
       )}</span></span></label>
       <label class="check"><input type="checkbox" data-setting="radar.autoAnalyze"${radar.autoAnalyze ? ' checked' : ''}${radar.enabled || radar.autoAnalyze ? '' : ' disabled'}><span>${escapeHtml(
         t('Analyze right after a check finds something'),
-      )}<br><span class="muted">${escapeHtml(t('Uses your provider and tokens, at most {n} model calls a run.', { n: Number(radar.maxCalls) || 0 }))}</span></span></label>
+      )}<br><span class="muted">${escapeHtml(autoAnalyzeNote(radar))}</span></span></label>
       ${
         panel
           ? `<button class="link radar-open" data-action="open-radar">${escapeHtml(t('Open the Radar panel'))}</button>`

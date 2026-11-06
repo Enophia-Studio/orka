@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { AppController } from '../src/AppController';
+import type { RunGate } from '../src/runGate';
 import type { SessionController } from '../src/SessionController';
 import { effortLevels, readChoice } from '../src/sessionModel';
 import { FakeShell } from './fakeShell';
@@ -59,8 +60,13 @@ async function twoSessions(settings: Record<string, unknown>) {
 }
 
 type Private = {
-  providerFor(name: string, session?: SessionController): { options?: ClaudeCodeProviderOptions };
+  providerFor(name: string, session?: SessionController): { id: string; options?: ClaudeCodeProviderOptions };
   runAccounts(session?: SessionController): string[];
+  mainProvider(): string;
+  sessionChoice(session: SessionController): SessionController['choice'];
+  radarProvider(ref: string, model: string): { dispose?(): void };
+  claudeCodeStatus: { state: string };
+  gate: RunGate;
 };
 const internals = (controller: AppController) => controller as unknown as Private;
 const options = (controller: AppController, session: SessionController, role = 'main') => internals(controller).providerFor(role, session).options ?? {};
@@ -162,12 +168,59 @@ describe('the model menu (per session)', () => {
     assert.equal(options(controller, b).effort, 'low');
   });
 
-  it('starts again from the settings when the main agent moves to another provider', async () => {
-    const { controller, b } = await twoSessions(claudeCode({ 'gemini.thinkingLevel': 'medium' }));
+  it('starts from the settings when the main agent moves to another provider, and gets its own choice back when it returns', async () => {
+    const { shell, controller, b } = await twoSessions(claudeCode({ 'gemini.thinkingLevel': 'medium' }));
     await controller.handleMessage({ type: 'setSessionModel', effort: 'max' });
-    await controller.handleMessage({ type: 'setAgent', agent: 'main', provider: 'gemini', model: '' });
-    assert.equal(b.choice.provider, 'gemini');
-    assert.equal(b.choice.effort, 'medium');
+    await shell.settings.update('provider', 'gemini');
+    const choice = internals(controller).sessionChoice(b);
+    assert.deepEqual([choice.provider, choice.effort], ['gemini', 'medium']);
+    await shell.settings.update('provider', 'claude-code');
+    assert.equal(options(controller, b).effort, 'max', 'a while on another provider does not lose it');
+  });
+
+  it('keeps a ready CLI as the main agent while it is checked again (CLI-first)', async () => {
+    const { controller } = await start('desktop', { 'claudeCode.enabled': true, 'claudeCode.path': path.join(tmpdir(), 'no-such-claude', 'claude.exe'), 'supervisor.enabled': false });
+    await controller.checkClaudeCode();
+    const inner = internals(controller);
+    inner.claudeCodeStatus = { state: 'ready' };
+    assert.equal(inner.mainProvider(), 'claude-code');
+    const check = controller.checkClaudeCode();
+    assert.equal(inner.claudeCodeStatus.state, 'checking');
+    assert.equal(inner.mainProvider(), 'claude-code', 'still the CLI while the check runs');
+    await check;
+    assert.equal(inner.mainProvider(), 'claude', 'a failed check moves it');
+  });
+
+  it('keeps a run under way on the provider it started with when the main agent changes meanwhile', async () => {
+    const { controller, b } = await start('desktop', { 'claudeCode.enabled': true, 'claudeCode.path': path.join(tmpdir(), 'no-such-claude', 'claude.exe'), 'supervisor.enabled': false }).then(
+      (s) => ({ ...s, b: s.controller.activeSession! }),
+    );
+    await controller.checkClaudeCode();
+    const inner = internals(controller);
+    inner.claudeCodeStatus = { state: 'ready' };
+    b.runChoice = inner.sessionChoice(b);
+    Object.defineProperty(b, 'isRunning', { get: () => true, configurable: true });
+    inner.claudeCodeStatus = { state: 'not_found' };
+    assert.equal(inner.mainProvider(), 'claude');
+    assert.equal(inner.providerFor('main', b).id, 'claude-code', 'the run goes on as it started');
+    assert.deepEqual(inner.runAccounts(b), ['claude-code:']);
+    Object.defineProperty(b, 'isRunning', { get: () => false, configurable: true });
+    assert.throws(() => inner.providerFor('main', b), /No API key set for Claude/, 'the next run is on the new main agent');
+  });
+
+  it('holds the Claude Code profile for a Radar analysis, and refuses one while another profile runs', async () => {
+    const work = path.join(home, '.claude-work');
+    const { controller, a } = await twoSessions(claudeCode({ 'accounts.claudeProfiles': [{ id: 'work', name: 'Work', dir: work }] }));
+    const inner = internals(controller);
+    const radar = inner.radarProvider('claude-code', '');
+    assert.equal(inner.gate.profileInUse('claude-code'), '');
+    assert.equal(inner.gate.acquire(a.id, folderA, ['claude-code:work']).ok, false, 'a session on another profile waits for it');
+    radar.dispose?.();
+    assert.equal(inner.gate.profileInUse('claude-code'), undefined);
+    const run = inner.gate.acquire(a.id, folderA, ['claude-code:work']);
+    assert.ok(run.ok);
+    assert.throws(() => inner.radarProvider('claude-code', ''), /A session runs Claude Code \(Work\)|A session runs .*Work/);
+    run.release();
   });
 });
 
