@@ -1465,6 +1465,18 @@
   fill: currentColor;
 }
 
+/* While the agent works: a Stop button that says so. */
+:root[data-layout='ide'] #send.danger {
+  width: auto;
+  padding: 0 14px 0 12px;
+  border-radius: 17px;
+}
+
+:root[data-layout='ide'] #send.danger span {
+  display: inline;
+  font-weight: 600;
+}
+
 /* Popovers over the message box: suggestions, the + menu and the agents. */
 :root[data-layout='ide'] .suggest,
 .composer-menu,

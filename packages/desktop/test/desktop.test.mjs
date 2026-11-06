@@ -767,6 +767,38 @@ globalThis.fetch = (input, init) => {
   }
   const fakeClaudeScript = path.join(here, '..', '..', 'core', 'test', 'fixtures', 'fake-claude.mjs');
 
+  it('shows a Stop button that says so while the agent works, and Escape stops it too', async () => {
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    let answer;
+    script = [() => new Promise((resolve) => (answer = resolve))];
+    await browser.clickSelector('#input');
+    await browser.type('Take your time');
+    await browser.clickSelector('#send');
+    await until(() => browser.evaluate('document.querySelector("#send").getAttribute("aria-label") === "Stop"'), 'the Stop button');
+    const button = await browser.evaluate(
+      '(() => { const b = document.querySelector("#send"); const label = b.querySelector("span"); return { label: getComputedStyle(label).display !== "none" && label.textContent, title: b.title, width: b.getBoundingClientRect().width }; })()',
+    );
+    assert.equal(button.label, 'Stop', 'its name is shown, not just an icon');
+    assert.equal(button.title, 'Stop (Esc)');
+    assert.ok(button.width > 50, `wider than the round send button: ${button.width}`);
+
+    // An Escape that closes a menu leaves the agent working.
+    await browser.clickSelector('.model-btn');
+    await until(() => browser.evaluate('!document.querySelector("#model-menu").hidden'), 'the model menu');
+    await browser.press('Escape');
+    await until(() => browser.evaluate('document.querySelector("#model-menu").hidden'), 'the menu closed');
+    await sleep(300);
+    assert.equal(await browser.evaluate('document.body.classList.contains("busy")'), true, 'still working');
+    // In the message box, Escape stops it.
+    await browser.evaluate('document.querySelector("#input").focus(), true');
+    await browser.press('Escape');
+    await until(() => browser.evaluate('!document.body.classList.contains("busy")'), 'the request stopped');
+    assert.equal(await browser.evaluate('document.querySelector("#send").getAttribute("aria-label")'), 'Send');
+    answer(reply('Too late.'));
+  });
+
   it('keeps a Claude Code request running whatever is opened meanwhile, and shows it live again', async () => {
     const cli = await fakeClaudeCli();
     const gate = path.join(home, 'hold');

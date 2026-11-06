@@ -1770,6 +1770,27 @@ function submit(): void {
 }
 
 el.send.addEventListener('click', submit);
+
+/**
+ * Escape stops the running request, as in Claude Code, when it has nothing else to close: no
+ * dialog, menu, popup or suggestion list is open, and the focus is in the message box, in the
+ * conversation or nowhere (the editor and the settings keep their own Escape). Captured before the
+ * page's other Escape handlers, so an Escape that closes a menu never stops the agent too.
+ */
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || !session.running || !workView()) return;
+    const overlay =
+      modalOpen() || ui.modelMenuOpen || ui.agentsOpen || !!sessionMenu || !!addAccount || (!!el.composerMenu && !el.composerMenu.hidden) || (!!composer.suggest && !el.suggest.hidden);
+    if (overlay) return;
+    const target = e.target;
+    if (target !== el.input && target !== document.body && !(target instanceof Node && el.transcript.contains(target))) return;
+    e.preventDefault();
+    post({ type: 'stop' });
+  },
+  true,
+);
 el.input.addEventListener('keydown', (e) => {
   const s = composer.suggest;
   if (s && s.items.length && !el.suggest.hidden) {
@@ -2625,7 +2646,8 @@ function renderMeta(): void {
   const glyph = session.running ? 'stop' : layout === 'ide' ? 'arrowUp' : 'send';
   el.send.innerHTML = `${icon(glyph)}<span>${escapeHtml(label)}</span>`;
   el.send.setAttribute('aria-label', label);
-  el.send.title = layout === 'ide' ? `${label}${session.running ? '' : ' (Enter)'}` : '';
+  // Escape stops it too (see below); in the IDE layout the button then shows its name as well.
+  el.send.title = session.running ? `${label} (Esc)` : layout === 'ide' ? `${label} (Enter)` : '';
   el.send.classList.toggle('danger', session.running);
   el.send.disabled = !config?.workspaceOpen;
   const u = session.usage;
