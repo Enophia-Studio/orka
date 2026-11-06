@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+**Fixes**
+
+- Windows: **Open folder…** and the other system dialogs (choose a file, an error box) opened behind Orka's window, so the button seemed to do nothing and each click left one more hidden dialog. They now open in front and have a taskbar button, and the folder dialog opens once however often the button is clicked.
+
 ## 0.7.0
 
 Accounts and CLIs: sign in to each CLI from Orka, install Claude Code, Antigravity CLI and Codex from it, and pick the model and effort per session in the message box. See [Accounts](README.md#accounts) and [Installing CLIs](README.md#installing-clis).

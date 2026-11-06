@@ -18,12 +18,25 @@ async function windowsDialog(script: string, env: Record<string, string>): Promi
   return text ? Buffer.from(text, 'base64').toString('utf8') : undefined;
 }
 
-/** A topmost owner, so the dialog opens in front of Orka's window. */
-const OWNER = '$o = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false }';
+/**
+ * A topmost owner, so the dialog opens in front of Orka's window. It has to be shown (invisible,
+ * 1x1): a dialog owned by a form that was never shown is not topmost, and as Orka's background
+ * process may not take the foreground, it opened behind the window. Its taskbar button, named
+ * after the dialog, is a way back to the dialog should anything cover it.
+ */
+const OWNER =
+  "$o = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $true; Text = $env:ORKA_TITLE; FormBorderStyle = 'None'; StartPosition = 'CenterScreen'; Width = 1; Height = 1; Opacity = 0 }; $o.Show(); $o.Activate()";
 const ANSWER = '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($p))';
 
-/** The operating system's folder picker; undefined when cancelled. */
-export async function pickFolder(title: string): Promise<string | undefined> {
+let folderPicker: Promise<string | undefined> | undefined;
+
+/** The operating system's folder picker; undefined when cancelled. One at a time: another click waits for the open one. */
+export function pickFolder(title: string): Promise<string | undefined> {
+  folderPicker ??= showFolderPicker(title).finally(() => (folderPicker = undefined));
+  return folderPicker;
+}
+
+async function showFolderPicker(title: string): Promise<string | undefined> {
   let picked: string | undefined;
   if (process.platform === 'win32') {
     picked = await windowsDialog(
