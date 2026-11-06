@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+**Desktop**
+
+- **Open folder…** opens Orka's own folder picker instead of the system's *Browse For Folder* dialog: recent folders, your home, Desktop, Documents and Downloads, and the drives (on macOS and Linux `/` and the mounted volumes) on the left; a clickable path, an editable path field, a filter and the folder's subfolders (never files; hidden and system folders only with **Show hidden folders**; links marked) on the right. Arrow keys, Enter, Backspace or Alt+Up and Escape work as expected. **New folder** creates one folder in the folder shown, and **Use system dialog…** still opens the system's dialog. The VS Code panel is unchanged.
+
 **Radar**
 
 - **Markdown notes** (desktop): after each analysis that found or decided something new, Radar writes what is new in that run to `~/.orka/radar/notes/radar-<date>-<time>.md` and to `LATEST.md` beside it, for handing to a coding assistant: each gap with its priority, size, tools, rationale and the proposal text **Start a session** uses, one line per feature Orka has or does not want, and the new changes as summaries with links (never release-note text). The 50 newest notes are kept. `radar.writeNotes` (on by default) turns them off; they stay on your machine.

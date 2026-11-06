@@ -103,9 +103,12 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
   /** What the running app printed (for failure messages). */
   let appOutput = '';
 
-  /** Start the app without a window; resolves with its start URL. `node` is put before the app on Node's command line. */
+  /**
+   * Start the app without a window; resolves with its start URL. `node` is put before the app on
+   * Node's command line; folder null: no folder (the welcome screen).
+   */
   function launch(folder = work, { node = [], env = {} } = {}) {
-    app = spawn(process.execPath, [...node, APP, folder, '--no-window'], {
+    app = spawn(process.execPath, [...node, APP, ...(folder === null ? [] : [folder]), '--no-window'], {
       // No update check against GitHub from tests.
       env: { ...process.env, ORKA_HOME: home, ORKA_DEBUG: '1', ORKA_NO_UPDATE_CHECK: '1', ANTHROPIC_BASE_URL: baseURL, ANTHROPIC_API_KEY: 'test-key-for-fake-server', ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -164,6 +167,39 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
     const state = JSON.parse(readFileSync(path.join(home, 'desktop', 'state.json'), 'utf8'));
     assert.deepEqual(state.global.recentFolders.slice(0, 2), [path.resolve(other), path.resolve(work)]);
     rmSync(other, { recursive: true, force: true });
+  });
+
+  it("picks a folder in Orka's own folder picker from the welcome screen", async () => {
+    // A home of its own: the picker starts there when no folder is open and none is recent.
+    const userHome = mkdtempSync(path.join(tmpdir(), 'orka-desktop-user-'));
+    mkdirSync(path.join(userHome, 'Projects', 'Game'), { recursive: true });
+    mkdirSync(path.join(userHome, 'Documents'));
+    mkdirSync(path.join(userHome, '.hidden'));
+    writeFileSync(path.join(userHome, 'Projects', 'readme.txt'), 'not a folder');
+    try {
+      const url = await launch(null, { env: { USERPROFILE: userHome, HOME: userHome } });
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('Choose the project folder the agent works in.'), 'the welcome screen');
+      await browser.clickSelector('.empty [data-action="open-folder"]');
+      await until(() => browser.evaluate('document.querySelectorAll(".folder-picker .fp-item").length > 0'), 'the folder picker');
+      assert.equal(await browser.evaluate('document.querySelector(".fp-path").value'), userHome, 'it starts at home');
+      assert.deepEqual(await browser.evaluate('[...document.querySelectorAll(".fp-item .fp-name")].map((e) => e.textContent)'), ['Documents', 'Projects'], 'folders only, hidden ones left out');
+      assert.ok((await browser.evaluate('[...document.querySelectorAll(".fp-place")].map((e) => e.textContent)')).includes('Documents'), 'Documents is a place');
+
+      // Into Projects with the keyboard, then pick Game and open it.
+      await browser.clickSelector('.fp-item[data-index="1"]');
+      await browser.press('Enter');
+      await until(async () => (await browser.evaluate('document.querySelector(".fp-path").value')) === path.join(userHome, 'Projects'), 'Projects');
+      assert.deepEqual(await browser.evaluate('[...document.querySelectorAll(".fp-item .fp-name")].map((e) => e.textContent)'), ['Game']);
+      await browser.clickSelector('.fp-item[data-index="0"]');
+      await browser.clickSelector('[data-fp="open"]');
+      await until(async () => (await browser.evaluate('document.querySelector(".folder-btn span")?.textContent')) === 'Game', 'the session in Game');
+      assert.equal(await browser.evaluate('!!document.querySelector(".folder-picker")'), false, 'the picker closed');
+      const state = JSON.parse(readFileSync(path.join(home, 'desktop', 'state.json'), 'utf8'));
+      assert.equal(state.global.recentFolders[0], path.join(userHome, 'Projects', 'Game'));
+    } finally {
+      rmSync(userHome, { recursive: true, force: true });
+    }
   });
 
   it('lists sessions on the left, reopens one, and follows the theme and layout settings', async () => {
