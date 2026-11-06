@@ -99,7 +99,7 @@ describe('account status commands', () => {
     assert.equal(parseStatus('codex', { code: 0, stdout: `${'x'.repeat(500)}\nsecond`, stderr: '' }).label?.length, 160);
   });
 
-  it('reads "agy models": model lines mean signed in (only their count is kept), a failure means signed out', () => {
+  it('reads "agy models": model lines mean signed in (only their count is kept), signed out only when agy says so', () => {
     const listed = { code: 0, stdout: 'Fetching available models...\r\ngemini-3-pro\tGemini 3 Pro\r\ngemini-3-flash\tGemini 3 Flash\r\n', stderr: '' };
     assert.deepEqual(parseStatus('antigravity', listed), { state: 'signed_in', label: 'Signed in (2 models available)' });
     assert.deepEqual(parseStatus('antigravity', { code: 0, stdout: 'Fetching available models...\na\tA\n', stderr: '' }), { state: 'signed_in', label: 'Signed in (1 model available)' });
@@ -111,9 +111,17 @@ describe('account status commands', () => {
       label: 'Error: not signed in',
       hint,
     });
-    // Exit 0 without a model line, or a long first line: signed out, and no line shown.
-    assert.deepEqual(parseStatus('antigravity', { code: 0, stdout: 'Fetching available models...\n', stderr: '' }), { state: 'signed_out', label: undefined, hint });
-    assert.deepEqual(parseStatus('antigravity', { code: 2, stdout: `${'x'.repeat(200)}\n`, stderr: '' }), { state: 'signed_out', label: undefined, hint });
+    assert.deepEqual(parseStatus('antigravity', { code: 1, stdout: '', stderr: 'Error: login required\n' }), { state: 'signed_out', label: 'Error: login required', hint });
+    // Any other failure (offline, a server error, a quota) is no sign-out: unknown, with what agy said.
+    assert.deepEqual(parseStatus('antigravity', { code: 1, stdout: 'Fetching available models...\n', stderr: 'Error: fetch failed (ECONNRESET)\n' }), {
+      state: 'unknown',
+      label: 'Error: fetch failed (ECONNRESET)',
+    });
+    assert.deepEqual(parseStatus('antigravity', { code: 1, stdout: '', stderr: '503 Service Unavailable\n' }), { state: 'unknown', label: '503 Service Unavailable' });
+    assert.equal(parseStatus('antigravity', { code: 1, stdout: '', stderr: 'Error: quota exceeded\n' }).state, 'unknown');
+    // Exit 0 without a model line, or a long first line: unknown, and no line shown.
+    assert.deepEqual(parseStatus('antigravity', { code: 0, stdout: 'Fetching available models...\n', stderr: '' }), { state: 'unknown', label: undefined });
+    assert.deepEqual(parseStatus('antigravity', { code: 2, stdout: `${'x'.repeat(200)}\n`, stderr: '' }), { state: 'unknown', label: undefined });
     // A program that could not start, or did not answer: unknown, as before.
     assert.equal(parseStatus('antigravity', { code: null, stdout: '', stderr: 'spawn agy ENOENT' }).state, 'unknown');
     assert.equal(parseStatus('antigravity', { code: null, stdout: '', stderr: '', timedOut: true }).state, 'unknown');

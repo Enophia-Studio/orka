@@ -137,7 +137,12 @@ export function parseStatus(cli: AccountCli, output: ProbeOutput): AccountStatus
         .find((l) => l && !/^fetching available models/i.test(l));
       // A spawn error ("ENOENT ...") is no answer from agy.
       if (output.code === null) return { state: 'unknown', label: line };
-      return { state: 'signed_out', label: said && said.length <= 120 ? said : undefined, hint: t('Sign in by running agy in a terminal (Sign in… opens it).') };
+      const label = said && said.length <= 120 ? said : undefined;
+      // Signed out only when agy says so; being offline, a server error or a quota is no sign-out.
+      if (/not (signed|logged) in|sign[ -]?in|log[ -]?in|unauthenticated|unauthori[sz]ed|\bauth/i.test(text)) {
+        return { state: 'signed_out', label, hint: t('Sign in by running agy in a terminal (Sign in… opens it).') };
+      }
+      return { state: 'unknown', label };
     }
     default:
       return { state: 'unknown', label: line };
