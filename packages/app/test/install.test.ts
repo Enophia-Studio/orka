@@ -45,7 +45,9 @@ async function withPath(dirs: string[], body: () => Promise<void>): Promise<void
     process.env.Path = process.env.PATH;
     process.env.LOCALAPPDATA = path.join(home, 'empty-local');
   } else {
+    // It exists: `node --version` runs in the home folder, and a missing one fails the spawn.
     process.env.HOME = path.join(home, 'empty-home');
+    mkdirSync(process.env.HOME, { recursive: true });
   }
   try {
     await body();

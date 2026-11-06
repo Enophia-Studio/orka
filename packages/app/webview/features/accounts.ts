@@ -80,7 +80,7 @@ export function accountsEntryHtml(where: 'list' | 'rail', accounts: readonly Acc
     .map((a) => {
       const name = accountName(a, accounts);
       return `<div class="account-row" ${target(a)}>
-        <span class="account-dot ${a.status.state}" aria-hidden="true"></span>
+        <span class="account-dot ${attr(a.status.state)}" aria-hidden="true"></span>
         <span class="account-name ellipsis" title="${attr([name, a.status.label, a.status.hint].filter(Boolean).join('\n'))}">${escapeHtml(name)}</span>
         <button class="icon-btn side-more" data-action="account-menu" data-key="${attr(accountKey(a))}" aria-haspopup="menu" aria-label="${attr(
           t('More for {account}', { account: name }),
