@@ -1,6 +1,6 @@
 import { type ApprovalRequest, type ApprovalResponse, copyToClipboard, type EditorContext, NodeHost, type Orchestrator, t, unifiedDiff } from '@orka/core';
 import type { AppSettings, AppShell, DialogView, Disposable, Folder, FromWebview, InputOptions, PickItem, StateStore, TerminalHandle, TerminalProgram, ToWebview } from '@orka/app';
-import { findFilesByName, USER_SKILLS_DIR } from '@orka/app';
+import { findFilesByName, NodeFolderBrowser, USER_SKILLS_DIR } from '@orka/app';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, type FSWatcher, mkdirSync, promises as fs, statSync, watch } from 'node:fs';
 import * as path from 'node:path';
@@ -20,11 +20,14 @@ export function folderKey(root: string): string {
 
 /**
  * The desktop side of Orka: the chat UI in its own window (served by UiServer), questions asked
- * inside the UI, the OS folder picker and keychain, a settings file, and task history in ~/.orka.
+ * inside the UI, its own folder picker (and the OS one), the OS keychain, a settings file, and
+ * task history in ~/.orka.
  */
 export class DesktopShell implements AppShell, Disposable {
   readonly kind = 'desktop' as const;
   readonly canOpenFolder = true;
+  /** Orka's own folder picker ("Open folder…"); the system's dialog stays a choice in it. */
+  readonly folderBrowser = new NodeFolderBrowser();
   readonly settings: JsonSettings;
   readonly secrets: OsSecretStore;
   readonly globalState: StateStore;

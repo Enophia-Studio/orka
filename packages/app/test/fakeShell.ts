@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import type { ToWebview } from '../src/protocol';
 import type { Disposable, SettingsStore } from '../src/settings';
-import type { AppShell, Folder, InputOptions, SecretStore, StateStore, TerminalHandle } from '../src/shell';
+import type { AppShell, Folder, FolderBrowser, InputOptions, SecretStore, StateStore, TerminalHandle } from '../src/shell';
 import type { TerminalProgram } from '../src/terminal';
 
 export class MemorySettings implements SettingsStore {
@@ -69,6 +69,8 @@ export class FakeShell implements AppShell {
   /** The test's home folder stands in for ~/.orka (Radar keeps its files in radar/ there). */
   readonly orkaHome: string;
   readonly canOpenFolder: boolean;
+  /** The desktop app's own folder picker; none by default (as in VS Code), set by the tests that use it. */
+  folderBrowser?: FolderBrowser;
   readonly visible = true;
   readonly posted: ToWebview[] = [];
   readonly asked: Array<{ level: string; text: string; actions: string[]; detail?: string; modal?: boolean }> = [];

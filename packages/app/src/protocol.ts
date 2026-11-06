@@ -185,6 +185,8 @@ export interface ConfigView {
   folder?: string;
   /** Desktop: the user picks the folder in the app ("Open folder…"); VS Code opens folders itself. */
   canOpenFolder?: boolean;
+  /** Desktop: "Open folder…" opens the app's own folder picker (listFolders, createFolder). */
+  canBrowseFolders?: boolean;
   providers: ProviderView[];
   /** The model menu of the session shown (none while no folder is open). */
   sessionModel?: SessionModelView;
@@ -309,6 +311,37 @@ export interface DirEntry {
   /** A dependency or build folder, shown dimmed. */
   ignored?: true;
 }
+
+/** One subfolder in the desktop app's folder picker (never a file). */
+export interface FolderEntryView {
+  name: string;
+  /** Absolute. */
+  path: string;
+  /** A link or junction to a folder. */
+  link?: true;
+}
+
+/** One step of the folder picker's breadcrumb: the root first, then each folder down. */
+export interface FolderSegment {
+  name: string;
+  path: string;
+}
+
+/** A place the folder picker offers to start from. */
+export interface FolderPlaceView {
+  kind: 'recent' | 'home' | 'desktop' | 'documents' | 'downloads' | 'drive' | 'root' | 'volume';
+  name: string;
+  path: string;
+}
+
+/**
+ * Why the folder picker shows no subfolders: `invalid` (not an absolute path), `notFound`, `denied`
+ * (the system refused: EACCES/EPERM) or `unreadable` (any other failure).
+ */
+export type FolderListingError = 'invalid' | 'notFound' | 'denied' | 'unreadable';
+
+/** Why the folder picker did not create a folder. */
+export type CreateFolderError = 'empty' | 'tooLong' | 'separator' | 'reserved' | 'invalidChars' | 'trailing' | 'exists' | 'denied' | 'notFound' | 'invalid' | 'failed';
 
 /** A file's line endings; a file with both (or a lone CR) opens read-only. */
 export type Eol = 'lf' | 'crlf' | 'mixed';
@@ -493,7 +526,24 @@ export type ToWebview =
   | Scoped<{ type: 'fileContent'; path: string; ok: false; reason: FileReason }>
   | Scoped<{ type: 'fileSaved'; path: string; hash: string }>
   /** running: an agent works or a hand-off is open. hash: what is on disk now, after a conflict. */
-  | Scoped<{ type: 'saveRefused'; path: string; reason: SaveRefusal | 'running'; hash?: string }>;
+  | Scoped<{ type: 'saveRefused'; path: string; reason: SaveRefusal | 'running'; hash?: string }>
+  /**
+   * Desktop folder picker: the reply to listFolders `id`. path '' when the path asked for was not
+   * an absolute one (error 'invalid'); places only when they were asked for.
+   */
+  | {
+      type: 'folderListing';
+      id: number;
+      path: string;
+      parent?: string;
+      segments: FolderSegment[];
+      entries: FolderEntryView[];
+      truncated: boolean;
+      error?: FolderListingError;
+      places?: FolderPlaceView[];
+    }
+  /** The reply to createFolder `id`: the new folder's path and name, or why there is none. */
+  | { type: 'folderCreated'; id: number; path?: string; name?: string; error?: CreateFolderError };
 
 /** What one session sends to the page (always with its sessionId). */
 export type SessionPost = Extract<
@@ -638,8 +688,19 @@ export type FromWebview =
   | { type: 'editMcpServers' }
   /** The answer to a dialog: the action, the text entered or the index picked; undefined = cancelled. */
   | { type: 'dialogResult'; id: string; value?: string | number }
-  /** Desktop: work in another folder (a recent one, or pick one when path is empty). */
+  /**
+   * Desktop: work in another folder: an absolute path (a recent one, or one chosen in the app's
+   * folder picker); none: the system's folder dialog.
+   */
   | { type: 'openFolder'; path?: string }
+  /**
+   * Desktop folder picker: the subfolders of `path` (none: where the picker starts: the open
+   * folder, else the most recent, else home); hidden: hidden and system folders too; places: the
+   * places to start from too. Answered by folderListing with the same id.
+   */
+  | { type: 'listFolders'; id: number; path?: string; hidden?: boolean; places?: boolean }
+  /** Desktop folder picker: a new folder `name` in `parent` (absolute). Answered by folderCreated. */
+  | { type: 'createFolder'; id: number; parent: string; name: string }
   /** Desktop (IDE layout): show another open session; nothing is stopped or reloaded. */
   | { type: 'switchSession'; sessionId: string }
   /** Desktop (IDE layout): close an idle session that is not shown (its task stays in the list). */

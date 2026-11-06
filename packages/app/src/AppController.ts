@@ -60,6 +60,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
+import { checkFolderPath } from './folderBrowser';
 import type {
   AccountView,
   AgentCliView,
@@ -474,8 +475,21 @@ export class AppController implements Disposable {
         await this.reloadSkills();
         break;
       case 'selectFolder':
-      case 'openFolder':
         await this.selectFolder(message.path);
+        break;
+      case 'openFolder':
+        // A path from the page is used only when it is an absolute one; none: the system's dialog.
+        if (message.path === undefined || message.path === '') await this.selectFolder(undefined);
+        else {
+          const target = checkFolderPath(message.path);
+          if (target) await this.selectFolder(target);
+        }
+        break;
+      case 'listFolders':
+        await this.listFolders(message);
+        break;
+      case 'createFolder':
+        await this.createFolder(message);
         break;
       case 'switchSession':
         await this.switchSession(message.sessionId);
@@ -1149,6 +1163,35 @@ export class AppController implements Disposable {
     }
     // The shell reports a change through onDidChangeFolder, which shows the folder's session.
     if (!(await this.shell.selectFolder(fsPath))) this.postConfig();
+  }
+
+  /**
+   * The app's own folder picker (desktop): the subfolders of a folder. Only shells with a folder
+   * browser answer; the path is checked first, and none means where the picker starts: the open
+   * folder, else the most recent one, else home.
+   */
+  private async listFolders(message: Extract<FromWebview, { type: 'listFolders' }>): Promise<void> {
+    const browser = this.shell.folderBrowser;
+    const id = message.id;
+    if (!browser || typeof id !== 'number' || !Number.isSafeInteger(id)) return;
+    const places = message.places === true ? await browser.places(this.shell.folders().map((f) => f.path)) : undefined;
+    const dir = message.path === undefined ? path.resolve(this.shell.currentFolder()?.path ?? this.shell.folders()[0]?.path ?? browser.home) : checkFolderPath(message.path);
+    if (!dir) {
+      this.shell.post({ type: 'folderListing', id, path: '', segments: [], entries: [], truncated: false, error: 'invalid', ...(places ? { places } : {}) });
+      return;
+    }
+    const listing = await browser.list(dir, { hidden: message.hidden === true });
+    this.shell.post({ type: 'folderListing', id, ...listing, ...(places ? { places } : {}) });
+  }
+
+  /** The folder picker's "New folder": one folder in the folder shown, never its parents. */
+  private async createFolder(message: Extract<FromWebview, { type: 'createFolder' }>): Promise<void> {
+    const browser = this.shell.folderBrowser;
+    const id = message.id;
+    if (!browser || typeof id !== 'number' || !Number.isSafeInteger(id)) return;
+    const parent = checkFolderPath(message.parent);
+    const result = parent ? await browser.create(parent, message.name) : { error: 'invalid' as const };
+    this.shell.post('path' in result ? { type: 'folderCreated', id, path: result.path, name: path.basename(result.path) } : { type: 'folderCreated', id, error: result.error });
   }
 
   /** Command palette: choose the folder of a multi-root workspace the agent works in. */
@@ -2976,6 +3019,7 @@ export class AppController implements Disposable {
       folders: folders.length > 1 || (this.shell.canOpenFolder && folders.length) ? folders : undefined,
       folder: root,
       canOpenFolder: this.shell.canOpenFolder,
+      ...(this.shell.folderBrowser ? { canBrowseFolders: true } : {}),
       skillsEnabled: s.skills.enabled,
       skills,
       skillErrors: this.skillErrors,
