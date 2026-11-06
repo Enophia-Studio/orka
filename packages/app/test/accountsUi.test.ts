@@ -123,10 +123,10 @@ describe('Settings > Accounts', () => {
     const html = accountsTabHtml(accounts());
     assert.equal((html.match(/data-action="remove-claude-profile"/g) ?? []).length, 1);
     assert.match(html, /data-action="remove-claude-profile" data-cli="claude-code" data-profile="work"/);
-    assert.equal((html.match(/>in use</g) ?? []).length, 1);
+    assert.equal((html.match(/>new sessions</g) ?? []).length, 1);
     assert.equal((html.match(/data-action="account-use-profile"/g) ?? []).length, 1);
     // One profile only: nothing to choose between.
     const single = accountsTabHtml([claude('', 'Default profile', 'signed_in', true)]);
-    assert.ok(!single.includes('>in use<') && !single.includes('account-use-profile'));
+    assert.ok(!single.includes('>new sessions<') && !single.includes('account-use-profile'));
   });
 });

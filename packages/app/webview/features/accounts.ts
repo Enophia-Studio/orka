@@ -95,7 +95,7 @@ export function accountsEntryHtml(where: 'list' | 'rail', accounts: readonly Acc
 export function accountMenuHtml(a: AccountView): string {
   const item = (action: string, glyph: string, label: string) =>
     `<button class="menu-item" role="menuitem" data-action="${action}" ${target(a)}>${icon(glyph)}<span>${escapeHtml(label)}</span></button>`;
-  const useProfile = a.profile && !a.profile.chosen ? item('account-use-profile', 'check', t('Use this profile')) : '';
+  const useProfile = a.profile && !a.profile.chosen ? item('account-use-profile', 'check', t('Use for new sessions')) : '';
   return `${item('account-check', 'refresh', t('Check'))}
     ${item('account-login', 'arrow', t('Sign in…'))}
     ${item('account-logout', 'undo', t('Sign out…'))}
@@ -181,10 +181,10 @@ export function accountsTabHtml(accounts: readonly AccountView[]): string {
             t('Sign in…'),
           )}</button>
           <button class="btn" data-action="account-logout" ${ref} title="${attr(a.logoutCommand ?? a.logoutHint ?? '')}">${escapeHtml(t('Sign out…'))}</button>`;
-    // Claude Code with more than one profile: the one in use is marked, the others can be picked.
+    // Claude Code with more than one profile: the one new sessions start with is marked, the others can be picked (each session picks its own in the model menu).
     const several = !!a.profile && accounts.filter((r) => r.profile).length > 1;
-    const inUse = several && a.profile!.chosen ? `<span class="tag">${escapeHtml(t('in use'))}</span>` : '';
-    const use = several && !a.profile!.chosen ? `<button class="btn" data-action="account-use-profile" ${ref}>${escapeHtml(t('Use this profile'))}</button>` : '';
+    const inUse = several && a.profile!.chosen ? `<span class="tag">${escapeHtml(t('new sessions'))}</span>` : '';
+    const use = several && !a.profile!.chosen ? `<button class="btn" data-action="account-use-profile" ${ref}>${escapeHtml(t('Use for new sessions'))}</button>` : '';
     const remove = a.profile?.id ? `<button class="btn danger-outline" data-action="remove-claude-profile" ${ref}>${escapeHtml(t('Remove'))}</button>` : '';
     return `<div class="card account-card" ${ref}>
       <div class="card-head"><strong class="ellipsis">${escapeHtml(name)}</strong>${inUse}<span class="spacer"></span>${accountStateHtml(a)}</div>

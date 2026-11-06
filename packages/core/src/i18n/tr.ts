@@ -950,7 +950,7 @@ export const TR: Record<string, string> = {
   'Accounts: {n} of {total} signed in': "Hesaplar: {total} hesabın {n} tanesinde giriş yapılmış",
   'Add account': 'Hesap ekle',
   'More for {account}': '{account} için diğer işlemler',
-  'Use this profile': "Bu Profile'ı kullan",
+  'Use for new sessions': 'Yeni oturumlarda kullan',
   'Sign out…': 'Çıkış yap…',
   'All accounts…': 'Tüm hesaplar…',
   Profile: 'Profile',
@@ -967,7 +967,7 @@ export const TR: Record<string, string> = {
   'Check all': 'Tümünü kontrol et',
   'Signed in': 'Giriş yapılmış',
   'Signed out': 'Giriş yapılmamış',
-  'in use': 'kullanımda',
+  'new sessions': 'yeni oturumlar',
   "Each CLI signs in with its own command, in a terminal you can see. Orka asks only the CLI's own status command and never reads or stores a sign-in.":
     'Her CLI kendi komutuyla, görebileceğiniz bir terminalde giriş yapar. Orka yalnızca CLI\'ın kendi durum komutunu çalıştırır; giriş bilgilerini hiçbir zaman okumaz ya da saklamaz.',
   'Claude Code profiles': "Claude Code Profile'ları",
