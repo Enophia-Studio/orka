@@ -74,9 +74,9 @@ export interface RadarHost {
   openExternal(url: string): Promise<boolean>;
   /**
    * The system's save dialog for "Save as Markdown…", starting at `suggested`; undefined when the
-   * user cancelled. Without one, the report goes to the notes folder.
+   * user cancelled, null when it could not be shown. Without one, the report goes to the notes folder.
    */
-  pickSaveFile?(suggested: string): Promise<string | undefined>;
+  pickSaveFile?(suggested: string): Promise<string | undefined | null>;
   /** A short notice for the user (where a file was saved). */
   info(text: string): void;
 }
@@ -351,7 +351,8 @@ export class RadarController {
 
   /**
    * The whole report as Markdown in a file the user picks (the system's save dialog), or, where there
-   * is none, in the notes folder as radar-report-<date>.md; the user is told where it went.
+   * is none or it could not be shown, in the notes folder as radar-report-<date>.md; the user is
+   * told where it went.
    */
   async saveMarkdown(): Promise<void> {
     const report = this.report;
@@ -362,8 +363,9 @@ export class RadarController {
       // The dialog starts in the notes folder.
       await fs.mkdir(this.notesDir, { recursive: true }).catch(() => undefined);
       const picked = await this.host.pickSaveFile(suggested);
-      if (!picked) return;
-      file = picked;
+      // null: the dialog could not be shown (no zenity, PowerShell blocked), so the notes folder.
+      if (picked === undefined || picked === '') return;
+      if (picked !== null) file = picked;
     }
     try {
       await writeReportMarkdown(file, report);

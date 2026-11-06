@@ -199,7 +199,7 @@ export class DesktopShell implements AppShell, Disposable {
     return pickFile(options.title, options.filters);
   }
 
-  pickSaveFile(options: { title: string; suggested: string; filters?: Record<string, string[]> }): Promise<string | undefined> {
+  pickSaveFile(options: { title: string; suggested: string; filters?: Record<string, string[]> }): Promise<string | undefined | null> {
     return pickSaveFile(options.title, options.suggested, options.filters);
   }
 

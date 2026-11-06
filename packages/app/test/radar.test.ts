@@ -183,7 +183,7 @@ const localProvider = () => ({ customProviders: [{ id: 'local', label: 'Local', 
 // ------------------------------------------------------------------ helpers
 
 /** A save dialog for the next shell start() makes (the desktop app's; the fake shell has none). */
-let nextSaveDialog: ((options: { title: string; suggested: string }) => Promise<string | undefined>) | undefined;
+let nextSaveDialog: ((options: { title: string; suggested: string }) => Promise<string | undefined | null>) | undefined;
 
 async function start(settings: Record<string, unknown> = {}, hooks: Partial<RadarHooks> = {}, kind: 'desktop' | 'vscode' = 'desktop') {
   const shell: FakeShell & { pickSaveFile?: typeof nextSaveDialog } = new FakeShell(kind, home, [folder], settings);
@@ -433,7 +433,7 @@ describe('Radar (desktop)', () => {
     const picked = path.join(home, 'elsewhere', 'radar.md');
     mkdirSync(path.dirname(picked));
     const offered: string[] = [];
-    let answer: string | undefined;
+    let answer: string | undefined | null;
     nextSaveDialog = async (options) => {
       offered.push(options.suggested);
       return answer;
@@ -447,6 +447,14 @@ describe('Radar (desktop)', () => {
     await withDialog.controller.handleMessage({ type: 'radar', action: 'saveMarkdown' });
     assert.equal(readFileSync(picked, 'utf8'), md);
     assert.ok(withDialog.shell.asked.some((a) => a.text.includes(picked)));
+
+    // A dialog that could not be shown (no zenity, PowerShell blocked): the notes folder, and the user is told.
+    rmSync(notes, { recursive: true, force: true });
+    answer = null;
+    await withDialog.controller.handleMessage({ type: 'radar', action: 'saveMarkdown' });
+    assert.equal(offered.length, 3);
+    assert.equal(readFileSync(offered[2], 'utf8'), md, 'saved under the suggested name in the notes folder');
+    assert.ok(withDialog.shell.asked.some((a) => a.level === 'info' && a.text.includes(offered[2])));
   });
 
   it('never runs on an agent CLI, nor on Claude Code before its check passed', async () => {
