@@ -60,7 +60,7 @@ What Orka shows with each agent, and the terms it is used under (`packages/core/
 
 ### Installing from Orka
 
-Claude Code, Antigravity CLI and Codex (with the codex-acp adapter) can be installed from Orka (the **Install…** button on a notice about a missing CLI). Orka runs only the vendor's official installer, exactly as the vendor's install page prints it, and only like this:
+Claude Code, Antigravity CLI and Codex (with the codex-acp adapter) can be installed from Orka (the **Install…** button on a notice about a missing CLI, in **Settings → Accounts** or under *Not installed* in **Add account**). Orka runs only the vendor's official installer, exactly as the vendor's install page prints it, and only like this:
 
 1. A dialog shows the exact command, where it comes from, where it installs and the vendor's docs, with **Install**, **Copy command** and **Open docs**. Closing it runs nothing.
 2. For Codex, Orka first checks that Node.js 16 or newer is installed (npm installs codex-acp; 16 is what `@openai/codex` declares, codex-acp names no minimum). Without it, nothing runs and Orka links nodejs.org.
@@ -75,7 +75,7 @@ Claude Code, Antigravity CLI and Codex (with the codex-acp adapter) can be insta
 
 On Windows the vendor's PowerShell command is started through `powershell`, so it runs from any terminal. GitHub Copilot CLI, Cursor CLI and Gemini CLI are installed by hand: Orka shows the command from the table above with a copy button.
 
-Signing in always happens in the vendor's own login command or app. **Sign in…** on an agent's card opens that command in a terminal, with the program Orka found (or the path you set) by its full path and in your home folder, so nothing in the open project can stand in for it. You sign in there; Orka never sees it. Whether an agent is signed in shows on the first request: if it is not, Orka names the vendor's login command to run in a terminal.
+Signing in always happens in the vendor's own login command or app. **Accounts** (at the bottom of the desktop app's session list, the **Add account** popup and **Settings → Accounts**; the **Accounts…** button on an agent's card leads there) shows the command and, with **Sign in…** or **Open terminal**, opens it in a terminal, with the program Orka found (or the path you set) by its full path and in your home folder, so nothing in the open project can stand in for it. You sign in there; Orka never sees it. Where the CLI has a status command (`codex login status`, `cursor-agent status`; Claude Code's `claude auth status`), Accounts shows the account it reports; Antigravity CLI, Copilot CLI and Gemini CLI have none. Otherwise, whether an agent is signed in shows on the first request: if it is not, Orka names the vendor's login command to run in a terminal. See [Accounts](../README.md#accounts).
 
 ## What Orka keeps doing
 

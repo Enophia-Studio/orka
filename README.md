@@ -34,6 +34,10 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 - [Agents](#agents)
 - [Providers](#providers)
   - [Agent CLIs (agent mode)](#agent-clis-agent-mode)
+  - [Antigravity CLI](#antigravity-cli)
+  - [Accounts](#accounts)
+  - [Installing CLIs](#installing-clis)
+  - [Model and effort per session](#model-and-effort-per-session)
 - [Permissions and safety](#permissions-and-safety)
 - [Reviewing changes](#reviewing-changes)
 - [Hooks](#hooks)
@@ -66,6 +70,7 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 - **Parallel sessions (desktop):** several sessions at once, one per folder; switch between them without stopping any, and approve what a background session asks when you get to it.
 - **Files (desktop):** browse the open folder, edit text files and send the selected lines or a whole file to the agent; what you edit yourself survives Revert all and Go back.
 - **Radar (desktop, off until you turn it on):** watches the public release notes of other AI coding tools and, when you ask, compares what they shipped with Orka and proposes what to add.
+- **CLI-first, with your own accounts:** Claude Code and agent CLIs (Antigravity CLI, Codex, Copilot CLI, Cursor CLI) run with the account you signed in to them; **Accounts** shows and changes that sign-in through each vendor's own command, and Claude Code, Antigravity CLI and Codex can be installed from Orka with their official installers. Each session picks its own model and effort in the message box.
 - **English and Turkish** UI.
 
 ## Install
@@ -73,7 +78,7 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 **VS Code extension (quickest):** download `orka-vscode-<version>.vsix` from the [latest release](https://github.com/Enophia-Studio/orka/releases/latest), then run **Extensions: Install from VSIX…** in VS Code (1.101 or newer), or:
 
 ```bash
-code --install-extension orka-vscode-0.6.0.vsix
+code --install-extension orka-vscode-0.7.0.vsix
 ```
 
 **Desktop app for Windows:** download `orka-desktop.exe` from the same release and run it; it needs no Node.js, only Edge or Chrome for its window. Only the Orka window opens; closing it quits Orka. If it does not start, the reason is in `~/.orka/desktop/desktop.log`. The file is not code-signed yet, so Windows SmartScreen may ask you to confirm the first start (**More info → Run anyway**), and on PCs where Windows' Smart App Control is on, it is blocked; use the CLI or run it from source there.
@@ -81,7 +86,7 @@ code --install-extension orka-vscode-0.6.0.vsix
 **CLI:** with **Node.js 22+**, install the `orka` command from the release (it is not on npm yet):
 
 ```bash
-npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.6.0/orka-agent-0.6.0.tgz
+npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.7.0/orka-agent-0.7.0.tgz
 ```
 
 The extension, the desktop app and the CLI package each include a `THIRD_PARTY_NOTICES.txt` with the licenses of the open-source software inside them.
@@ -104,7 +109,7 @@ npm run package
 ```
 
 ```bash
-code --install-extension packages/vscode-extension/dist/orka-vscode-0.6.0.vsix
+code --install-extension packages/vscode-extension/dist/orka-vscode-0.7.0.vsix
 ```
 
 **Desktop app** — run it, or build the single executable yourself (`packages/desktop/dist/orka-desktop.exe`, or `orka-desktop` on Linux):
@@ -126,8 +131,8 @@ node packages/cli/dist/orka.js
 ## Quick start
 
 1. Open a project folder (VS Code: click the orca in the activity bar; Desktop: **Open folder…**).
-2. Add an API key: **Orka: Set API Key**, or set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` in your environment. To use another provider, go to **Settings → Providers → Add a provider**.
-3. Pick the main agent's provider and model in the **Agents** menu at the top of the chat.
+2. Use a CLI you are signed in to, or an API key. CLI: turn on Claude Code in **Settings → Providers**, or pick an agent CLI as the main agent in **Settings → Agents**; **Accounts** signs you in, and **Install…** installs Claude Code, Antigravity CLI or Codex (see [Accounts](#accounts)). API key: **Orka: Set API Key**, or set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY` in your environment; for another provider, **Settings → Providers → Add a provider**.
+3. Pick the main agent's provider and model in the **Agents** menu at the top of the chat; the open session's model and effort are also in the menu next to the send button.
 4. Describe a task, for example *"Add a ready state and a 4-player limit to the lobby"*.
 
 The agent studies the project, proposes a plan, makes the changes, builds and tests, and reports what it changed and how it verified it. File changes show up in the **Changes** panel, where you can keep or revert them.
@@ -198,7 +203,43 @@ A coding agent CLI you installed and signed in to yourself can be the main agent
 
 Orka never reads, stores or forwards an agent's sign-in, only runs the unmodified program you installed, never downloads one and never turns on an "approve everything" mode. Turn an agent on in `orka.agentClis.enabled` and choose it with `orka.provider` set to `agent:<id>` (CLI: `orka --provider agent:antigravity`; `orka agents` lists them); agent mode needs git for its snapshots. Supported agents, their terms, what Orka keeps doing and how to add your own: **[docs/EXTERNAL_AGENTS.md](docs/EXTERNAL_AGENTS.md)**.
 
-**Antigravity CLI** needs agy 1.5.0 or newer (the first with `agy acp`, according to agy's own changelog; update with `agy update`). Google documents `agy acp` for any ACP client, while [its FAQ](https://antigravity.google/docs/faq) calls wrapping agy in third-party apps unsupported on consumer plans (free, AI Pro, AI Ultra). Orka links both on the agent's card and leaves the choice of sign-in to you; it never touches agy's sign-in or Google's files.
+### Antigravity CLI
+
+Google's Antigravity CLI (`agy`) is an ordinary agent CLI in Orka (`agent:antigravity`): Orka runs `agy acp` in the project folder, which Google's [ACP page](https://antigravity.google/docs/ide/extensions/acp/) documents for any ACP client. It needs agy 1.5.0 or newer, the first with `agy acp` (single source: agy's own changelog); with an older agy, **Check** shows its version and `agy update`, which Orka never runs itself.
+
+- **Sign in** by running `agy` in a terminal (**Accounts → Sign in…** opens it) and choosing a sign-in there; `agy acp` uses what that session cached. agy has no status command, so Accounts cannot show the account. Orka never reads agy's sign-in or anything in `~/.gemini`.
+- **Your decision:** Google's [FAQ](https://antigravity.google/docs/faq) calls wrapping agy in third-party apps unsupported on consumer plans (free, AI Pro, AI Ultra), while the ACP page documents any ACP client. Orka links both on the agent's card and in `orka agents`; which sign-in you use with Orka is up to you.
+- **Gemini CLI** stays as a legacy entry (`agent:gemini`) for a Gemini API key or a Code Assist Standard/Enterprise licence; personal Google accounts moved to Antigravity CLI. The Gemini API provider, with a key, is separate and unchanged.
+
+### Accounts
+
+**Accounts** shows which account each CLI is signed in with, and signs you in and out. In the desktop app it sits at the bottom of the session list, with a count such as 2/3 signed in (in the closed rail, its icon opens **Add account**). In both apps, **Settings → Accounts** lists every CLI, and the **Accounts…** buttons on the agent CLI and Claude Code cards lead there.
+
+- **Status:** Orka asks each installed CLI's own status command (`claude auth status`, `codex login status`, `cursor-agent status`) when you first open the list, the popup or the tab, and on **Check**; never on a timer. What it prints stays in memory. Antigravity CLI, Gemini CLI and Copilot CLI have no status command: they say where to look instead (Copilot: `/user` inside it), and Copilot says when `COPILOT_GITHUB_TOKEN`, `GH_TOKEN` or `GITHUB_TOKEN` stands in for its sign-in (the name, never the value).
+- **Sign in and out:** **Add account** asks which CLI, then shows the vendor's exact command (`claude auth login`, `codex login`, ...). **Open terminal** runs it in a terminal you can see, by the program's full path and in your home folder; you sign in there or on the vendor's page, and the status is checked again when the terminal closes. **Sign out…** asks first; a CLI that signs out only from inside itself is opened with what to type.
+- **Claude Code profiles** keep separate accounts apart, such as work and personal. Each profile has its own config folder (`~/.claude-<id>`) that Claude Code runs with as `CLAUDE_CONFIG_DIR`; Orka creates it empty and never reads it. Add a profile in **Settings → Accounts** or the popup (**New profile…**), sign in to it there, and remove it there (its folder stays, with its sign-in, until you delete it). **Use for new sessions** picks the profile new sessions start with (`accounts.claudeProfile`); each session can pick its own in the [model menu](#model-and-effort-per-session). Both are machine settings, so a repository cannot set them.
+- **One profile per CLI at a time:** while a session runs Claude Code on one profile, a run on another profile is refused with a notice. Orka never changes a profile by itself, also not when a usage limit is reached, and the fallback runs on the session's profile. Separate accounts are for separate work; using them to get around a usage limit may break the vendor's terms.
+- **Orka never reads, stores or forwards a sign-in:** no tokens, no keychain entries and no credential files (`~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.gemini`, `~/.copilot`). It only runs the vendor's unmodified program.
+
+### Installing CLIs
+
+Claude Code, Antigravity CLI and Codex (with the codex-acp adapter) can be installed from Orka: **Install…** on a notice about a missing CLI, in **Settings → Accounts**, or under *Not installed* in **Add account**.
+
+- A dialog shows the vendor's official install command exactly as the vendor prints it, where it comes from, where it installs and the vendor's docs, with **Install**, **Copy command** and **Open docs**. Closing it runs nothing.
+- **Install** runs that command in a terminal you can see, in your home folder. Never with administrator rights, never in the background or on its own, and Orka never updates a CLI by itself.
+- For Codex, one command installs the Codex CLI and then codex-acp with npm, both shown in the same dialog; Orka first checks for Node.js 16 or newer and links nodejs.org without it.
+- When the terminal closes (or on **Check again**), Orka looks for the program. One installed after Orka started may not be on its `PATH` yet, so Orka offers to choose it, or restart Orka. For Claude Code it offers to turn the provider on.
+- GitHub Copilot CLI, Cursor CLI and Gemini CLI are installed by hand: Orka shows their command with a copy button.
+
+The commands and their sources: [Installing from Orka](docs/EXTERNAL_AGENTS.md#installing-from-orka).
+
+### Model and effort per session
+
+The menu next to the send button holds the open session's model, its effort and, when you added profiles, its Claude Code profile. A new session starts from the settings; a change applies from your next message and never stops a running request. **Use as default** writes the choice to the settings for sessions started later, without changing other open sessions. The defaults are the main agent's model and the **Default effort** lines in **Settings → Providers**.
+
+- **Effort:** Claude API low to max; Claude Code its own default to max; OpenAI and Gemini their default, low, medium or high.
+- **ACP agents** list the models and thought levels they advertise for their session, from its first message on; the choice is sent to the agent before the next prompt. Their own modes are never offered, so they cannot get around Orka's permission mode.
+- **Context gauge:** a ring next to the menu fills as the conversation fills the model's context window: the last request's prompt and answer against the window the provider reported. Claude Code and ACP agents that send `usage_update` report one; for the model APIs the ring stays hidden. Click it for the usage panel.
 
 ## Permissions and safety
 
@@ -369,7 +410,7 @@ Radar keeps an eye on what other AI coding tools ship. It reads their **public r
 - **The sites it reads:** `github.com` (the release feeds of Codex CLI, Gemini CLI, Antigravity CLI, Zed, Copilot CLI, Cline, Kilo Code and OpenCode), `raw.githubusercontent.com` (Claude Code's changelog), `cursor.com` and `www.cursor.com` (Cursor), `kiro.dev` (Kiro), `code.visualstudio.com` (VS Code), `github.blog` (the Copilot changelog) and `learn.chatgpt.com` (the ChatGPT Codex changelog). Only HTTPS, only these hosts (redirects elsewhere are refused); `openai.com` and `chatgpt.com` are never fetched.
 - **While it is on**, it checks the feeds about 30 seconds after Orka starts and then every hour; each feed is fetched at most every 6 to 24 hours. A feed that has not changed is recognised by a fingerprint of its text kept on your machine, so nothing a site handed out earlier (cookies, `ETag` or date validators) is ever sent back. A check never calls a model. New entries wait in the tab, with their count on it, and the tab shows when it last looked and which feeds failed. Turning it off stops the timer and any check that is running. With several Orka windows open, only one checks and analyzes (it holds `~/.orka/radar/lock`); the others show its report and take over when it quits or turns Radar off.
 - **Nothing about you leaves your machine.** The requests carry only Orka's name and version (`User-Agent: OrkaRadar/<version>`): no cookies, no account, no project data, no telemetry.
-- **Analysis runs only when you click Analyze**, on your own provider and API key, so it uses your tokens: at most 40 entries and 100 model calls per run, shown as it goes, with a **Stop** button. Entries stay waiting until their changes are decided: a run you stop, one that fails or one that reaches its limits is carried on by the next **Analyze**, without paying for the summaries already made. Pick its provider and model in the tab; without a choice it uses Claude Code when you turned it on and it is logged in, else the main agent's provider when that is a model API with a key, else the first model API with a key. Claude Code runs Radar as a plain model: its built-in tools (`--tools ""`), MCP servers (`--strict-mcp-config` with none given), settings files (`--setting-sources ""`) and slash commands are all off, and Radar sends no tools, so there is nothing to run and no permission to ask; with Claude Code an analysis runs only when you click **Analyze**, never automatically (`radar.autoAnalyze` waits for the click). It never runs on an agent CLI, whose own tools cannot be turned off. The summaries, comparisons and proposals are written in the UI language. Every model answer is checked against a strict format; release-note text is passed to the model as data only, and summaries may not copy it.
+- **Analysis runs only when you click Analyze**, on your own provider (with your API key, or your Claude Code sign-in), so it uses your tokens: at most 40 entries and 100 model calls per run, shown as it goes, with a **Stop** button. Entries stay waiting until their changes are decided: a run you stop, one that fails or one that reaches its limits is carried on by the next **Analyze**, without paying for the summaries already made. Pick its provider and model in the tab; without a choice it uses Claude Code when you turned it on and it is logged in, else the main agent's provider when that is a model API with a key, else the first model API with a key. Claude Code runs Radar as a plain model: its built-in tools (`--tools ""`), MCP servers (`--strict-mcp-config` with none given), settings files (`--setting-sources ""`) and slash commands are all off, and Radar sends no tools, so there is nothing to run and no permission to ask; with Claude Code an analysis runs only when you click **Analyze**, never automatically (`radar.autoAnalyze` waits for the click). It never runs on an agent CLI, whose own tools cannot be turned off. The summaries, comparisons and proposals are written in the UI language. Every model answer is checked against a strict format; release-note text is passed to the model as data only, and summaries may not copy it.
 - **The report** shows each group of similar features with the tools that have it, Orka's status for each change (has it, has part of it, lacks it, not for Orka), the decision with its priority (P1 to P3) and size (S, M, L), the proposal, and links to the release notes (https pages only, opened in your browser). Entries the model could not read twice, or that the provider rejected in two runs while it answered the others (a content filter, say), are set aside and can be retried. A report is written by a model from release notes only and can be wrong.
 - **Start a session** on a proposal opens a new session in the current folder with the proposal (problem, acceptance criteria and Orka's rules, never the release-note text) in the message box, after anything you had already typed there. Nothing is sent: you read it, change it and send it yourself, and the agent then works under your permission mode as usual.
 - **Where it keeps its files:** `~/.orka/radar/state.json` (a fingerprint of each feed, the entries waiting and what was already summarized of them), `~/.orka/radar/report.json` (the report) and `~/.orka/radar/lock`, or under `ORKA_HOME`. A state file that cannot be parsed is set aside as `state.broken-<time>.json`, and a report that fails its checks as `report.broken-<time>.json`; a report with a few bad rows is read without them. A file that cannot be read for a moment is left where it is and read again later.
