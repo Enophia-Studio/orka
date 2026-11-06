@@ -1,4 +1,4 @@
-import { childEnv, killTree, resolveCommand, t } from '@orka/core';
+import { childEnv, killTree, resolveCommand, t, tn } from '@orka/core';
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 
@@ -39,15 +39,16 @@ export interface AccountCommands {
  * authentication ("claude auth status|login|logout"), the Codex CLI reference ("codex login
  * status", "codex login", "codex logout"), Cursor's CLI authentication page ("agent status|login|
  * logout"), GitHub's "Authenticate Copilot CLI" ("copilot login"; /user and /logout inside the
- * CLI). Antigravity and Gemini CLI document no status command: sign-in is a choice inside the
- * interactive CLI.
+ * CLI). Antigravity CLI has no status command either, but "agy models" (agy 1.5.0 and newer)
+ * lists the models of the signed-in account and fails without a sign-in; it prints no account
+ * name. Gemini CLI documents nothing: sign-in is a choice inside the interactive CLI.
  */
 export const ACCOUNT_COMMANDS: Record<AccountCli, AccountCommands> = {
   'claude-code': { status: ['auth', 'status'], login: ['auth', 'login'], logout: ['auth', 'logout'] },
   codex: { status: ['login', 'status'], login: ['login'], logout: ['logout'] },
   cursor: { status: ['status'], login: ['login'], logout: ['logout'] },
   copilot: { login: ['login'], logoutHint: 'Type /logout in Copilot CLI to sign out; /user shows the account.' },
-  antigravity: { login: [], logoutHint: 'Sign out inside agy (see its docs).' },
+  antigravity: { status: ['models'], login: [], logoutHint: 'Sign out inside agy (see its docs).' },
   gemini: { login: [], logoutHint: 'Sign out inside Gemini CLI (see its docs).' },
 };
 
@@ -124,6 +125,20 @@ export function parseStatus(cli: AccountCli, output: ProbeOutput): AccountStatus
       if (/not (logged|signed) in|not authenticated|unauthenticated/i.test(text)) return { state: 'signed_out', label: line };
       if (output.code === 0 && /logged in|signed in|authenticated/i.test(text)) return { state: 'signed_in', label: line };
       return { state: 'unknown', label: line };
+    case 'antigravity': {
+      // "agy models": "Fetching available models..." then one "<id>\t<name>" line per model, exit 0.
+      // Only the count is kept; agy names no account.
+      const models = output.stdout.split(/\r?\n/).filter((l) => /^[^\t\s][^\t]*\t\S/.test(l)).length;
+      if (output.code === 0 && models > 0) return { state: 'signed_in', label: tn('Signed in ({n} model available)', 'Signed in ({n} models available)', models) };
+      const said = text
+        .split(/\r?\n/)
+        // Terminal escapes and other control characters out, and the progress line skipped.
+        .map((l) => l.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim())
+        .find((l) => l && !/^fetching available models/i.test(l));
+      // A spawn error ("ENOENT ...") is no answer from agy.
+      if (output.code === null) return { state: 'unknown', label: line };
+      return { state: 'signed_out', label: said && said.length <= 120 ? said : undefined, hint: t('Sign in by running agy in a terminal (Sign in… opens it).') };
+    }
     default:
       return { state: 'unknown', label: line };
   }

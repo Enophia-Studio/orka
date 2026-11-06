@@ -53,6 +53,7 @@ import {
   systemLocale,
   t,
   type Tool,
+  tooOldForAcp,
   VERSION,
 } from '@orka/core';
 import { execFile } from 'node:child_process';
@@ -2496,6 +2497,13 @@ export class AppController implements Disposable {
             ? t('Copilot CLI has no status command: type /user in it to see the account.')
             : t('{cli} has no status command: its sign-in is chosen inside the CLI.', { cli: this.accountLabel(cli) }),
       });
+      return;
+    }
+    // agy before 1.5.0 has no "models" command (nor "acp"): it needs an update first.
+    const entry = cli === 'antigravity' ? this.agentEntry(cli) : undefined;
+    const tooOld = entry && tooOldForAcp(entry, this.agentStatus.get(cli)?.version);
+    if (tooOld) {
+      this.accountStatus.set(key, { state: 'unknown', hint: tooOld });
       return;
     }
     const output = await this.probe(file, status, env).catch((error: unknown) => ({

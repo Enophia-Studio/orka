@@ -5,6 +5,7 @@
 **Fixes**
 
 - Windows: **Open folder…** and the other system dialogs (choose a file, an error box) opened behind Orka's window, so the button seemed to do nothing and each click left one more hidden dialog. They now open in front and have a taskbar button, and the folder dialog opens once however often the button is clicked.
+- **Accounts** showed Antigravity CLI as *Unknown* even when signed in. It now asks `agy models` (agy 1.5.0 and newer): a model list means signed in (the label shows how many models, since agy names no account), a failure means signed out, with how to sign in. Only the count is kept; agy older than 1.5.0 still gets the update hint.
 
 ## 0.7.0
 
