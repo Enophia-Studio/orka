@@ -59,9 +59,13 @@ export function radarPanelHtml(radar: RadarView, report: RadarReportView | undef
 /** Off: what Radar would do and every host it would contact, and the switch. */
 function offHtml(radar: RadarView): string {
   // What turning it on starts: with radar.autoAnalyze already on, the first check's finds are analyzed without a click.
-  const footnote = radar.autoAnalyze
-    ? t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. Automatic analysis is on: when a check finds something, Radar analyzes it right away on your own provider and API key.")
-    : t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on your own provider and API key.");
+  // On Claude Code there is no API key, and an analysis waits for a click even then (radar.ts never runs it on its own).
+  const footnote =
+    radar.model?.provider === 'claude-code'
+      ? t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on Claude Code with your own sign-in, as a plain model with no tools.")
+      : radar.autoAnalyze
+        ? t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. Automatic analysis is on: when a check finds something, Radar analyzes it right away on your own provider and API key.")
+        : t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on your own provider and API key.");
   return `<div class="radar-intro">
       <p>${escapeHtml(t('Radar reads the public release notes of other AI coding tools and suggests what Orka could add. It is off: nothing is fetched.'))}</p>
       ${hostsHtml(radar)}

@@ -718,6 +718,17 @@ describe('Radar panel', () => {
     assert.match(radarSettingsCard(view({ enabled: false }), true), /data-setting="radar\.autoAnalyze" disabled>/);
   });
 
+  it('names no API key when Claude Code runs the analysis, and says it waits for a click', () => {
+    const claude = { provider: 'claude-code', model: '', label: 'Claude Code', inherited: false };
+    for (const autoAnalyze of [false, true]) {
+      const html = radarPanelHtml(view({ enabled: false, autoAnalyze, model: claude }), undefined, deps);
+      assert.doesNotMatch(html, /API key/, `autoAnalyze ${autoAnalyze}`);
+      assert.match(html, /An analysis runs only when you click Analyze, on Claude Code with your own sign-in, as a plain model with no tools\./);
+    }
+    const api = radarPanelHtml(view({ enabled: false, model: { provider: 'anthropic', model: '', label: 'Claude API', inherited: true } }), undefined, deps);
+    assert.match(api, /on your own provider and API key\./);
+  });
+
   it('keeps its settings card the same while a check or an analysis runs (Settings > Control is not rebuilt for it)', () => {
     const idle = radarSettingsCard(view({ pending: 0 }), true);
     const busy = radarSettingsCard(view({ pending: 9, polling: true, lastPollAt: '2026-10-30T00:00:00.000Z', error: 'x', analysis: { stage: 'map', done: 3, total: 9, calls: 12, maxCalls: 100 } }), true);
