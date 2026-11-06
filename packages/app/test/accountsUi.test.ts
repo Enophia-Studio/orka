@@ -97,6 +97,10 @@ describe('Add account popup', () => {
 
   it('starts on the profile in use, and other CLIs have no profile field', () => {
     assert.match(addAccountHtml(accounts(), { cli: 'claude-code' }), /data-action="account-login" data-cli="claude-code">/);
+    // The profile chosen for new sessions, not the always-present Default row.
+    const workChosen = [claude('', 'Default profile', 'signed_in', false), claude('work', 'Work', 'signed_out', true)];
+    assert.match(addAccountHtml(workChosen, { cli: 'claude-code' }), /data-action="account-login" data-cli="claude-code" data-profile="work"/);
+    assert.match(addAccountHtml(workChosen, { cli: 'claude-code', profile: '' }), /data-action="account-login" data-cli="claude-code">/, 'the Default row once picked');
     const copilot = addAccountHtml(accounts(), { cli: 'copilot' });
     assert.ok(copilot.includes('copilot login'));
     assert.ok(!copilot.includes('data-profile'));

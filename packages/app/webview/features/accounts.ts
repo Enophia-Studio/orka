@@ -114,7 +114,8 @@ export function addAccountHtml(accounts: readonly AccountView[], state: AddAccou
   const close = `<button class="btn" type="button" data-action="add-account-close">${escapeHtml(t('Cancel'))}</button>`;
   const picked = state.cli ? accounts.filter((a) => a.cli === state.cli && accountInstalled(a)) : [];
   if (picked.length) {
-    const row = picked.find((a) => (a.profile?.id ?? '') === (state.profile ?? '')) ?? picked.find((a) => a.profile?.chosen) ?? picked[0];
+    // No profile picked yet: the one chosen for new sessions.
+    const row = (state.profile !== undefined ? picked.find((a) => (a.profile?.id ?? '') === state.profile) : undefined) ?? picked.find((a) => a.profile?.chosen) ?? picked[0];
     const profiles = row.profile
       ? `<div class="field"><span class="field-label">${escapeHtml(t('Profile'))}</span>
           <div class="pick-list" role="radiogroup" aria-label="${attr(t('Profile'))}">${picked
