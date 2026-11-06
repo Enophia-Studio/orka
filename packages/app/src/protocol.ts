@@ -367,6 +367,10 @@ export interface RadarSourceView {
 export interface RadarView {
   enabled: boolean;
   autoAnalyze: boolean;
+  /** A Markdown note in notesDir after each analysis that found something (radar.writeNotes). */
+  writeNotes: boolean;
+  /** <orka home>/radar/notes: the notes, LATEST.md, and reports saved without a save dialog. */
+  notesDir: string;
   /** Every host Radar may contact while it is on (its feeds and the redirects they may take), with what it reads there. */
   hosts: Array<{ host: string; products: string[] }>;
   sources: RadarSourceView[];
@@ -640,8 +644,8 @@ export type FromWebview =
   | { type: 'switchSession'; sessionId: string }
   /** Desktop (IDE layout): close an idle session that is not shown (its task stays in the list). */
   | { type: 'closeSession'; sessionId: string }
-  /** Radar (desktop): check the feeds that are due, analyze what is waiting, stop the analysis, retry quarantined entries. */
-  | { type: 'radar'; action: 'poll' | 'analyze' | 'stop' | 'retry' }
+  /** Radar (desktop): check the feeds that are due, analyze what is waiting, stop the analysis, retry quarantined entries, open the notes folder, save the report as Markdown. */
+  | { type: 'radar'; action: 'poll' | 'analyze' | 'stop' | 'retry' | 'openNotes' | 'saveMarkdown' }
   /** A new session in the current folder with the proposal of this cluster in the message box (never sent). */
   | { type: 'radarStartSession'; cluster: string }
   /** Open a release note the report links to (only a link that is in the report). */

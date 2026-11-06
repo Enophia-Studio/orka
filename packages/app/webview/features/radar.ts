@@ -53,7 +53,15 @@ export function radarPanelHtml(radar: RadarView, report: RadarReportView | undef
       ? `<div class="hint radar-elsewhere" role="status">${icon('info')}<span>${escapeHtml(t('Another Orka window runs Radar: it checks the feeds and analyzes, and this window shows its report.'))}</span></div>`
       : '';
   const body = radar.enabled ? onHtml(radar, deps) : offHtml(radar);
-  return `${head}${error}${elsewhere}${body}${report ? reportHtml(report, radar) : ''}`;
+  return `${head}${error}${elsewhere}${body}${report ? reportHtml(report, radar) : ''}${radar.enabled || report ? notesHtml(!!report) : ''}`;
+}
+
+/** The notes folder and "Save as Markdown…": files on this PC only, for handing the findings to a coding assistant. */
+function notesHtml(hasReport: boolean): string {
+  return `<div class="radar-files">
+      <button class="btn small" data-action="radar-open-notes" title="${attr(t("Radar's Markdown notes: one per analysis, and LATEST.md with the newest"))}">${icon('folder')}${escapeHtml(t('Open notes folder'))}</button>
+      <button class="btn small" data-action="radar-save-markdown"${hasReport ? '' : ' disabled'} title="${attr(t('The whole report as a Markdown file'))}">${escapeHtml(t('Save as Markdown…'))}</button>
+    </div>`;
 }
 
 /** Off: what Radar would do and every host it would contact, and the switch. */
@@ -283,7 +291,7 @@ function confidenceLabel(confidence: string): string {
 // ------------------------------------------------------------------ Settings > Control
 
 /** The same switches as the panel; the hosts are named before Radar is turned on. While it is off, automatic analysis can be turned off, not on. */
-export function radarSettingsCard(radar: RadarView, panel: boolean): string {
+export function radarSettingsCard(radar: RadarView, panel: boolean, hasReport = false): string {
   const hosts = radar.hosts.map((h) => h.host).join(', ');
   return `<div class="card">
       <div class="card-head"><strong>Radar</strong><span class="muted">${escapeHtml(t('release notes of other AI coding tools'))}</span></div>
@@ -293,6 +301,10 @@ export function radarSettingsCard(radar: RadarView, panel: boolean): string {
       <label class="check"><input type="checkbox" data-setting="radar.autoAnalyze"${radar.autoAnalyze ? ' checked' : ''}${radar.enabled || radar.autoAnalyze ? '' : ' disabled'}><span>${escapeHtml(
         t('Analyze right after a check finds something'),
       )}<br><span class="muted">${escapeHtml(autoAnalyzeNote(radar))}</span></span></label>
+      <label class="check"><input type="checkbox" data-setting="radar.writeNotes"${radar.writeNotes ? ' checked' : ''}><span>${escapeHtml(t('Write a Markdown note after each analysis'))}<br><span class="muted">${escapeHtml(
+        t('What each analysis found, for a coding assistant: {path} (LATEST.md is always the newest). It stays on this PC.', { path: radar.notesDir }),
+      )}</span></span></label>
+      ${notesHtml(hasReport)}
       ${
         panel
           ? `<button class="link radar-open" data-action="open-radar">${escapeHtml(t('Open the Radar panel'))}</button>`

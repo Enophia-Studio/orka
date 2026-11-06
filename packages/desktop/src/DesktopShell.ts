@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, type FSWatcher, mkdirSync, promises as fs, statSync, watch } from 'node:fs';
 import * as path from 'node:path';
 import { log } from './log';
-import { openExternal, openTerminalWindow, pickFile, pickFolder } from './native';
+import { openExternal, openTerminalWindow, pickFile, pickFolder, pickSaveFile } from './native';
 import { OsSecretStore } from './secrets';
 import type { UiServer } from './server';
 import { JsonSettings, JsonState } from './store';
@@ -197,6 +197,10 @@ export class DesktopShell implements AppShell, Disposable {
 
   pickFile(options: { title: string; filters?: Record<string, string[]> }): Promise<string | undefined> {
     return pickFile(options.title, options.filters);
+  }
+
+  pickSaveFile(options: { title: string; suggested: string; filters?: Record<string, string[]> }): Promise<string | undefined | null> {
+    return pickSaveFile(options.title, options.suggested, options.filters);
   }
 
   // ---------------------------------------------------------------- opening things

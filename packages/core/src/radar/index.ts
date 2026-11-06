@@ -4,6 +4,7 @@ export { DEFAULT_SOURCES, DEFAULT_STABLE_TAG, defaultSources, NEVER_FETCH_HOSTS,
 export { fetchSource, HostPacer, RADAR_USER_AGENT, type RadarFetchOptions, type RadarFetchResult } from './fetch';
 export { ENTRY_TEXT_MAX, entryId, parseFeed } from './feeds';
 export { emptyRadarState, loadRadarState, type RadarPollStatus, type RadarQuarantined, type RadarSourceState, type RadarState, saveRadarState } from './state';
+export { RADAR_NOTES_KEEP, RADAR_NOTES_LATEST, radarNoteDiff, type RadarNoteDiff, type RadarNoteOptions, radarReportFileName, renderRadarNote, writeRadarNote, writeReportMarkdown } from './notes';
 export { BUILTIN_INVENTORY, type FeatureInventory, type InventoryFeature, type InventoryValidation, loadFeatureInventory, validateInventory } from './inventory';
 export {
   analyzeEntries,

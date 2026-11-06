@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+**Radar**
+
+- **Markdown notes** (desktop): after each analysis that found or decided something new, Radar writes what is new in that run to `~/.orka/radar/notes/radar-<date>-<time>.md` and to `LATEST.md` beside it, for handing to a coding assistant: each gap with its priority, size, tools, rationale and the proposal text **Start a session** uses, one line per feature Orka has or does not want, and the new changes as summaries with links (never release-note text). The 50 newest notes are kept. `radar.writeNotes` (on by default) turns them off; they stay on your machine.
+- **Open notes folder** and **Save as Markdown…** in the Radar tab and in **Settings → Control**: the second saves the whole report to a file you pick in the system's save dialog, which starts in the notes folder (or, when the dialog cannot be shown, for example without zenity on Linux, to the notes folder as `radar-report-<date>.md`), and says where.
+
+**Fixes**
+
+- Windows: **Open folder…** and the other system dialogs (choose a file, an error box) opened behind Orka's window, so the button seemed to do nothing and each click left one more hidden dialog. They now open in front and have a taskbar button, and the folder dialog opens once however often the button is clicked.
+- **Accounts** showed Antigravity CLI as *Unknown* even when signed in. It now asks `agy models` (agy 1.5.0 and newer): a model list means signed in (the label shows how many models, since agy names no account), a failure that says so (not signed in, login required) means signed out, with how to sign in, and any other failure (offline, a server error, a quota) shows *Unknown* with what agy printed. Only the count is kept; agy older than 1.5.0 still gets the update hint.
+
 ## 0.7.0
 
 Accounts and CLIs: sign in to each CLI from Orka, install Claude Code, Antigravity CLI and Codex from it, and pick the model and effort per session in the message box. See [Accounts](README.md#accounts) and [Installing CLIs](README.md#installing-clis).

@@ -141,7 +141,7 @@ export interface AppSettings {
    * agent's, when that is a plain model provider), never an agent CLI or Claude Code. Read from the
    * user's own settings only: a folder's settings can neither turn it on nor pick its provider.
    */
-  radar: { enabled: boolean; provider: ProviderRef | ''; model: string; autoAnalyze: boolean };
+  radar: { enabled: boolean; provider: ProviderRef | ''; model: string; autoAnalyze: boolean; writeNotes: boolean };
   /**
    * Claude Code profiles: config folders of their own (CLAUDE_CONFIG_DIR), each signed in to a
    * separate account, and the one Claude Code runs on ('' = the default, no variable set). From
@@ -271,6 +271,8 @@ export function readSettings(c: SettingsStore): AppSettings {
       provider: radarProvider ?? '',
       model: typeof radarModel === 'string' && MODEL_ID.test(radarModel.trim()) ? radarModel.trim() : '',
       autoAnalyze: userOnly('radar.autoAnalyze') === true,
+      // On unless the user turned it off: a Markdown note in <orka home>/radar/notes after each analysis that found something.
+      writeNotes: userOnly('radar.writeNotes') !== false,
     },
     accounts: readAccounts(userOnly('accounts.claudeProfiles'), userOnly('accounts.claudeProfile')),
   };
@@ -417,13 +419,14 @@ export const WEBVIEW_SETTINGS: Record<string, (value: unknown) => boolean> = {
   'sessions.maxRunning': int(1, MAX_RUNNING_LIMIT),
   'radar.enabled': (v) => typeof v === 'boolean',
   'radar.autoAnalyze': (v) => typeof v === 'boolean',
+  'radar.writeNotes': (v) => typeof v === 'boolean',
   // '' = the main agent's provider. Never an agent CLI or Claude Code: Radar runs on a model API.
   'radar.provider': (v) => v === '' || (typeof v === 'string' && /^(?:claude|openai|gemini|claude-code|custom:[a-z0-9][a-z0-9-]{0,39})$/.test(v)),
   'radar.model': (v) => v === '' || (typeof v === 'string' && MODEL_ID.test(v)),
 };
 
 /** Radar's settings: desktop only, never registered in VS Code. */
-export const RADAR_SETTINGS = new Set(['radar.enabled', 'radar.provider', 'radar.model', 'radar.autoAnalyze']);
+export const RADAR_SETTINGS = new Set(['radar.enabled', 'radar.provider', 'radar.model', 'radar.autoAnalyze', 'radar.writeNotes']);
 
 /** Settings only the desktop app has. */
 export const DESKTOP_SETTINGS = new Set(['desktop.layout', 'desktop.theme', 'sessions.maxRunning', ...RADAR_SETTINGS]);

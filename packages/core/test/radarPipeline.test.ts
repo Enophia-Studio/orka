@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { describe, it } from 'node:test';
 import { setLocale } from '../src/i18n';
@@ -8,6 +8,7 @@ import { type AIProvider, type ChatRequest, type ChatResponse, ProviderError } f
 import { HostPacer } from '../src/radar/fetch';
 import { parseFeed } from '../src/radar/feeds';
 import { BUILTIN_INVENTORY, loadFeatureInventory, validateInventory } from '../src/radar/inventory';
+import { RADAR_NOTES_KEEP, radarNoteDiff, radarReportFileName, writeRadarNote, writeReportMarkdown } from '../src/radar/notes';
 import { analyzeEntries } from '../src/radar/pipeline';
 import { Radar } from '../src/radar/Radar';
 import { buildReport, mergeReports, proposalSpec, renderReportMarkdown, validateReport } from '../src/radar/report';
@@ -991,6 +992,135 @@ describe('Radar inventory', () => {
       writeFileSync(file, JSON.stringify({ features: [{ id: 'x' }] }));
       await assert.rejects(loadFeatureInventory(file), /cannot be used/);
       await assert.rejects(loadFeatureInventory(path.join(root, 'missing.json')), /Could not read/);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+describe('Radar notes', () => {
+  const AT = new Date(2026, 10, 6, 14, 30);
+  const firstRun = async () => (await analyzeEntries([entry(1), other(2)], new FakeRadarProvider(), BUILTIN_INVENTORY, { now: NOW, sources: [source] })).report;
+  const notesIn = (dir: string) => readdirSync(dir).filter((n) => /^radar-\d{4}-\d{2}-\d{2}-\d{4}(-\d+)?\.md$/.test(n));
+
+  it('writes what a run found as Markdown, with the proposal spec, and LATEST.md with the same text', async () => {
+    const { root, cleanup } = tempWorkspace();
+    try {
+      const dir = path.join(root, 'radar', 'notes');
+      const report = await firstRun();
+      const file = await writeRadarNote(dir, undefined, report, { now: AT });
+      assert.equal(path.basename(file!), 'radar-2026-11-06-1430.md');
+      const md = readFileSync(file!, 'utf8');
+      assert.equal(readFileSync(path.join(dir, 'LATEST.md'), 'utf8'), md);
+      assert.match(md, /^# Radar notes, 2026\\-11\\-06 14\\:30$/m);
+      assert.match(md, /^Analysis with fake \/ fake\\-1\\\.$/m);
+      assert.match(md, /^New in this run\\: 1 gap, 0 other decisions, 2 new changes\\\.$/m);
+      assert.match(md, /^## What Orka lacks$/m);
+      assert.match(md, /^### Background agents$/m);
+      assert.match(md, /^Priority P2, effort M\\\. Seen at\\: Example, Other$/m);
+      // The spec as "Start a session" gives it: validated proposal fields and Orka's rules, in a block that copies as it is.
+      const spec = proposalSpec(report.clusters[0].decision!, report.clusters[0])!;
+      assert.ok(md.includes(`\`\`\`text\n${spec}\n\`\`\``), 'the proposal spec, unchanged');
+      assert.match(md, /\[Other IDE: Background agents\]\(<https:\/\/github\.com\/example\/agent-cli\/releases\/tag\/v1\.2\.0>\)/);
+      assert.doesNotMatch(md, /RAWNOTE|continue their work in the background/, 'summaries only, never release-note text');
+      // Nothing new: no note.
+      assert.equal(await writeRadarNote(dir, report, report, { now: AT }), undefined);
+      assert.deepEqual(notesIn(dir), ['radar-2026-11-06-1430.md']);
+      // A second run in the same minute gets a name of its own; LATEST.md follows it.
+      const again = await writeRadarNote(dir, undefined, report, { now: AT });
+      assert.equal(path.basename(again!), 'radar-2026-11-06-1430-2.md');
+      setLocale('tr');
+      try {
+        const tr = await writeRadarNote(dir, undefined, report, { now: AT });
+        assert.match(readFileSync(path.join(dir, 'LATEST.md'), 'utf8'), /^# Radar notları, 2026\\-11\\-06 14\\:30$/m);
+        assert.equal(path.basename(tr!), 'radar-2026-11-06-1430-3.md');
+      } finally {
+        setLocale('en');
+      }
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('holds only what is new compared with the previous report', async () => {
+    const previous = await firstRun();
+    const item = { ...previous.items[0], id: previous.items[0].id.replace(/-\d+$/, '-9'), title: 'Hooks before commits', summary: 'Runs a check before each commit, in other words.' };
+    const run: RadarReport = { ...previous, items: [...previous.items, item] };
+    assert.deepEqual(radarNoteDiff(previous, run), { clusters: [], items: [item] }, 'the same decision again is not news');
+    const { root, cleanup } = tempWorkspace();
+    try {
+      const md = readFileSync((await writeRadarNote(root, previous, run, { now: AT }))!, 'utf8');
+      assert.match(md, /^New in this run\\: 0 gaps, 0 other decisions, 1 new change\\\.$/m);
+      assert.doesNotMatch(md, /What Orka lacks|Background agents\]/);
+      assert.match(md, /Agent CLI: Hooks before commits/);
+    } finally {
+      cleanup();
+    }
+    const changed = JSON.parse(JSON.stringify(previous)) as RadarReport;
+    changed.clusters[0].decision!.priority = 'P1';
+    assert.deepEqual(
+      radarNoteDiff(previous, changed).clusters.map((c) => c.key),
+      [previous.clusters[0].key],
+      'a changed decision is',
+    );
+    const undecided = JSON.parse(JSON.stringify(previous)) as RadarReport;
+    delete undecided.clusters[0].decision;
+    assert.deepEqual(radarNoteDiff(previous, undecided).clusters, [], 'a run that did not decide a known cluster again changes nothing');
+    const quiet = { ...previous, items: previous.items.map((i) => ({ ...i, relevance: 0 as const })), clusters: [] };
+    assert.deepEqual(radarNoteDiff(undefined, quiet), { clusters: [], items: [] }, 'relevance 0 is not listed');
+  });
+
+  it('keeps the 50 newest notes and deletes nothing else', async () => {
+    const { root, cleanup } = tempWorkspace();
+    try {
+      mkdirSync(root, { recursive: true });
+      for (let day = 1; day <= 28; day++) for (const time of ['0900', '1800']) writeFileSync(path.join(root, `radar-2026-10-${String(day).padStart(2, '0')}-${time}.md`), 'old');
+      const mine = ['radar-report-2026-10-01.md', 'notes.txt', 'radar-2026-10-01-0900.md.bak', 'README.md'];
+      for (const name of mine) writeFileSync(path.join(root, name), 'mine');
+      await writeRadarNote(root, undefined, await firstRun(), { now: AT });
+      const left = notesIn(root).sort();
+      assert.equal(left.length, RADAR_NOTES_KEEP);
+      assert.equal(left.at(-1), 'radar-2026-11-06-1430.md');
+      assert.equal(left[0], 'radar-2026-10-04-1800.md', 'the oldest went first');
+      for (const name of mine) assert.ok(existsSync(path.join(root, name)), name);
+      await writeRadarNote(root, undefined, await firstRun(), { now: AT, keep: 3 });
+      assert.deepEqual(notesIn(root).sort(), ['radar-2026-10-28-1800.md', 'radar-2026-11-06-1430-2.md', 'radar-2026-11-06-1430.md']);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('escapes everything from feeds and models, and leaves out a proposal that fails its checks', async () => {
+    const report = await firstRun();
+    const hostile = '<script>alert(1)</script> # Heading\n## Injected [x](javascript:alert(1)) **bold** ```fence https://evil.example/x';
+    const tampered = JSON.parse(JSON.stringify(report)) as RadarReport;
+    tampered.items[0] = { ...tampered.items[0], title: hostile, summary: hostile, vendor: 'Evil<img src=x>', url: 'javascript:alert(1)' };
+    tampered.clusters[0].title = hostile;
+    tampered.clusters[0].decision!.rationale = hostile;
+    tampered.clusters[0].decision!.proposal!.problem = hostile;
+    tampered.provider = { id: 'fake', model: '<b>x</b>' };
+    const { root, cleanup } = tempWorkspace();
+    try {
+      const md = readFileSync((await writeRadarNote(root, undefined, tampered, { now: AT }))!, 'utf8');
+      assert.doesNotMatch(md, /<script|<img|<b>|javascript:|evil\.example/i);
+      assert.ok(md.split('\n').every((line) => !line.startsWith('#') || /^#{1,3} [^#\n]/.test(line)), 'no heading can be smuggled in');
+      assert.ok(!md.split('\n').some((line) => /^#+ (Heading|Injected)/.test(line)));
+      assert.doesNotMatch(md, /```/, 'no spec: the tampered proposal fails its checks');
+      assert.doesNotMatch(md, /Implement this feature/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('saves the whole report as Markdown', async () => {
+    const report = await firstRun();
+    const { root, cleanup } = tempWorkspace();
+    try {
+      assert.equal(radarReportFileName(AT), 'radar-report-2026-11-06.md');
+      const file = path.join(root, 'out', radarReportFileName(AT));
+      await writeReportMarkdown(file, report);
+      assert.equal(readFileSync(file, 'utf8'), renderReportMarkdown(report));
+      assert.deepEqual(readdirSync(path.dirname(file)), ['radar-report-2026-11-06.md'], 'no temp file left');
     } finally {
       cleanup();
     }

@@ -129,9 +129,14 @@ export async function loadRadarState(file: string): Promise<RadarState> {
 
 /** Write the state atomically: a crash or a second writer never leaves half a file. */
 export async function saveRadarState(file: string, state: RadarState): Promise<void> {
+  await writeFileAtomic(file, JSON.stringify(state));
+}
+
+/** Write `text` to `file` through a temp file and a rename (its folder is created): never half a file. */
+export async function writeFileAtomic(file: string, text: string): Promise<void> {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
-  await fs.writeFile(temp, JSON.stringify(state), 'utf8');
+  await fs.writeFile(temp, text, 'utf8');
   for (let attempt = 0; ; attempt++) {
     try {
       await fs.rename(temp, file);

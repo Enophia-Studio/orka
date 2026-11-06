@@ -53,6 +53,7 @@ import {
   systemLocale,
   t,
   type Tool,
+  tooOldForAcp,
   VERSION,
 } from '@orka/core';
 import { execFile } from 'node:child_process';
@@ -238,6 +239,10 @@ export class AppController implements Disposable {
           createProvider: (ref, model) => this.radarProvider(ref, model),
           startSession: (text) => this.startRadarSession(text),
           openExternal: (url) => this.shell.openExternal(url),
+          ...(shell.pickSaveFile
+            ? { pickSaveFile: (suggested: string) => shell.pickSaveFile!({ title: t('Save the Radar report as Markdown'), suggested, filters: { Markdown: ['md'] } }) }
+            : {}),
+          info: (text) => void this.shell.message('info', text),
         },
         options.radar,
       );
@@ -496,6 +501,8 @@ export class AppController implements Disposable {
         else if (message.action === 'analyze') await this.radar?.analyze();
         else if (message.action === 'stop') this.radar?.stopAnalysis();
         else if (message.action === 'retry') await this.radar?.retry();
+        else if (message.action === 'openNotes') await this.radar?.openNotes();
+        else if (message.action === 'saveMarkdown') await this.radar?.saveMarkdown();
         break;
       case 'radarStartSession':
         if (typeof message.cluster === 'string') await this.radar?.startSession(message.cluster);
@@ -2496,6 +2503,13 @@ export class AppController implements Disposable {
             ? t('Copilot CLI has no status command: type /user in it to see the account.')
             : t('{cli} has no status command: its sign-in is chosen inside the CLI.', { cli: this.accountLabel(cli) }),
       });
+      return;
+    }
+    // agy before 1.5.0 has no "models" command (nor "acp"): it needs an update first.
+    const entry = cli === 'antigravity' ? this.agentEntry(cli) : undefined;
+    const tooOld = entry && tooOldForAcp(entry, this.agentStatus.get(cli)?.version);
+    if (tooOld) {
+      this.accountStatus.set(key, { state: 'unknown', hint: tooOld });
       return;
     }
     const output = await this.probe(file, status, env).catch((error: unknown) => ({

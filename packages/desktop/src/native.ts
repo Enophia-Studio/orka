@@ -2,28 +2,89 @@ import { shLine, shQuote, terminalWindow, type TerminalProgram } from '@orka/app
 import { findBrowser, programPath } from '@orka/core';
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
+import * as path from 'node:path';
 
-function output(name: string, args: string[], env: Record<string, string> = {}): Promise<string | undefined> {
+/** How a program ended; undefined when it is not installed. */
+interface Ran {
+  failed: boolean;
+  code?: number;
+  stdout: string;
+  stderr: string;
+}
+
+function run(name: string, args: string[], env: Record<string, string> = {}): Promise<Ran | undefined> {
   const file = programPath(name);
   if (!file) return Promise.resolve(undefined);
   return new Promise((resolve) => {
-    execFile(file, args, { env: { ...process.env, ...env }, windowsHide: true, timeout: 10 * 60_000 }, (error, stdout) => resolve(error ? undefined : stdout));
+    execFile(file, args, { env: { ...process.env, ...env }, windowsHide: true, timeout: 10 * 60_000 }, (error, stdout, stderr) =>
+      resolve({ failed: !!error, code: typeof error?.code === 'number' ? error.code : undefined, stdout: String(stdout), stderr: String(stderr) }),
+    );
   });
 }
 
-/** PowerShell with Windows Forms (-STA), texts through environment variables, the answer base64-encoded UTF-8. */
-async function windowsDialog(script: string, env: Record<string, string>): Promise<string | undefined> {
-  const out = await output('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', `Add-Type -AssemblyName System.Windows.Forms; ${script}`], env);
-  const text = out?.trim();
-  return text ? Buffer.from(text, 'base64').toString('utf8') : undefined;
+async function output(name: string, args: string[], env: Record<string, string> = {}): Promise<string | undefined> {
+  const ran = await run(name, args, env);
+  return ran && !ran.failed ? ran.stdout : undefined;
 }
 
-/** A topmost owner, so the dialog opens in front of Orka's window. */
-const OWNER = '$o = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $false }';
+/**
+ * What a dialog program answered: its output, undefined when the user cancelled, null when it could
+ * not show the dialog (not installed, or it failed).
+ */
+export function dialogAnswer(platform: NodeJS.Platform, ran: Ran | undefined): string | undefined | null {
+  if (!ran) return null;
+  if (!ran.failed) return ran.stdout.trim() || undefined;
+  // osascript says "User canceled. (-128)"; zenity exits with 1. PowerShell exits with 0 on a cancel.
+  if (platform === 'darwin') return /\(-128\)/.test(ran.stderr) ? undefined : null;
+  if (platform !== 'win32' && ran.code === 1) return undefined;
+  return null;
+}
+
+/** PowerShell with Windows Forms (-STA), texts through environment variables, the answer base64-encoded UTF-8; null as in dialogAnswer. */
+async function windowsDialogAnswer(script: string, env: Record<string, string>): Promise<string | undefined | null> {
+  const ran = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-Command', `Add-Type -AssemblyName System.Windows.Forms; ${script}`], env);
+  const text = dialogAnswer('win32', ran);
+  return text ? Buffer.from(text, 'base64').toString('utf8') : text;
+}
+
+async function windowsDialog(script: string, env: Record<string, string>): Promise<string | undefined> {
+  return (await windowsDialogAnswer(script, env)) ?? undefined;
+}
+
+/** osascript's arguments for the save dialog, in the folder of `suggested` with its name. */
+export function macSaveDialogArgs(title: string, suggested: string): string[] {
+  return [
+    '-e',
+    'on run argv',
+    '-e',
+    'POSIX path of (choose file name with prompt (item 1 of argv) default name (item 2 of argv) default location (POSIX file (item 3 of argv)))',
+    '-e',
+    'end run',
+    title,
+    path.basename(suggested),
+    path.dirname(suggested),
+  ];
+}
+
+/**
+ * A topmost owner, so the dialog opens in front of Orka's window. It has to be shown (invisible,
+ * 1x1): a dialog owned by a form that was never shown is not topmost, and as Orka's background
+ * process may not take the foreground, it opened behind the window. Its taskbar button, named
+ * after the dialog, is a way back to the dialog should anything cover it.
+ */
+const OWNER =
+  "$o = New-Object System.Windows.Forms.Form -Property @{ TopMost = $true; ShowInTaskbar = $true; Text = $env:ORKA_TITLE; FormBorderStyle = 'None'; StartPosition = 'CenterScreen'; Width = 1; Height = 1; Opacity = 0 }; $o.Show(); $o.Activate()";
 const ANSWER = '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($p))';
 
-/** The operating system's folder picker; undefined when cancelled. */
-export async function pickFolder(title: string): Promise<string | undefined> {
+let folderPicker: Promise<string | undefined> | undefined;
+
+/** The operating system's folder picker; undefined when cancelled. One at a time: another click waits for the open one. */
+export function pickFolder(title: string): Promise<string | undefined> {
+  folderPicker ??= showFolderPicker(title).finally(() => (folderPicker = undefined));
+  return folderPicker;
+}
+
+async function showFolderPicker(title: string): Promise<string | undefined> {
   let picked: string | undefined;
   if (process.platform === 'win32') {
     picked = await windowsDialog(
@@ -53,6 +114,29 @@ export async function pickFile(title: string, filters?: Record<string, string[]>
     picked = (await output('zenity', ['--file-selection', `--title=${title}`]))?.trim();
   }
   return picked && existsSync(picked) ? picked : undefined;
+}
+
+/**
+ * The operating system's save dialog, starting in the folder of `suggested` with its name; it asks
+ * before replacing a file. Undefined when cancelled, null when the dialog could not be shown.
+ */
+export async function pickSaveFile(title: string, suggested: string, filters?: Record<string, string[]>): Promise<string | undefined | null> {
+  let picked: string | undefined | null;
+  if (process.platform === 'win32') {
+    const filter = [...Object.entries(filters ?? {}).map(([name, exts]) => `${name}|${exts.map((e) => `*.${e}`).join(';')}`), 'All files|*.*'].join('|');
+    picked = await windowsDialogAnswer(
+      `${OWNER}; $d = New-Object System.Windows.Forms.SaveFileDialog; $d.Title = $env:ORKA_TITLE; $d.Filter = $env:ORKA_FILTER; $d.InitialDirectory = $env:ORKA_DIR; $d.FileName = $env:ORKA_NAME; $d.OverwritePrompt = $true; if ($d.ShowDialog($o) -eq 'OK') { $p = $d.FileName; ${ANSWER} }`,
+      { ORKA_TITLE: title, ORKA_FILTER: filter, ORKA_DIR: path.dirname(suggested), ORKA_NAME: path.basename(suggested) },
+    );
+  } else if (process.platform === 'darwin') {
+    picked = dialogAnswer('darwin', await run('osascript', macSaveDialogArgs(title, suggested)));
+  } else {
+    picked = dialogAnswer(process.platform, await run('zenity', ['--file-selection', '--save', '--confirm-overwrite', `--title=${title}`, `--filename=${suggested}`]));
+  }
+  if (picked === null) return null;
+  if (!picked || !path.isAbsolute(picked)) return undefined;
+  // A file in a folder that exists, not a folder itself.
+  return existsSync(path.dirname(picked)) && statSync(path.dirname(picked)).isDirectory() && !(existsSync(picked) && statSync(picked).isDirectory()) ? picked : undefined;
 }
 
 /** An error in a message box of its own (Windows only), for when there is no Orka window to show it in. */

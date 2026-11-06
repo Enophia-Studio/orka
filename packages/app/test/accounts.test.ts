@@ -99,6 +99,36 @@ describe('account status commands', () => {
     assert.equal(parseStatus('codex', { code: 0, stdout: `${'x'.repeat(500)}\nsecond`, stderr: '' }).label?.length, 160);
   });
 
+  it('reads "agy models": model lines mean signed in (only their count is kept), signed out only when agy says so', () => {
+    const listed = { code: 0, stdout: 'Fetching available models...\r\ngemini-3-pro\tGemini 3 Pro\r\ngemini-3-flash\tGemini 3 Flash\r\n', stderr: '' };
+    assert.deepEqual(parseStatus('antigravity', listed), { state: 'signed_in', label: 'Signed in (2 models available)' });
+    assert.deepEqual(parseStatus('antigravity', { code: 0, stdout: 'Fetching available models...\na\tA\n', stderr: '' }), { state: 'signed_in', label: 'Signed in (1 model available)' });
+    assert.doesNotMatch(JSON.stringify(parseStatus('antigravity', listed)), /gemini-3|Gemini 3/, 'the model list is not kept');
+
+    const hint = 'Sign in by running agy in a terminal (Sign in… opens it).';
+    assert.deepEqual(parseStatus('antigravity', { code: 1, stdout: 'Fetching available models...\n', stderr: '\u001b[31mError: not signed in\u001b[0m\n' }), {
+      state: 'signed_out',
+      label: 'Error: not signed in',
+      hint,
+    });
+    assert.deepEqual(parseStatus('antigravity', { code: 1, stdout: '', stderr: 'Error: login required\n' }), { state: 'signed_out', label: 'Error: login required', hint });
+    // Any other failure (offline, a server error, a quota) is no sign-out: unknown, with what agy said.
+    assert.deepEqual(parseStatus('antigravity', { code: 1, stdout: 'Fetching available models...\n', stderr: 'Error: fetch failed (ECONNRESET)\n' }), {
+      state: 'unknown',
+      label: 'Error: fetch failed (ECONNRESET)',
+    });
+    assert.deepEqual(parseStatus('antigravity', { code: 1, stdout: '', stderr: '503 Service Unavailable\n' }), { state: 'unknown', label: '503 Service Unavailable' });
+    assert.equal(parseStatus('antigravity', { code: 1, stdout: '', stderr: 'Error: quota exceeded\n' }).state, 'unknown');
+    // Exit 0 without a model line, or a long first line: unknown, and no line shown.
+    assert.deepEqual(parseStatus('antigravity', { code: 0, stdout: 'Fetching available models...\n', stderr: '' }), { state: 'unknown', label: undefined });
+    assert.deepEqual(parseStatus('antigravity', { code: 2, stdout: `${'x'.repeat(200)}\n`, stderr: '' }), { state: 'unknown', label: undefined });
+    // A program that could not start, or did not answer: unknown, as before.
+    assert.equal(parseStatus('antigravity', { code: null, stdout: '', stderr: 'spawn agy ENOENT' }).state, 'unknown');
+    assert.equal(parseStatus('antigravity', { code: null, stdout: '', stderr: '', timedOut: true }).state, 'unknown');
+    // Gemini CLI has no such command.
+    assert.equal(ACCOUNT_COMMANDS.gemini.status, undefined);
+  });
+
   it('turns a status command that does not answer in time into unknown', () => {
     const status = parseStatus('claude-code', { code: null, stdout: '', stderr: '', timedOut: true });
     assert.equal(status.state, 'unknown');
@@ -121,7 +151,7 @@ describe('account status commands', () => {
   it('are the commands the vendors document, and their hints are translated', async () => {
     assert.deepEqual(Object.fromEntries(ACCOUNT_CLIS.map((cli) => [cli, [ACCOUNT_COMMANDS[cli].status, ACCOUNT_COMMANDS[cli].login, ACCOUNT_COMMANDS[cli].logout]])), {
       'claude-code': [['auth', 'status'], ['auth', 'login'], ['auth', 'logout']],
-      antigravity: [undefined, [], undefined],
+      antigravity: [['models'], [], undefined],
       codex: [['login', 'status'], ['login'], ['logout']],
       copilot: [undefined, ['login'], undefined],
       cursor: [['status'], ['login'], ['logout']],
@@ -206,6 +236,30 @@ describe('Settings > Accounts', () => {
     await controller.handleMessage({ type: 'logoutAccount', cli: 'copilot' });
     assert.deepEqual((shell.terminals[2].command as { args: readonly string[] }).args, []);
     assert.match(notices(shell).at(-1)?.message ?? '', /Type \/logout in Copilot CLI/);
+  });
+
+  it('asks an installed agy for its models, by its full path in the home folder, and shows the count', async () => {
+    writeFileSync(path.join(bin, process.platform === 'win32' ? 'agy.cmd' : 'agy'), '');
+    const { shell, controller, calls } = await start({}, (call) =>
+      base(call.file) === 'agy' ? { code: 0, stdout: 'Fetching available models...\nm1\tModel One\nm2\tModel Two\nm3\tModel Three\n', stderr: '' } : { code: 1, stdout: '', stderr: '' },
+    );
+    await controller.handleMessage({ type: 'checkAccount', cli: 'antigravity' });
+    assert.deepEqual(calls.map((c) => [base(c.file), c.args.join(' '), c.env]), [['agy', 'models', {}]]);
+    assert.ok(path.isAbsolute(calls[0].file));
+    assert.deepEqual(accounts(shell).find((r) => r.cli === 'antigravity')?.status, { state: 'signed_in', label: 'Signed in (3 models available)' });
+    assert.doesNotMatch(JSON.stringify(shell.posted), /Model One/);
+  });
+
+  it('keeps the update hint for agy older than 1.5.0, without running it', async () => {
+    writeFileSync(path.join(bin, process.platform === 'win32' ? 'agy.cmd' : 'agy'), '');
+    const { shell, controller, calls } = await start();
+    const agentStatus = (controller as unknown as { agentStatus: Map<string, { state: string; version?: string }> }).agentStatus;
+    agentStatus.set('antigravity', { state: 'error', version: '1.4.7' });
+    await controller.handleMessage({ type: 'checkAccount', cli: 'antigravity' });
+    assert.equal(calls.length, 0);
+    const status = accounts(shell).find((r) => r.cli === 'antigravity')?.status;
+    assert.equal(status?.state, 'unknown');
+    assert.match(status?.hint ?? '', /1\.4\.7 has no ACP mode yet; version 1\.5\.0 or newer is needed\. Update it with "agy update"/);
   });
 
   it('points to the installer when the CLI is not there', async () => {
