@@ -618,6 +618,8 @@ export class AppController implements Disposable {
       runFinished: () => {
         // Providers waiting for an idle moment are rebuilt once no session uses them.
         if (this.providersStale && !this.anyRunning()) this.disposeProviders();
+        // A Claude Code update the user asked for while a session ran.
+        if (this.claudeUpdateWaiting && !this.anyRunning()) void this.updateClaudeCode();
       },
       gate: this.gate,
       runAccounts: (session) => this.runAccounts(session),
@@ -905,17 +907,28 @@ export class AppController implements Disposable {
         if (!live || !target || !this.isCurrentFolder(target)) return;
         // The folder's open session is shown; one that runs goes on (its request is not stopped for a new task).
         if (live.isRunning) {
-          void this.shell.message(
-            'info',
-            t('A session is already running in {folder}. Orka runs one session at a time per folder; stop it or wait, then start a new one.', {
-              folder: path.basename(live.root) || live.root,
-            }),
-          );
+          this.noteRunningInFolder(live);
           return;
         }
       }
     }
-    await this.activeSession?.newTask();
+    // Parallel sessions: "New session" in the folder of the session that runs is another session
+    // there, which waits; the running one goes on (only Stop ends a request).
+    const shown = this.activeSession;
+    if (shown?.isRunning && this.parallel()) {
+      this.noteRunningInFolder(shown);
+      return;
+    }
+    await shown?.newTask();
+  }
+
+  private noteRunningInFolder(session: SessionController): void {
+    void this.shell.message(
+      'info',
+      t('A session is already running in {folder}. Orka runs one session at a time per folder; stop it or wait, then start a new one.', {
+        folder: path.basename(session.root) || session.root,
+      }),
+    );
   }
 
   async compact(): Promise<void> {
@@ -2098,6 +2111,8 @@ export class AppController implements Disposable {
   }
 
   private claudeCodeUpdate?: Promise<boolean>;
+  /** "claude update" was asked for while a session ran: it runs when the last run ends. */
+  private claudeUpdateWaiting = false;
 
   /**
    * Run "claude update" (a model can need a newer Claude Code than the one installed). Idle CLI
@@ -2110,11 +2125,16 @@ export class AppController implements Disposable {
       if (!quiet) this.publishNotice('error', t('Claude Code CLI not found.'));
       return false;
     }
-    // Never swap the executable under a running agent; a quiet (scheduled) check simply waits.
+    // Never swap the executable under a running agent: a quiet (scheduled) check simply waits, an
+    // update the user asked for runs once no session runs any more.
     if (this.anyRunning()) {
       if (quiet) return false;
-      this.providersStale = true;
-    } else this.disposeProviders();
+      if (!this.claudeUpdateWaiting) this.publishNotice('info', t('Claude Code will be updated when no session is running.'));
+      this.claudeUpdateWaiting = true;
+      return false;
+    }
+    this.claudeUpdateWaiting = false;
+    this.disposeProviders();
     const before = this.claudeCodeStatus.version;
     if (!quiet) this.publishNotice('info', t('Updating Claude Code…'));
     this.claudeCodeUpdate = new Promise<{ ok: boolean; output: string }>((resolve) =>

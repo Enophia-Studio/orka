@@ -177,6 +177,7 @@ export const TR: Record<string, string> = {
   'Or pick an alias such as "Opus (latest)" for this agent; aliases always match the installed CLI.':
     'Ya da bu agent için "Opus (en yeni)" gibi bir takma ad seçin; takma adlar her zaman kurulu CLI ile uyumludur.',
   'Updating Claude Code…': 'Claude Code güncelleniyor…',
+  'Claude Code will be updated when no session is running.': 'Claude Code, çalışan oturum kalmayınca güncellenecek.',
   'Claude Code was updated to {version}.': 'Claude Code {version} sürümüne güncellendi.',
   'Send your message again.': 'Mesajınızı tekrar gönderin.',
   'Claude Code is up to date ({version}).': 'Claude Code güncel ({version}).',

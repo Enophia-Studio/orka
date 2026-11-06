@@ -4,7 +4,7 @@
 // in-app dialogs, file writes, task history and (on Windows) DPAPI-protected API keys.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -73,7 +73,8 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
         requests.push({ body, headers: req.headers });
         const next = script.shift();
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        res.end(next ? next(body) : reply('(script ended)'));
+        // A step may answer later (a request that is still running meanwhile).
+        void Promise.resolve(next ? next(body) : reply('(script ended)')).then((answer) => res.end(answer));
       });
     });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -733,6 +734,89 @@ globalThis.fetch = (input, init) => {
         return real(url, init);
       };
     })()`);
+
+  /**
+   * An executable that runs FAKE_CLI_SCRIPT (with the arguments it was given) with this Node, in
+   * place of a CLI such as claude: a script with a #! line, or on Windows a Node single executable
+   * application (built once per Node version and kept in the temp folder), since CLIs are started
+   * without a shell there.
+   */
+  async function fakeClaudeCli() {
+    const loader = "require('node:module').createRequire(__filename)(process.env.FAKE_CLI_SCRIPT);\n";
+    if (process.platform !== 'win32') {
+      const file = path.join(home, 'fake-claude');
+      writeFileSync(file, `#!${process.execPath}\n${loader}`, { mode: 0o755 });
+      return file;
+    }
+    const exe = path.join(tmpdir(), `orka-test-fake-cli-${process.version}.exe`);
+    if (existsSync(exe)) return exe;
+    const dir = mkdtempSync(path.join(tmpdir(), 'orka-fake-cli-sea-'));
+    try {
+      writeFileSync(path.join(dir, 'main.js'), loader);
+      writeFileSync(path.join(dir, 'sea.json'), JSON.stringify({ main: 'main.js', output: 'blob.bin', disableExperimentalSEAWarning: true }));
+      spawnSync(process.execPath, ['--experimental-sea-config', 'sea.json'], { cwd: dir, stdio: 'ignore' });
+      const partial = path.join(dir, 'fake.exe');
+      copyFileSync(process.execPath, partial);
+      const { inject } = require('postject');
+      await inject(partial, 'NODE_SEA_BLOB', readFileSync(path.join(dir, 'blob.bin')), { sentinelFuse: 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2' });
+      renameSync(partial, exe);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    return exe;
+  }
+  const fakeClaudeScript = path.join(here, '..', '..', 'core', 'test', 'fixtures', 'fake-claude.mjs');
+
+  it('keeps a Claude Code request running whatever is opened meanwhile, and shows it live again', async () => {
+    const cli = await fakeClaudeCli();
+    const gate = path.join(home, 'hold');
+    const log = path.join(home, 'claude.log');
+    const call = '<function_calls>\n<invoke name="list_directory">\n<parameter name="path">.</parameter>\n</invoke>\n</function_calls>';
+    addSettings({ provider: 'claude-code', 'claudeCode.enabled': true, 'claudeCode.path': cli, permissionMode: 'autonomous' });
+    const url = await launch(work, {
+      env: { FAKE_CLI_SCRIPT: fakeClaudeScript, FAKE_CC_HOLD: gate, FAKE_CC_LOG: log, FAKE_CC_SCRIPT: JSON.stringify([`Looking first. ${call}`, 'Finished at last.']) },
+    });
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    await until(() => browser.evaluate('/Claude Code/.test(document.querySelector(".model-btn")?.textContent ?? "")'), 'Claude Code as the main agent', 60_000);
+    await browser.clickSelector('#input');
+    await browser.type('Take your time');
+    await browser.clickSelector('#send');
+    await until(async () => (await text()).includes('Looking'), 'the first part of the answer', 60_000);
+    const running = () => browser.evaluate('document.querySelector(".side-item.current")?.classList.contains("running")');
+    const meanwhile = async (what, action) => {
+      await action();
+      await sleep(400);
+      assert.equal(await running(), true, `still running after: ${what}`);
+    };
+    await meanwhile('Settings', () => browser.clickSelector('[data-action="open-settings"]'));
+    await meanwhile('a setting changed', () => post({ type: 'setSetting', key: 'claudeCode.effort', value: 'high' }));
+    await meanwhile('back to the chat', () => browser.clickSelector('[data-action="close-settings"]'));
+    await meanwhile('New session in its folder', () => browser.clickSelector('.side-new'));
+    await until(async () => (await text()).includes('A session is already running in'), 'the notice');
+    await meanwhile('the side panel', () => browser.evaluate('document.querySelector("[data-action=toggle-aside]").click(), true'));
+    await meanwhile('Accounts', () => browser.evaluate('document.querySelector("[data-action=toggle-accounts]").click(), true'));
+    await meanwhile('the folder picker', () => browser.evaluate('document.querySelector("[data-action=open-folder]").click(), true'));
+    await meanwhile('Escape in the picker', () => browser.press('Escape'));
+    await meanwhile('a reload', async () => {
+      await browser.evaluate('location.reload(), true').catch(() => undefined);
+      await sleep(1000);
+      await until(async () => (await text()).includes('Looking'), 'the live answer after the reload');
+    });
+    assert.equal(await browser.evaluate('document.querySelector("#send").getAttribute("aria-label")'), 'Stop');
+    writeFileSync(gate, '');
+    await until(async () => (await text()).includes('Finishe'), 'the second turn');
+    // A setting changed during the run applies from the next request: this one goes on in its own process.
+    await meanwhile('Settings again', () => browser.clickSelector('[data-action="open-settings"]'));
+    await meanwhile('another setting', () => post({ type: 'setSetting', key: 'claudeCode.effort', value: 'low' }));
+    await browser.clickSelector('[data-action="close-settings"]');
+    writeFileSync(gate, '');
+    await until(async () => (await text()).includes('Finished at last.'), 'the answer');
+    await until(async () => !(await running()), 'the run ended');
+    const turns = readFileSync(log, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    assert.equal(turns.length, 2);
+    assert.equal(new Set(turns.map((t) => t.pid)).size, 1, 'one Claude Code process for the whole request');
+  });
 
   it('lists every agent CLI in the main agent picker, and picking one turns it on', async () => {
     addSettings(fakeAgentSettings);

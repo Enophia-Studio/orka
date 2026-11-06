@@ -220,9 +220,43 @@ describe('agent CLIs', () => {
     assert.notEqual(shell.last('config')!.config.main.effective.provider, 'agent:custom:fake');
   });
 
-  it('a new task during a request stops it, keeps it in its own task, and starts empty', async () => {
+  it('a new session in the folder of a running one leaves the run going (desktop)', async () => {
     process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Working on it.' }, { hang: true, afterCancel: ' Stopping now.' }]]);
     const { shell, controller } = await start('desktop', agentSettings);
+    const sent = controller.send('First request');
+    await until(() => shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to start answering');
+    await controller.handleMessage({ type: 'newTask' });
+    await controller.handleMessage({ type: 'newTask', folder: folderA });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const events = shell.posted.flatMap((m) => (m.type === 'event' ? [m.event] : []));
+    assert.ok(!events.some((e) => e.type === 'run_finished' || e.type === 'reset'), 'still running, in the same task');
+    assert.equal(shell.asked.filter((a) => /A session is already running in alpha/.test(a.text)).length, 2, 'the app says why');
+    controller.stop();
+    await sent;
+  });
+
+  it('updates Claude Code only once no session runs', async () => {
+    process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Working on it.' }, { hang: true, afterCancel: ' Stopping now.' }]]);
+    // A stand-in for the executable: "update" fails at once, nothing is replaced.
+    const { shell, controller } = await start('desktop', { ...agentSettings, 'claudeCode.enabled': true, 'claudeCode.path': process.execPath, 'claudeCode.autoUpdate': false });
+    const notices = () => shell.posted.flatMap((m) => (m.type === 'event' && m.event.type === 'notice' ? [m.event.message] : []));
+    const sent = controller.send('First request');
+    await until(() => shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to start answering');
+    assert.equal(await controller.updateClaudeCode(), false);
+    assert.equal(await controller.updateClaudeCode(), false);
+    assert.deepEqual(
+      notices().filter((n) => /Claude Code/.test(n)),
+      ['Claude Code will be updated when no session is running.'],
+      'nothing runs under the running agent, and the app says when it will',
+    );
+    controller.stop();
+    await sent;
+    await until(() => notices().includes('Updating Claude Code…'), 'the update once the run ended');
+  });
+
+  it('a new task during a request stops it, keeps it in its own task, and starts empty (one session)', async () => {
+    process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Working on it.' }, { hang: true, afterCancel: ' Stopping now.' }]]);
+    const { shell, controller } = await start('vscode', agentSettings);
     const sent = controller.send('First request');
     await until(() => shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to start answering');
     // Two clicks: the second one waits for the first instead of starting yet another task.

@@ -13,6 +13,7 @@
 
 **Fixes**
 
+- A running session went on only until you started another one: **New session** in the folder of a session that runs (desktop) stopped its request. The request now goes on, and the app says that one session runs per folder at a time; only **Stop** ends a request. **Check for updates** and the automatic update after a model needed a newer Claude Code no longer run `claude update` while a session runs: the update waits until no session runs, and the app says so.
 - Windows: **Open folder…** and the other system dialogs (choose a file, an error box) opened behind Orka's window, so the button seemed to do nothing and each click left one more hidden dialog. They now open in front and have a taskbar button, and the folder dialog opens once however often the button is clicked.
 - **Accounts** showed Antigravity CLI as *Unknown* even when signed in. It now asks `agy models` (agy 1.5.0 and newer): a model list means signed in (the label shows how many models, since agy names no account), a failure that says so (not signed in, login required) means signed out, with how to sign in, and any other failure (offline, a server error, a quota) shows *Unknown* with what agy printed. Only the count is kept; agy older than 1.5.0 still gets the update hint.
 
