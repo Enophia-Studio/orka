@@ -467,13 +467,25 @@
   color: var(--muted);
 }
 
-/* The … menu of a session floats next to its button. */
-.session-menu {
+/*
+ * The … menu of a session floats next to its button, above the session list and the side panel
+ * (also where they float over the conversation). It is a .composer-menu too, whose place above the
+ * message box (absolute, bottom) must not apply: hence the two classes.
+ */
+.composer-menu.session-menu {
   position: fixed;
+  top: 0;
+  left: 0;
   right: auto;
   bottom: auto;
   z-index: 40;
   min-width: 230px;
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+
+.composer-menu.session-menu > * {
+  flex: none;
 }
 
 .menu-label {

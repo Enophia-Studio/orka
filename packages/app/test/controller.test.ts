@@ -130,6 +130,18 @@ describe('desktop session list', () => {
     assert.equal(shell.currentFolder()?.path, folderA, 'the open folder stays');
     assert.deepEqual(shell.last('sessions')?.groups[1].tasks, []);
   });
+
+  it('deletes a task of an open session whose folder dropped out of the recent list', async () => {
+    const { shell, controller } = await start('desktop');
+    await saveTask(shell, folderA, 'task-a1', 'Fix the alpha build');
+    // The list still shows the open session's folder; the recent list no longer has it.
+    shell.folders = () => [{ name: 'beta', path: folderB }];
+    await controller.handleMessage({ type: 'listSessions' });
+    assert.ok(shell.last('sessions')?.groups.some((g) => g.folder === folderA && g.tasks.some((t) => t.id === 'task-a1')));
+    shell.answer = 'Delete';
+    await controller.handleMessage({ type: 'deleteTask', id: 'task-a1', folder: folderA });
+    assert.deepEqual(await new FileTaskStore(shell.storage(folderA).tasks).list(), []);
+  });
 });
 
 describe('session groups', () => {

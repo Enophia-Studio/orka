@@ -4,7 +4,7 @@
 // in-app dialogs, file writes, task history and (on Windows) DPAPI-protected API keys.
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -668,6 +668,68 @@ globalThis.fetch = (input, init) => {
       assert.equal(await browser.evaluate('!!document.querySelector(".approval [data-action=approve]")'), true, 'still waiting for the approval');
       assert.equal(existsSync(path.join(work, 'a.txt')), false);
       assert.equal(requests.length, 1);
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes a session through its … menu, of this folder and of another recent one, after the in-app question', async () => {
+    const other = twoFolders();
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      // A narrow window, where the session list floats over the conversation.
+      await browser.page('Emulation.setDeviceMetricsOverride', { width: 700, height: 600, deviceScaleFactor: 1, mobile: false });
+      const saved = async (prompt, answer) => {
+        script = [() => reply(answer)];
+        await browser.clickSelector('#input');
+        await browser.type(prompt);
+        await browser.clickSelector('#send');
+        await until(async () => (await text()).includes(answer), 'the reply');
+        return until(
+          () => browser.evaluate(`[...document.querySelectorAll(".side-item")].find((e) => e.textContent.includes(${JSON.stringify(prompt)}))?.querySelector(".side-more")?.dataset.id`),
+          `the row of ${prompt}`,
+        );
+      };
+      /** Open a row's … menu and click Delete with the mouse, on its icon, where the session list lies below the menu. */
+      const deleteThrough = async (id) => {
+        const more = `.side-more[data-id="${id}"]`;
+        await browser.clickSelector(more);
+        await until(() => browser.evaluate('!!document.querySelector(".session-menu")'), 'the menu');
+        const menu = await browser.evaluate(`(() => {
+          const box = (e) => { const r = e.getBoundingClientRect(); return { left: r.left, top: r.top, right: r.right, bottom: r.bottom, height: r.height }; };
+          const menu = document.querySelector(".session-menu");
+          const items = [...menu.querySelectorAll(".menu-item")].map((item) => ({ ...box(item), label: box(item.querySelector("span")), action: item.dataset.action }));
+          return { menu: box(menu), button: box(document.querySelector('${more}')), items, height: innerHeight };
+        })()`);
+        assert.ok(menu.menu.top >= menu.button.bottom || menu.menu.bottom <= menu.button.top, 'next to its button, not over it');
+        assert.ok(menu.menu.bottom <= menu.height, 'inside the window');
+        for (const item of menu.items) {
+          assert.ok(item.top >= menu.menu.top && item.bottom <= menu.menu.bottom, `${item.action} inside the menu`);
+          assert.ok(item.height >= 30, `${item.action} keeps its height (${item.height})`);
+          assert.ok(item.label.top >= item.top && item.label.bottom <= item.bottom, `${item.action}: its text inside its highlight`);
+        }
+        const del = menu.items.find((i) => i.action === 'delete-session');
+        await browser.click(del.left + 14, (del.top + del.bottom) / 2);
+        await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog")'), 'the question');
+        assert.match(await text(), /Delete this task from the history\?/);
+        await browser.clickSelector('.modal-backdrop [data-action="dialog-action"]');
+        await until(() => browser.evaluate(`!document.querySelector('${more}')`), 'the row gone');
+      };
+      const tasks = () => readdirSync(path.join(home, 'tasks'), { recursive: true }).filter((f) => path.dirname(f) !== '.' && path.basename(f) !== 'index.json');
+
+      const first = await saved('Tidy up the readme', 'Readme tidied.');
+      // A session in the other folder: work's is now one of another recent folder.
+      await newSessionIn(other);
+      await until(async () => (await text()).includes('What should we build?'), 'the other folder');
+      const second = await saved('Count the files', 'Two files.');
+      assert.equal(tasks().length, 2);
+      await deleteThrough(second);
+      await deleteThrough(first);
+      assert.deepEqual(tasks(), [], 'both deleted from the history');
+      await sleep(300);
+      assert.doesNotMatch(await browser.evaluate('document.querySelector("#side-list").textContent'), /Tidy up the readme|Count the files/, 'and from the list');
     } finally {
       rmSync(other, { recursive: true, force: true });
     }

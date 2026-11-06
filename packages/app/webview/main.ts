@@ -609,9 +609,12 @@ function showMenuAt(button: HTMLElement, html: string): void {
   document.body.appendChild(sessionMenu);
   const at = button.getBoundingClientRect();
   const menu = sessionMenu.getBoundingClientRect();
-  const top = at.bottom + menu.height + 8 > innerHeight ? Math.max(8, at.top - menu.height - 4) : at.bottom + 4;
+  // Below the button, or above it when it does not fit there; always inside the window.
+  const below = at.bottom + 4;
+  const above = at.top - menu.height - 4;
+  const top = below + menu.height + 8 <= innerHeight || above < 8 ? Math.min(below, Math.max(8, innerHeight - menu.height - 8)) : above;
   sessionMenu.style.top = `${top}px`;
-  sessionMenu.style.left = `${Math.min(at.left, innerWidth - menu.width - 8)}px`;
+  sessionMenu.style.left = `${Math.max(8, Math.min(at.left, innerWidth - menu.width - 8))}px`;
   button.setAttribute('aria-expanded', 'true');
   sessionMenu.querySelector<HTMLElement>('.menu-item')?.focus();
 }

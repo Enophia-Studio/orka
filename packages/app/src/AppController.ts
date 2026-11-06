@@ -1332,9 +1332,12 @@ export class AppController implements Disposable {
     await this.saveSessionOrganizer(organizer);
   }
 
-  /** A folder named by the UI, if it is one of the recent folders (never any other path). */
+  /**
+   * A folder named by the UI, if it is one of the recent folders or the folder of an open session
+   * (the session list shows both; never any other path).
+   */
   private recentFolder(folder: string): string | undefined {
-    return this.shell.folders().find((f) => samePath(f.path, folder))?.path;
+    return this.shell.folders().find((f) => samePath(f.path, folder))?.path ?? [...this.sessions.values()].find((s) => samePath(s.root, folder))?.root;
   }
 
   private isCurrentFolder(folder: string): boolean {
