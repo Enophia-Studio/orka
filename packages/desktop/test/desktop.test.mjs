@@ -202,6 +202,56 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
     }
   });
 
+  it('keeps the folder picker usable from the keyboard, shows a folder that is gone in the list, and selects a new hidden folder', async () => {
+    const userHome = mkdtempSync(path.join(tmpdir(), 'orka-desktop-user-'));
+    mkdirSync(path.join(userHome, 'Documents', 'Inner'), { recursive: true });
+    mkdirSync(path.join(userHome, 'Projects'));
+    const open = async () => {
+      await browser.clickSelector('.empty [data-action="open-folder"]');
+      await until(() => browser.evaluate('document.querySelectorAll(".folder-picker .fp-item").length > 0'), 'the folder picker');
+    };
+    const shown = () => browser.evaluate('document.querySelector(".fp-path")?.value');
+    const names = () => browser.evaluate('[...document.querySelectorAll(".fp-item .fp-name")].map((e) => e.textContent)');
+    const focusInPicker = () => browser.evaluate('document.querySelector(".folder-picker").contains(document.activeElement)');
+    try {
+      const url = await launch(null, { env: { USERPROFILE: userHome, HOME: userHome } });
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('Choose the project folder the agent works in.'), 'the welcome screen');
+      await open();
+
+      // A place redraws the places: the focus stays in the picker, and a click on the note keeps it.
+      const documents = await browser.evaluate(`[...document.querySelectorAll(".fp-place")].findIndex((e) => e.textContent === "Documents")`);
+      await browser.clickSelector(`.fp-place[data-index="${documents}"]`);
+      await until(async () => (await shown()) === path.join(userHome, 'Documents') && (await names()).includes('Inner'), 'Documents');
+      assert.ok(await focusInPicker(), 'the focus is still in the picker');
+      await browser.clickSelector('.fp-note');
+      await browser.press('Escape');
+      await until(async () => !(await browser.evaluate('!!document.querySelector(".folder-picker")')), 'Escape closes the picker');
+
+      // A folder removed after it was listed: the list says so, with Go back; the path field has no error.
+      await open();
+      rmSync(path.join(userHome, 'Projects'), { recursive: true });
+      await browser.clickSelector(`.fp-item[data-index="1"]`);
+      await browser.press('Enter');
+      await until(() => browser.evaluate('!!document.querySelector(".fp-list .fp-message")'), 'the error in the list');
+      assert.equal(await browser.evaluate('document.querySelector(".fp-path-error").hidden'), true);
+      assert.equal(await browser.evaluate('document.querySelector("[data-fp=open]").disabled'), true);
+      assert.ok(await focusInPicker());
+      await browser.clickSelector('.fp-message [data-fp="back"]');
+      await until(async () => (await shown()) === userHome && JSON.stringify(await names()) === '["Documents"]', 'back at home');
+
+      // A new folder whose name starts with a dot is shown and selected.
+      await browser.clickSelector('[data-fp="new"]');
+      await browser.type('.github');
+      await browser.press('Enter');
+      await until(() => browser.evaluate('document.querySelector(".fp-item.selected .fp-name")?.textContent === ".github"'), 'the new hidden folder selected');
+      assert.equal(await browser.evaluate('document.querySelector(".fp-hidden-box").checked'), true);
+      assert.ok(existsSync(path.join(userHome, '.github')));
+    } finally {
+      rmSync(userHome, { recursive: true, force: true });
+    }
+  });
+
   it('lists sessions on the left, reopens one, and follows the theme and layout settings', async () => {
     const url = await launch();
     await browser.navigate(url);

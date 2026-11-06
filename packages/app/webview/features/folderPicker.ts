@@ -25,6 +25,8 @@ interface Picker {
   creating?: { error?: string; busy: boolean };
   /** The newest listFolders and createFolder ids: older answers are dropped. */
   request: number;
+  /** The listFolders id of a path typed in the path field (its errors are shown under the field). */
+  typedRequest?: number;
   createRequest: number;
   /** The folder shown when the newest request was sent, kept for Go back once the answer comes. */
   from?: string;
@@ -72,8 +74,11 @@ export function folderPickerListing(message: Listing): void {
   if (!p || message.id !== p.request) return;
   p.loading = false;
   if (message.places) p.places = message.places;
-  // A path typed in that leads nowhere keeps the folder shown and says why under the field.
-  if (p.listing && !p.listing.error && (message.error === 'invalid' || message.error === 'notFound')) {
+  // A path typed in that leads nowhere keeps the folder shown and says why under the field (any
+  // other folder that is gone shows the error in the list, with Go back).
+  const typed = message.id === p.typedRequest;
+  p.typedRequest = undefined;
+  if (typed && p.listing && !p.listing.error && (message.error === 'invalid' || message.error === 'notFound')) {
     p.pathError = message.error === 'invalid' ? t('Enter a full path, from the root of a drive.') : t('There is no folder at this path.');
     p.from = undefined;
     render();
@@ -88,6 +93,14 @@ export function folderPickerListing(message: Listing): void {
   p.selectName = undefined;
   const index = name === undefined ? -1 : message.entries.findIndex((e) => e.name === name);
   p.selected = index >= 0 ? index : undefined;
+  if (name !== undefined && index < 0 && !message.error && !p.hidden) {
+    // The folder just created is a hidden one (.github): show hidden folders to select it.
+    p.hidden = true;
+    const box = field('.fp-hidden-box');
+    if (box) box.checked = true;
+    p.selectName = name;
+    list(message.path, { remember: false });
+  }
   const filter = field('.fp-filter');
   if (filter) filter.value = '';
   const path = field('.fp-path');
@@ -107,8 +120,11 @@ export function folderPickerCreated(message: Created): void {
     return;
   }
   p.creating = undefined;
-  p.selectName = message.name;
-  if (p.listing?.path) list(p.listing.path, { remember: false });
+  // Unless the user went somewhere else meanwhile: that answer is the one to show.
+  if (p.listing?.path && !p.loading) {
+    p.selectName = message.name;
+    list(p.listing.path, { remember: false });
+  }
   render();
   p.root.querySelector<HTMLElement>('.fp-list')?.focus();
 }
@@ -123,10 +139,11 @@ function list(path: string | undefined, options: { places?: boolean; remember?: 
   post({ type: 'listFolders', id: p.request, ...(path !== undefined ? { path } : {}), hidden: p.hidden, ...(options.places ? { places: true } : {}) });
 }
 
-function goTo(path: string): void {
+function goTo(path: string, typed = false): void {
   if (!picker) return;
   picker.pathError = undefined;
   list(path);
+  if (typed) picker.typedRequest = picker.request;
   render();
 }
 
@@ -316,10 +333,21 @@ function shellHtml(): string {
 }
 
 function render(): void {
+  const p = picker!;
+  // The places, crumbs and Go back are drawn anew (and Up may be disabled): keep the focus in the
+  // picker, on the same control when it is still there, else on the list.
+  const active = document.activeElement instanceof HTMLElement && p.root.contains(document.activeElement) ? document.activeElement : undefined;
+  const control = active ? { fp: active.dataset.fp, index: active.dataset.index } : undefined;
   renderPlaces();
   renderLocation();
   renderList();
   renderFooter();
+  const now = document.activeElement;
+  if (!active || (now && p.root.contains(now) && !(now as HTMLButtonElement).disabled)) return;
+  const same = control?.fp
+    ? [...p.root.querySelectorAll<HTMLElement>('[data-fp]')].find((el) => el.dataset.fp === control.fp && el.dataset.index === control.index && !(el as HTMLButtonElement).disabled)
+    : undefined;
+  (same ?? p.root.querySelector<HTMLElement>('.fp-list'))?.focus();
 }
 
 const PLACE_ICON: Record<FolderPlaceView['kind'], string> = {
@@ -571,7 +599,14 @@ layer.addEventListener('submit', (e) => {
   submitCreate();
 });
 
-layer.addEventListener('keydown', (e) => {
+// A press on a part of the picker that takes no focus (the dimmed backdrop, a label, the note)
+// leaves the focus where it was, so the keys keep working.
+layer.addEventListener('mousedown', (e) => {
+  if (picker && !(e.target as HTMLElement).closest('button, input, label, [tabindex]')) e.preventDefault();
+});
+
+// On the document, not the layer: the keys work even when the focus is on nothing (the body).
+document.addEventListener('keydown', (e) => {
   const p = picker;
   if (!p || questionOpen()) return;
   const el = e.target as HTMLElement;
@@ -595,7 +630,7 @@ layer.addEventListener('keydown', (e) => {
   if (el.classList.contains('fp-path') && e.key === 'Enter') {
     e.preventDefault();
     const value = (el as HTMLInputElement).value.trim();
-    if (value) goTo(value);
+    if (value) goTo(value, true);
     return;
   }
   if (el.classList.contains('fp-filter')) {

@@ -4,7 +4,7 @@
 
 **Desktop**
 
-- **Open folder…** opens Orka's own folder picker instead of the system's *Browse For Folder* dialog: recent folders, your home, Desktop, Documents and Downloads, and the drives (on macOS and Linux `/` and the mounted volumes) on the left; a clickable path, an editable path field, a filter and the folder's subfolders (never files; hidden and system folders only with **Show hidden folders**; links marked) on the right. Arrow keys, Enter, Backspace or Alt+Up and Escape work as expected. **New folder** creates one folder in the folder shown, and **Use system dialog…** still opens the system's dialog. The VS Code panel is unchanged.
+- **Open folder…** opens Orka's own folder picker instead of the system's *Browse For Folder* dialog: recent folders, your home, Desktop, Documents and Downloads, and the drives (on macOS and Linux `/` and the mounted volumes) on the left; a clickable path, an editable path field, a filter and the folder's subfolders (never files; the usual hidden and system folders, such as `AppData` or `C:\Users\Default`, only with **Show hidden folders**; links marked) on the right. The drives are listed without being opened, so a disconnected network drive or an empty card reader never slows the picker or the rest of the app. Arrow keys, Enter, Backspace or Alt+Up and Escape work as expected, and the focus stays in the picker as you move around. A folder that is gone when you go into it is reported in the list, with **Go back**. **New folder** creates one folder in the folder shown and selects it (a name that starts with a dot turns on **Show hidden folders**), and **Use system dialog…** still opens the system's dialog. The VS Code panel is unchanged.
 
 **Radar**
 
