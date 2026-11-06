@@ -4,7 +4,7 @@
  * a future desktop renderer alike.
  */
 import type { FileChange } from '../changes/ChangeTracker';
-import type { AgentEvent, AgentPhase, AgentUsage, CompactionView, NoticeLevel, SupervisorScope, SupervisorStatus, ToolCallView } from '../orchestrator/events';
+import type { AgentEvent, AgentPhase, AgentUsage, CompactionView, ContextFill, NoticeLevel, SupervisorScope, SupervisorStatus, ToolCallView } from '../orchestrator/events';
 import type { Plan } from '../planning/Plan';
 import type { Usage } from '../types';
 
@@ -36,6 +36,8 @@ export interface SessionView {
   model?: string;
   /** Per-agent breakdown of `usage` (main, supervisor, sub-agents). */
   usageByAgent?: AgentUsage[];
+  /** How full the main agent's context is (none: its provider does not say). */
+  context?: ContextFill;
 }
 
 const MAX_LIVE_OUTPUT = 20_000;
@@ -52,6 +54,7 @@ export function applyEvent(state: SessionView, event: AgentEvent): string | unde
       state.plan = undefined;
       state.usage = undefined;
       state.usageByAgent = undefined;
+      state.context = undefined;
       return undefined;
     case 'run_started':
       state.running = true;
@@ -75,6 +78,7 @@ export function applyEvent(state: SessionView, event: AgentEvent): string | unde
       state.usage = event.total;
       if (event.model) state.model = event.model;
       if (event.byAgent) state.usageByAgent = event.byAgent;
+      state.context = event.context;
       return undefined;
     case 'user_message':
       state.items.push({ kind: 'user', id: event.id, text: event.text, attachments: event.attachments, skills: event.skills, images: event.images });
@@ -82,6 +86,8 @@ export function applyEvent(state: SessionView, event: AgentEvent): string | unde
     case 'rewound': {
       const index = state.items.findIndex((i) => i.kind === 'user' && i.id === event.id);
       if (index !== -1) state.items = state.items.slice(0, index);
+      // The context the gauge measured is gone with those messages.
+      state.context = undefined;
       return undefined;
     }
     case 'assistant_start':

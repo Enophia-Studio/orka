@@ -42,6 +42,8 @@ export interface UiState {
   asideClosed?: boolean;
   /** Folded sections of the session list ("group:<id>", "folder:<path>"). */
   collapsedSections?: string[];
+  /** The accounts in the session list's footer are folded open. */
+  accountsOpen?: boolean;
   /** The tab of the side panel: the task's plan and changes, Files (desktop), or Radar. */
   asideTab?: 'task' | 'radar' | 'files';
   /**

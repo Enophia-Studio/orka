@@ -2,7 +2,7 @@ export * from './types';
 export * from './providers';
 export * from './host/Host';
 export { NodeHost, type NodeHostOptions, shellEnv } from './host/NodeHost';
-export { BackgroundProcess } from './host/processes';
+export { BackgroundProcess, killTree } from './host/processes';
 export { browserFor, closeBrowser, findBrowser, HeadlessBrowser } from './browser/HeadlessBrowser';
 export * from './permissions/PermissionManager';
 export { classifyCommand, type CommandClassification, type CommandContext } from './permissions/commandRisk';
@@ -55,9 +55,11 @@ export {
   checkAgentCli,
   type CustomAgentDefinition,
   customAgentEntry,
+  installFolder,
   installHint,
   loginCommand,
   resolveAgentExecutable,
+  tooOldForAcp,
 } from './acp/catalog';
 export { AGENT_POLICIES, agentPolicy, type AgentPolicy, type AuthKind, NOT_IN_CATALOG } from './acp/policy';
 export { type AcpAction, actionFor, commandOf } from './acp/mapping';

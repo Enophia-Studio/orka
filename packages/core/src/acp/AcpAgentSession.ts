@@ -5,7 +5,7 @@ import type { ChangeTracker } from '../changes/ChangeTracker';
 import { splitLines } from '../changes/diff';
 import type { ApprovalRequest, Host } from '../host/Host';
 import { t } from '../i18n';
-import type { AgentEvent, ToolCallView } from '../orchestrator/events';
+import type { AgentEvent, AgentOption, ContextFill, ToolCallView } from '../orchestrator/events';
 import { classifyCommand } from '../permissions/commandRisk';
 import type { PermissionManager } from '../permissions/PermissionManager';
 import { isSecretFile, secretInCommand } from '../permissions/secrets';
@@ -15,6 +15,7 @@ import { gitConfigRisk } from '../tools/GitTools';
 import { insideWorkspace, writeInsideWorkspace } from '../tools/safeFs';
 import { toRelative } from '../tools/workspace';
 import type { AcpClient, AcpSessionHandlers } from './AcpClient';
+import { pendingChoices, readConfigOptions, readContextFill } from './configOptions';
 import { AcpTurnMapper, safeId } from './mapping';
 import { AcpTerminals, commandLine } from './terminals';
 import {
@@ -51,6 +52,10 @@ export interface AcpSessionContext {
   label: string;
   /** Longest run of one terminal command. */
   commandTimeoutMs: number;
+  /** The agent advertised (new) model or thought-level choices for the session. */
+  onOptions?(options: AgentOption[]): void;
+  /** The agent said how full its context is. */
+  onContext?(fill: ContextFill): void;
 }
 
 /** How a prompt turn went. */
@@ -108,6 +113,8 @@ type Approval = 'awaiting' | 'allowed' | 'cancelled' | { denied: string };
  */
 export class AcpAgentSession {
   sessionId?: string;
+  /** The model and thought-level choices the agent advertised for this session, with their current values. */
+  options: AgentOption[] = [];
   private turns = 0;
   private current?: Turn;
   /** For the agent with its next prompt: what the user said when declining, hook results. */
@@ -134,7 +141,33 @@ export class AcpAgentSession {
 
   /** Open the session in the workspace. Aborting `signal` stops waiting for the agent at once. */
   async start(signal?: AbortSignal): Promise<void> {
-    this.sessionId = await this.client.newSession(this.root, this.handlers(), signal);
+    const { sessionId, options } = await this.client.newSession(this.root, this.handlers(), signal);
+    this.sessionId = sessionId;
+    this.setOptions(options);
+  }
+
+  /**
+   * Before a prompt: set the user's choices (option id -> value) the agent advertised and lists,
+   * where they differ from the session's current values. An agent that advertised nothing gets
+   * no request. A failed set is said in a notice and the prompt goes ahead.
+   */
+  async applyChoices(choices: Readonly<Record<string, string>> | undefined): Promise<void> {
+    const sessionId = this.sessionId;
+    if (!sessionId) return;
+    for (const { id, value } of pendingChoices(this.options, choices)) {
+      try {
+        const answer = await this.client.setConfigOption(sessionId, id, value);
+        this.setOptions(answer.length ? answer : this.options.map((o) => (o.id === id ? { ...o, currentValue: value } : o)));
+      } catch (error) {
+        const name = this.options.find((o) => o.id === id)?.name ?? id;
+        this.emit({ type: 'notice', level: 'warning', message: t('{agent} did not change "{option}": {reason}', { agent: this.ctx.label, option: name, reason: error instanceof Error ? error.message : String(error) }) });
+      }
+    }
+  }
+
+  private setOptions(options: AgentOption[]): void {
+    this.options = options;
+    if (!this.disposed) this.ctx.onOptions?.(options);
   }
 
   /** The agent accepts images in prompts. */
@@ -240,7 +273,14 @@ export class AcpAgentSession {
 
   private handlers(): AcpSessionHandlers {
     return {
-      update: (update) => this.current?.mapper.handle(update),
+      update: (update) => {
+        // Session-wide news, also between turns: its choices and how full its context is.
+        if (update.sessionUpdate === 'config_option_update') this.setOptions(readConfigOptions(update.configOptions));
+        else if (update.sessionUpdate === 'usage_update') {
+          const fill = readContextFill(update);
+          if (fill && !this.disposed) this.ctx.onContext?.(fill);
+        } else this.current?.mapper.handle(update);
+      },
       requestPermission: (params) => this.requestPermission(params),
       readTextFile: (params) => this.readTextFile(params),
       writeTextFile: (params) => this.writeTextFile(params),

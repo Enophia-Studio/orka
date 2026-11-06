@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.7.0
+
+Accounts and CLIs: sign in to each CLI from Orka, install Claude Code, Antigravity CLI and Codex from it, and pick the model and effort per session in the message box. See [Accounts](README.md#accounts) and [Installing CLIs](README.md#installing-clis).
+
+**Accounts**
+
+- **Accounts** at the bottom of the session list (desktop, with a count such as 2/3 signed in, and an icon in the closed rail), an **Add account** popup and **Settings → Accounts** (desktop and VS Code). Each installed CLI shows the account its own status command reports (`claude auth status`, `codex login status`, `cursor-agent status`); Antigravity CLI, Gemini CLI and Copilot CLI have none, so they say where to look instead, and Copilot says when a GitHub token variable stands in for its sign-in (the variable's name, never its value). The commands run when you first open the list, the popup or the tab, and on **Check**; never on a timer.
+- **Sign in… / Sign out…** run the vendor's own command, shown before it runs, in a terminal you can see, in your home folder; the status is asked again when the terminal closes. Sign-out asks first. Orka never reads, stores or forwards a sign-in, a token or a vendor's credential files, and keeps what a status command printed in memory only.
+- **Claude Code profiles** for separate accounts, such as work and personal: each has its own config folder (`~/.claude-<id>`, as `CLAUDE_CONFIG_DIR`) that Orka creates empty and never reads. Add one in **Settings → Accounts** or the popup (a note says separate accounts are for separate work), sign in to it there, and remove it (its folder stays). Profiles are machine settings (`accounts.claudeProfiles`, `accounts.claudeProfile`), so a repository cannot set them.
+- **One profile per CLI at a time:** while a session runs Claude Code on one profile, a run on another profile is refused with a notice. Orka never switches profiles on its own, also not on a usage limit, and a fallback never runs on another profile.
+- The agent CLI cards and the Claude Code card in **Settings → Providers** link to **Accounts…**; the main agent card offers **Install…** and **Accounts…** when no agent CLI is installed.
+
+**The model menu in the message box**
+
+- **Each session has its own model, effort and Claude Code profile**, in a menu next to the send button (both layouts, and the VS Code panel). A new session starts from the settings; a change applies from your next message and never stops a running process. **Use as default** writes the choice to the settings for sessions started later; other open sessions keep theirs. The choice is saved with the task.
+- **Effort levels** as the provider takes them: Claude API low to max, Claude Code its own default to max, OpenAI and Gemini their default, low, medium, high. The effort, thinking and reasoning selects in **Settings → Providers** became **Default effort** lines; their setting keys are unchanged.
+- **ACP agents** show the models and thought levels they advertise for their session (after its first message), and the choice is sent before the next prompt. An agent's own modes are never offered, so they cannot get around Orka's permission mode.
+- **A context gauge** next to the menu: a small ring showing how full the context window is, from the last request's prompt and answer, against the window the provider reported (Claude Code and ACP agents that send `usage_update`). Hidden when the provider reports no window; click it for the usage panel.
+
+**Agent CLIs**
+
+- **Antigravity CLI** (`agent:antigravity`) joins the catalog: Orka runs Google's `agy acp` (agy 1.5.0 or newer), which Google documents for any ACP client. You sign in by running `agy` in a terminal; Orka never touches that sign-in. The agent's card (and `orka agents`) links Google's ACP page, its terms and its FAQ, which calls wrapping agy in third-party apps unsupported on consumer plans: the choice of sign-in is yours. An older agy shows its version and `agy update` on **Check**.
+- **The main agent's picker (Settings → Agents) lists every agent CLI**, also those that are off or not installed, marked as such. Picking one turns it on; when it is not installed, a notice says how to install it. With no agent CLI installed, the main agent card says so. Turning off the agent CLI that is the main agent asks first, and a main agent setting that names an agent that is off is reported once instead of switching silently.
+- **Install from Orka:** Claude Code, Antigravity CLI and Codex (with codex-acp) can be installed from the **Install…** button on a missing-CLI notice. A dialog shows the vendor's official install command, its source, folder and docs; only **Install** runs it, in a terminal you can see, never elevated and never on its own. Codex first checks for Node.js 16 or newer (npm installs codex-acp). When the terminal closes (or on **Check again**), Orka looks for the program, also in Antigravity's install folder, and offers to choose it if it is not on Orka's PATH yet; for Claude Code it offers to turn it on. Copilot, Cursor and Gemini CLI show their command to copy. See [Installing from Orka](docs/EXTERNAL_AGENTS.md#installing-from-orka).
+- **Gemini CLI** is now labelled **legacy** (Gemini API key or Code Assist Standard/Enterprise only; personal Google accounts moved to Antigravity CLI). Its id stays `gemini`, so existing settings keep working.
+
+**CLI-first**
+
+- Until you pick a main provider, a ready CLI comes first: Claude Code (turned on and logged in), else an agent CLI you turned on whose check passed; API providers follow as a fallback. The provider pickers list a model API only once it has a key.
+- **Radar** can run on Claude Code, and uses it by default when it is turned on and logged in: as a plain model with every built-in tool, MCP server, settings file and slash command off, and no tools from Radar. With Claude Code an analysis runs only when you click **Analyze**, never automatically, and the Radar tab no longer speaks of an API key then. Agent CLIs still never run Radar.
+
+**Fixes**
+
+- In VS Code, the Claude Code profile settings are declared as machine settings, so adding or choosing a profile is saved (VS Code refuses to write an undeclared setting).
+
+**Unchanged**
+
+- The VS Code panel keeps one session. Orka itself makes no new network requests and sends no telemetry: status commands, installs and sign-ins are the vendors' programs, started only by your click (an installer you start downloads its CLI from the vendor).
+
 ## 0.6.0
 
 The desktop app runs several sessions at once, one per folder. See [Parallel sessions (desktop)](README.md#parallel-sessions-desktop).

@@ -7,7 +7,7 @@ Orka in the terminal: an AI coding orchestrator with a main agent, a Supervisor 
 Node.js 22 or newer. The CLI is not on the npm registry yet; install the `orka` command from the [GitHub release](https://github.com/Enophia-Studio/orka/releases/latest):
 
 ```bash
-npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.6.0/orka-agent-0.6.0.tgz
+npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.7.0/orka-agent-0.7.0.tgz
 ```
 
 Or build it from source: clone the repository, run `npm install` and `npm run build`, then `node packages/cli/dist/orka.js` (or `npm link` in `packages/cli`).
@@ -46,17 +46,17 @@ A coding agent CLI you installed and signed in to yourself can be the main agent
 
 ```bash
 orka agents                              # the agents, whether they are installed, their terms and install commands
-orka --provider agent:gemini             # Gemini CLI as the main agent (also agent:codex, agent:copilot, agent:cursor)
+orka --provider agent:antigravity        # Antigravity CLI as the main agent (also agent:codex, agent:copilot, agent:cursor, agent:gemini)
 orka --provider agent:custom:my-agent    # an ACP agent you added in the config
 ```
 
 ```json
 {
-  "provider": "agent:gemini",
+  "provider": "agent:antigravity",
   "supervisor": { "provider": "claude", "model": "claude-sonnet-5-5" },
   "agentClis": {
-    "enabled": ["gemini", "custom:my-agent"],
-    "paths": { "gemini": "/opt/tools/gemini" },
+    "enabled": ["antigravity", "custom:my-agent"],
+    "paths": { "antigravity": "/opt/tools/agy" },
     "custom": [{ "name": "My agent", "command": "my-agent", "args": ["--acp"] }]
   }
 }

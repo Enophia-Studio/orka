@@ -223,8 +223,8 @@ export class DesktopShell implements AppShell, Disposable {
     copyToClipboard(text);
   }
 
-  runInTerminal(options: { name: string; cwd: string; command: string | TerminalProgram; onClose?: () => void }): TerminalHandle {
-    openTerminalWindow({ title: options.name, cwd: options.cwd, command: options.command, onClose: options.onClose });
+  runInTerminal(options: { name: string; cwd: string; command: string | TerminalProgram; env?: Record<string, string>; onClose?: () => void }): TerminalHandle {
+    openTerminalWindow({ title: options.name, cwd: options.cwd, command: options.command, env: options.env, onClose: options.onClose });
     return { show: () => undefined };
   }
 

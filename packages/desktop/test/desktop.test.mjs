@@ -608,6 +608,160 @@ globalThis.fetch = (input, init) => {
     }
   });
 
+  // ---------------------------------------------------------------- accounts and CLIs (0.7)
+
+  /** The core's fake ACP agent, run with this Node as a custom agent. */
+  const fakeAgent = path.join(here, '..', '..', 'core', 'test', 'fixtures', 'fake-acp.mjs');
+  const fakeAgentSettings = { 'agentClis.custom': [{ name: 'Fake', command: process.execPath, args: [fakeAgent] }] };
+
+  function addSettings(extra) {
+    const file = path.join(home, 'desktop', 'settings.json');
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), ...extra }));
+  }
+  const settingsFile = () => JSON.parse(readFileSync(path.join(home, 'desktop', 'settings.json'), 'utf8'));
+
+  /**
+   * A stand-in for the Claude Code CLI that answers every command with a signed-in status (only
+   * "auth status" reads it). Nothing real is installed, signed in or run.
+   */
+  function fakeClaude() {
+    const dir = mkdtempSync(path.join(tmpdir(), 'orka-fake-cli-'));
+    const status = '{"loggedIn":true,"email":"dev@example.test","authMethod":"claude.ai","subscriptionType":"pro"}';
+    const file = path.join(dir, process.platform === 'win32' ? 'claude.cmd' : 'claude');
+    writeFileSync(file, process.platform === 'win32' ? `@echo ${status}\r\n` : `#!/bin/sh\necho '${status}'\n`, { mode: 0o755 });
+    return { dir, file };
+  }
+
+  /** Every message the page sends is recorded in window.sent; `drop` types are not sent on (no terminal opens). */
+  const recordMessages = (drop = []) =>
+    browser.evaluate(`(() => {
+      window.sent = [];
+      const real = window.fetch;
+      const drop = ${JSON.stringify(drop)};
+      window.fetch = (url, init) => {
+        if (url === '/message') {
+          const message = JSON.parse(init.body);
+          window.sent.push(message);
+          if (drop.includes(message.type)) return Promise.resolve(new Response(null, { status: 204 }));
+        }
+        return real(url, init);
+      };
+    })()`);
+
+  it('lists every agent CLI in the main agent picker, and picking one turns it on', async () => {
+    addSettings(fakeAgentSettings);
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    await browser.clickSelector('[data-action="open-settings"]');
+    await browser.clickSelector('[data-action="tab"][data-tab="agents"]');
+    const picker = 'document.querySelector(\'select[data-action="agent-provider"][data-agent="main"]\')';
+    await until(() => browser.evaluate(`!!${picker}`), 'the main agent picker');
+    const options = await browser.evaluate(`[...${picker}.querySelectorAll('optgroup option')].map((o) => o.value + ' ' + o.textContent)`);
+    for (const id of ['agent:antigravity', 'agent:codex', 'agent:copilot', 'agent:cursor', 'agent:gemini']) {
+      assert.ok(options.some((o) => o.startsWith(`${id} `)), `${id} is offered`);
+    }
+    assert.ok(options.includes('agent:custom:fake Fake (off)'), `the custom agent is offered while off: ${options.join(', ')}`);
+    assert.equal(settingsFile()['agentClis.enabled'], undefined);
+
+    await browser.evaluate(`(() => { const s = ${picker}; s.value = 'agent:custom:fake'; s.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+    await until(() => settingsFile().provider === 'agent:custom:fake', 'the main agent saved');
+    assert.deepEqual(settingsFile()['agentClis.enabled'], ['custom:fake'], 'and turned on');
+    await until(() => browser.evaluate(`${picker}.selectedOptions[0]?.textContent === 'Fake'`), 'the picker without "(off)"');
+  });
+
+  it('shows a CLI account from its own status command, and signs in through the Add account popup', async () => {
+    const cli = fakeClaude();
+    try {
+      addSettings({ 'claudeCode.path': cli.file });
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      await recordMessages(['loginAccount']);
+      // Folding the footer open asks each CLI once; the fake answers signed in.
+      await until(() => browser.evaluate('!!document.querySelector("[data-action=toggle-accounts]")'), 'the Accounts row');
+      await browser.clickSelector('[data-action="toggle-accounts"]');
+      await until(() => browser.evaluate('!!document.querySelector(".account-row[data-cli=claude-code] .account-dot.signed_in")'), 'Claude Code signed in', 60_000);
+      assert.ok((await browser.evaluate('window.sent.map((m) => m.type)')).includes('checkAccounts'));
+
+      await browser.clickSelector('.account-add');
+      await until(() => browser.evaluate('!!document.querySelector(".add-account [data-action=add-account-pick][data-cli=claude-code]")'), 'the popup');
+      assert.match(await browser.evaluate('document.querySelector(".add-account").textContent'), /dev@example\.test/, 'the account the CLI named');
+      await browser.clickSelector('.add-account [data-action="add-account-pick"][data-cli="claude-code"]');
+      await until(() => browser.evaluate('document.querySelector(".add-account .account-command")?.textContent'), 'the sign-in step');
+      assert.equal(await browser.evaluate('document.querySelector(".add-account .account-command").textContent'), 'claude auth login', 'the vendor command, shown before anything runs');
+      assert.ok(!(await browser.evaluate('window.sent.map((m) => m.type)')).includes('loginAccount'), 'nothing runs before the click');
+      await browser.clickSelector('.add-account [data-action="account-login"]');
+      await until(() => browser.evaluate('!document.querySelector(".add-account")'), 'the popup closed');
+      const login = await browser.evaluate('window.sent.filter((m) => m.type === "loginAccount")');
+      // Only ids go to the app (the default profile has none): never a command line.
+      assert.deepEqual(login, [{ type: 'loginAccount', cli: 'claude-code' }]);
+    } finally {
+      rmSync(cli.dir, { recursive: true, force: true });
+    }
+  });
+
+  it("offers the agent's own model and thought level in the message box menu, and shows how full the context is", async () => {
+    const log = path.join(home, 'fake-acp.log');
+    addSettings({ ...fakeAgentSettings, provider: 'agent:custom:fake', 'agentClis.enabled': ['custom:fake'] });
+    const url = await launch(work, {
+      env: {
+        FAKE_ACP_OPTIONS: '1',
+        FAKE_ACP_LOG: log,
+        FAKE_ACP_SCRIPT: JSON.stringify([
+          [{ usage: { used: 3000, size: 12000 } }, { chunk: 'Hello from the fake agent.' }, { stop: 'end_turn' }],
+          [{ chunk: 'Second answer.' }, { stop: 'end_turn' }],
+        ]),
+      },
+    });
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    assert.equal(await browser.evaluate('document.querySelector("#context-ring").hidden'), true, 'no gauge before the agent reports one');
+    await browser.clickSelector('.model-btn');
+    await until(() => browser.evaluate('!document.querySelector("#model-menu").hidden'), 'the menu');
+    assert.match(await browser.evaluate('document.querySelector("#model-menu").textContent'), /Set in the agent/, 'no choices before its first session');
+    await browser.clickSelector('.model-btn');
+
+    await browser.clickSelector('#input');
+    await browser.type('Say hello');
+    await browser.clickSelector('#send');
+    await until(async () => (await text()).includes('Hello from the fake agent.'), 'the reply');
+    await until(() => browser.evaluate('!document.querySelector("#context-ring").hidden'), 'the gauge');
+    assert.match(await browser.evaluate('document.querySelector("#context-ring").title'), /^Context: 25% full/);
+
+    await browser.clickSelector('.model-btn');
+    await until(() => browser.evaluate('!!document.querySelector("#model-menu [data-action=session-option][data-value=pro]")'), "the agent's models");
+    const menu = await browser.evaluate('document.querySelector("#model-menu").textContent');
+    assert.match(menu, /Pro model/);
+    assert.match(menu, /High/, 'its thought level');
+    assert.doesNotMatch(menu, /Yolo/, "never the agent's own modes");
+    await browser.clickSelector('#model-menu [data-action="session-option"][data-value="pro"]');
+    await until(() => browser.evaluate('document.querySelector("#model-menu [data-value=pro]")?.getAttribute("aria-checked") === "true"'), 'the pick');
+    // A pick from the keyboard keeps the focus in the menu after it is drawn again.
+    await browser.evaluate(
+      'window.oldItem = document.querySelector("#model-menu button"); const b = document.querySelector("#model-menu [data-action=session-option][data-value=pro]"); b.focus(); b.click(); true',
+    );
+    await until(() => browser.evaluate('!window.oldItem.isConnected'), 'the menu drawn again');
+    assert.equal(await browser.evaluate('!!document.activeElement.closest("#model-menu") && document.activeElement.getAttribute("aria-checked")'), 'true');
+    // Escape closes it even with the focus outside it.
+    await browser.evaluate('document.activeElement.blur(); document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); true');
+    await until(() => browser.evaluate('document.querySelector("#model-menu").hidden'), 'the menu closed by Escape');
+
+    // Sent to the agent before the next prompt, never while one runs.
+    await browser.clickSelector('#input');
+    await browser.type('Again');
+    await browser.clickSelector('#send');
+    await until(async () => (await text()).includes('Second answer.'), 'the second reply');
+    const methods = readFileSync(log, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    assert.ok(
+      methods.some((m) => JSON.stringify(m).includes('session/set_config_option') && JSON.stringify(m).includes('"pro"')),
+      'the model choice reached the agent',
+    );
+  });
+
   it('only lets its own window in', async () => {
     const url = await launch();
     const { port } = new URL(url);

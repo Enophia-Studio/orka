@@ -105,7 +105,7 @@ function leftOver(lock: { holder?: Holder; modifiedMs: number }): boolean {
 }
 
 /** Whether a process with this pid runs (one that belongs to another user counts). */
-function alive(pid: number): boolean {
+export function alive(pid: number): boolean {
   if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);

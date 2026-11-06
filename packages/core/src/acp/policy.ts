@@ -4,8 +4,11 @@
  * clients. Rules for every agent, enforced in code:
  * - Orka never reads, stores or passes on the agent's sign-in (OAuth or subscription tokens, the
  *   vendor's credential files) and never sets credential environment variables for it (safeEnv).
- * - Orka starts only the unmodified program found on PATH or at the path the user set; it never
- *   downloads one (install commands are shown to the user, never run by Orka).
+ * - Orka starts only the unmodified program found on PATH, in its vendor's install folder or at the
+ *   path the user set. It runs a vendor's official installer only when the user clicks Install in
+ *   a dialog that shows the exact command, in a terminal they can see; never on its own, never
+ *   elevated, never as an automatic update (the app's install recipes). Other agents' install
+ *   commands are shown for the user to run.
  * - Signing in happens in the vendor's own login command or app. Orka sends ACP `authenticate`
  *   only when the user asks, and only with a method listed in `acpAuthMethods` below.
  * - Orka never turns on an agent's "approve everything" mode; it answers each permission request
@@ -21,6 +24,8 @@ export interface AgentPolicy {
   /** ACP authenticate method ids Orka may send when the user asks to sign in from Orka; [] = never. */
   acpAuthMethods: readonly string[];
   termsUrl: string;
+  /** The vendor's FAQ on using the agent from other software, linked next to the terms. */
+  faqUrl?: string;
   /** Shown with the agent (English key; the UI translates it with t()). */
   note: string;
   /** The vendor marks its ACP support as a preview. */
@@ -29,12 +34,24 @@ export interface AgentPolicy {
 
 export const AGENT_POLICIES: readonly AgentPolicy[] = [
   {
+    // Google documents "agy acp" for any ACP client, while its FAQ calls wrapping agy in
+    // third-party apps unsupported on consumer plans. Orka shows both and leaves the choice of
+    // sign-in to the user; it never touches agy's sign-in or Google's local files.
+    id: 'antigravity',
+    vendor: 'Google',
+    allowedAuth: ['vendor_login', 'api_key', 'cloud'],
+    acpAuthMethods: [],
+    termsUrl: 'https://antigravity.google/terms',
+    faqUrl: 'https://antigravity.google/docs/faq',
+    note: "Runs your installed Antigravity CLI (\"agy acp\"), which Google documents for any ACP client. Google's FAQ calls wrapping agy in third-party apps unsupported on consumer plans: read both and decide how you sign in.",
+  },
+  {
     id: 'google',
     vendor: 'Google',
     allowedAuth: ['vendor_login', 'api_key', 'cloud'],
     acpAuthMethods: [],
     termsUrl: 'https://geminicli.com/docs/resources/tos-privacy/',
-    note: "Runs your installed Gemini CLI in its ACP mode. Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it. Google moved unpaid and Google One accounts from Gemini CLI to Antigravity.",
+    note: "Legacy: only for a Gemini API key or Code Assist Standard/Enterprise; personal Google accounts moved to Antigravity CLI. Runs your installed Gemini CLI in its ACP mode; Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it.",
   },
   {
     id: 'openai',
@@ -77,10 +94,6 @@ export const AGENT_POLICIES: readonly AgentPolicy[] = [
  * custom ACP agent on their own responsibility.
  */
 export const NOT_IN_CATALOG: ReadonlyArray<{ id: string; reason: string }> = [
-  {
-    id: 'antigravity',
-    reason: "Google's terms do not allow using Antigravity through third-party software on consumer plans.",
-  },
   {
     id: 'claude-agent-acp',
     reason: "The Claude ACP adapter's licence is unclear. Claude stays available through the Claude API provider and the opt-in Claude Code provider.",

@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { ProviderError, type ProviderStreamEvent } from '../src/providers/AIProvider';
-import { ClaudeCodeProvider } from '../src/providers/ClaudeCodeProvider';
+import { ClaudeCodeProvider, contextWindowOf } from '../src/providers/ClaudeCodeProvider';
 import { defaultTools, toSpec } from '../src/tools';
 import type { ChatMessage } from '../src/types';
 import { tempWorkspace } from './helpers';
@@ -49,6 +49,8 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
     assert.equal(first.stopReason, 'tool_use');
     assert.equal(first.model, 'claude-fake-1');
     assert.deepEqual(first.usage, { inputTokens: 11, outputTokens: 7, cacheReadTokens: 100, cacheWriteTokens: 5 });
+    // The context window comes from the result's modelUsage.
+    assert.equal(first.contextWindow, 200000);
     const call = first.message.content.find((b) => b.type === 'tool_call');
     assert.deepEqual(call && call.type === 'tool_call' && [call.name, call.input], ['read_file', { path: 'src/a.ts' }]);
     const streamed = events.filter((e) => e.type === 'text_delta').map((e) => (e as { text: string }).text).join('');
@@ -75,6 +77,11 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
       assert.ok(argv.includes(flag), `flag ${JSON.stringify(flag)}`);
     }
     assert.equal(argv[argv.indexOf('--tools') + 1], '', 'built-in tools disabled');
+    // A plain text model, also what lets Radar run on it: no MCP servers (none given to the strict
+    // config), no settings files (their hooks and plugins), no slash commands or skills.
+    assert.equal(argv[argv.indexOf('--setting-sources') + 1], '', 'no settings files');
+    assert.ok(argv.includes('--disable-slash-commands'));
+    assert.ok(!argv.includes('--mcp-config') && !argv.some((a) => /skip-permissions|bypassPermissions/.test(a)));
   });
 
   it('restarts with the full transcript when the history no longer matches the session', async () => {
@@ -93,6 +100,26 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
     const log = received();
     assert.notEqual(log[0].pid, log[1].pid, 'a new process was started');
     assert.match(log[1].text, /conversation so far[\s\S]*<assistant_turn>\nAn answer from another model\.\n<\/assistant_turn>[\s\S]*Latest message:\n\nand now\?$/);
+  });
+
+  it("runs a profile's CLI with CLAUDE_CONFIG_DIR set to its folder, and the default one with the environment as it is", async () => {
+    const saved = process.env.CLAUDE_CONFIG_DIR;
+    delete process.env.CLAUDE_CONFIG_DIR;
+    try {
+      const messages: ChatMessage[] = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }];
+      setup(['Default profile.']);
+      await provider.chat({ system: 'SYS', messages, tools }, () => {});
+      provider.dispose();
+      const dir = path.join(ws.root, 'claude-work');
+      provider = new ClaudeCodeProvider({ executable: process.execPath, executableArgs: [FAKE_CLI], configDir: dir });
+      await provider.chat({ system: 'SYS', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }], tools }, () => {});
+      assert.deepEqual(
+        received().map((r) => (r as unknown as { configDir: string | null }).configDir),
+        [null, dir],
+      );
+    } finally {
+      if (saved !== undefined) process.env.CLAUDE_CONFIG_DIR = saved;
+    }
   });
 
   it('asks the model to rewrite a tool call it could not parse, once', async () => {
@@ -146,5 +173,14 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
     );
     controller.abort();
     await assert.rejects(pending, (e: unknown) => e instanceof Error && e.name === 'AbortedError');
+  });
+});
+
+describe('contextWindowOf', () => {
+  it('reads the largest window the result reports, nothing when there is none', () => {
+    assert.equal(contextWindowOf({ a: { contextWindow: 200000 }, b: { contextWindow: 1000000 } }), 1000000);
+    assert.equal(contextWindowOf({ a: { contextWindow: 'big' } }), undefined);
+    assert.equal(contextWindowOf(undefined), undefined);
+    assert.equal(contextWindowOf({}), undefined);
   });
 });

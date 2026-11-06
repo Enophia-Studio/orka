@@ -13,9 +13,14 @@ export interface RadarPanelDeps {
   modelOptions(provider: ProviderView | undefined, selected: string): string;
 }
 
-/** Providers Radar can run on: model APIs only, never an agent CLI or Claude Code. */
-export function radarProviders(providers: ProviderView[]): ProviderView[] {
-  return providers.filter((p) => !p.agent && p.kind !== 'claude-code');
+/**
+ * Providers Radar can run on: Claude Code first (a plain model with no tools), then model APIs
+ * the user set up (with a key, or the one already chosen); never an agent CLI, whose own tools
+ * cannot be turned off.
+ */
+export function radarProviders(providers: ProviderView[], selected = ''): ProviderView[] {
+  const usable = providers.filter((p) => !p.agent && (p.local || p.ready || p.kind === selected));
+  return [...usable.filter((p) => p.kind === 'claude-code'), ...usable.filter((p) => p.kind !== 'claude-code')];
 }
 
 /** The pending count, for the tab, the rail and the session list. Only seen: screen readers get it from radarLabel. */
@@ -54,9 +59,13 @@ export function radarPanelHtml(radar: RadarView, report: RadarReportView | undef
 /** Off: what Radar would do and every host it would contact, and the switch. */
 function offHtml(radar: RadarView): string {
   // What turning it on starts: with radar.autoAnalyze already on, the first check's finds are analyzed without a click.
-  const footnote = radar.autoAnalyze
-    ? t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. Automatic analysis is on: when a check finds something, Radar analyzes it right away on your own provider and API key.")
-    : t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on your own provider and API key.");
+  // On Claude Code there is no API key, and an analysis waits for a click even then (radar.ts never runs it on its own).
+  const footnote =
+    radar.model?.provider === 'claude-code'
+      ? t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on Claude Code with your own sign-in, as a plain model with no tools.")
+      : radar.autoAnalyze
+        ? t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. Automatic analysis is on: when a check finds something, Radar analyzes it right away on your own provider and API key.")
+        : t("While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on your own provider and API key.");
   return `<div class="radar-intro">
       <p>${escapeHtml(t('Radar reads the public release notes of other AI coding tools and suggests what Orka could add. It is off: nothing is fetched.'))}</p>
       ${hostsHtml(radar)}
@@ -68,8 +77,15 @@ function offHtml(radar: RadarView): string {
 
 function autoAnalyzeCheck(radar: RadarView): string {
   return `<label class="check"><input type="checkbox" data-setting="radar.autoAnalyze"${radar.autoAnalyze ? ' checked' : ''}><span>${escapeHtml(t('Analyze right after a check finds something'))}<br><span class="muted">${escapeHtml(
-    t('Uses your provider and tokens, at most {n} model calls a run.', { n: Number(radar.maxCalls) || 0 }),
+    autoAnalyzeNote(radar),
   )}</span></span></label>`;
+}
+
+/** What automatic analysis costs; on Claude Code it is paused (radar.ts never runs a subscription CLI on its own). */
+function autoAnalyzeNote(radar: RadarView): string {
+  return radar.autoAnalyze && radar.model?.provider === 'claude-code'
+    ? t('Paused while Radar runs on Claude Code: it analyzes only when you click Analyze.')
+    : t('Uses your provider and tokens, at most {n} model calls a run.', { n: Number(radar.maxCalls) || 0 });
 }
 
 function hostsHtml(radar: RadarView): string {
@@ -122,12 +138,12 @@ function onHtml(radar: RadarView, deps: RadarPanelDeps): string {
     </div>`;
 }
 
-/** Radar's own provider and model ('' = the main agent's provider, when that is a model API). */
+/** Radar's own provider and model ('' = automatic: Claude Code when it is ready, else the main agent's model API). */
 function modelPicker(radar: RadarView, deps: RadarPanelDeps): string {
-  const providers = radarProviders(deps.providers);
   const current = radar.choice.provider || radar.model?.provider || '';
+  const providers = radarProviders(deps.providers, current);
   const provider = providers.find((p) => p.kind === current);
-  const auto = radar.choice.provider === '' && radar.model ? t('Same as main ({provider})', { provider: provider?.label ?? radar.model.provider }) : t('Choose a provider…');
+  const auto = radar.choice.provider === '' && radar.model ? t('Automatic ({provider})', { provider: provider?.label ?? radar.model.provider }) : t('Choose a provider…');
   const options = [
     `<option value=""${radar.choice.provider === '' ? ' selected' : ''}>${escapeHtml(auto)}</option>`,
     ...providers.map(
@@ -276,7 +292,7 @@ export function radarSettingsCard(radar: RadarView, panel: boolean): string {
       )}</span></span></label>
       <label class="check"><input type="checkbox" data-setting="radar.autoAnalyze"${radar.autoAnalyze ? ' checked' : ''}${radar.enabled || radar.autoAnalyze ? '' : ' disabled'}><span>${escapeHtml(
         t('Analyze right after a check finds something'),
-      )}<br><span class="muted">${escapeHtml(t('Uses your provider and tokens, at most {n} model calls a run.', { n: Number(radar.maxCalls) || 0 }))}</span></span></label>
+      )}<br><span class="muted">${escapeHtml(autoAnalyzeNote(radar))}</span></span></label>
       ${
         panel
           ? `<button class="link radar-open" data-action="open-radar">${escapeHtml(t('Open the Radar panel'))}</button>`

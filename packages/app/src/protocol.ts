@@ -4,6 +4,7 @@
  */
 import type {
   AgentEvent,
+  AgentOption,
   Locale,
   ModelInfo,
   PermissionMode,
@@ -53,10 +54,32 @@ export interface AgentCliView {
   commandLine?: string;
   note: string;
   termsUrl: string;
+  /** The vendor's FAQ on use from other software ('' = none). */
+  faqUrl: string;
   docsUrl: string;
   installHint: string;
   loginCommand?: string;
   preview: boolean;
+}
+
+/**
+ * One CLI account as its own status command reports it (Settings > Accounts): one row per CLI,
+ * and per Claude Code profile. Kept in memory only.
+ */
+export interface AccountView {
+  /** "claude-code" or a catalog agent id. */
+  cli: string;
+  label: string;
+  /** Claude Code: the profile ('' id = the default, no CLAUDE_CONFIG_DIR). */
+  profile?: { id: string; name: string; dir: string; chosen: boolean };
+  status: { state: 'unknown' | 'checking' | 'signed_in' | 'signed_out' | 'not_installed'; label?: string; hint?: string };
+  /** The vendor's sign-in and sign-out as the user would type them ('' = opens the CLI itself). */
+  loginCommand: string;
+  logoutCommand?: string;
+  /** No sign-out command: what to do inside the CLI instead. */
+  logoutHint?: string;
+  /** Orka can install it from its recipes (after the user's consent). */
+  installable: boolean;
 }
 
 export interface AgentView {
@@ -72,6 +95,29 @@ export interface AgentView {
   effective: { provider: string; model: string };
   /** Why it does not run at all right now (the Supervisor next to an agent CLI with no model). */
   unavailable?: string;
+}
+
+/** The composer's model menu for the session shown: what its next request runs on. */
+export interface SessionModelView {
+  /** The main agent's provider the choice is for. */
+  provider: string;
+  /** '' = the provider's default model. */
+  model: string;
+  effort: string;
+  /** Effort levels the provider takes ('' = its own default); empty: the menu has no effort row. */
+  efforts: string[];
+  /** The settings' default effort for the provider (what '' or a new session gets). */
+  defaultEffort: string;
+  /** Claude Code profiles ('' = the default one), when a role runs on Claude Code and the user added profiles. */
+  profiles: Array<{ id: string; name: string }>;
+  profile: string;
+  /** The choice differs from the settings' defaults ("Use as default" would change them). */
+  differs: boolean;
+  /**
+   * An agent CLI: the model and thought-level choices it advertised (current value = what its next
+   * prompt runs on); none while it advertised nothing ("Set in the agent").
+   */
+  agentOptions?: AgentOption[];
 }
 
 export interface ClaudeCodeStatus {
@@ -140,6 +186,8 @@ export interface ConfigView {
   /** Desktop: the user picks the folder in the app ("Open folder…"); VS Code opens folders itself. */
   canOpenFolder?: boolean;
   providers: ProviderView[];
+  /** The model menu of the session shown (none while no folder is open). */
+  sessionModel?: SessionModelView;
   main: AgentView;
   supervisor: AgentView;
   /** Where the main agent continues when its provider hits a limit (provider "inherit" = off). */
@@ -161,6 +209,8 @@ export interface ConfigView {
   app: AppVersionView;
   /** Coding agents Orka can drive as the main agent, and which are turned on. */
   agentClis: AgentCliView[];
+  /** Each CLI's account, as last reported by its own status command. */
+  accounts: AccountView[];
   /** Why some well-known agents are not offered (shown under the list). */
   agentClisLeftOut: Array<{ id: string; reason: string }>;
   /** Desktop only: the window's layout and color theme, and how many sessions may run at once (sessions.maxRunning). */
@@ -299,7 +349,7 @@ export type DialogView =
   | { kind: 'pick'; title?: string; items: Array<{ label: string; description?: string; detail?: string; separator?: boolean; picked?: boolean }> }
   | { kind: 'diff'; title: string; diff: string };
 
-export type SettingsTab = 'agents' | 'providers' | 'skills' | 'mcp' | 'control';
+export type SettingsTab = 'agents' | 'accounts' | 'providers' | 'skills' | 'mcp' | 'control';
 
 /** One feed Radar reads, and how its last poll went. */
 export interface RadarSourceView {
@@ -470,6 +520,8 @@ const SESSION_MESSAGE_TYPES = [
   'saveFile',
   'openExternalFile',
   'initMemory',
+  'setSessionModel',
+  'useModelAsDefault',
 ] as const;
 
 export const SESSION_MESSAGES: ReadonlySet<string> = new Set<string>(SESSION_MESSAGE_TYPES);
@@ -511,8 +563,28 @@ export type FromWebview =
   | { type: 'resetAgentExecutable'; id: string }
   | { type: 'addCustomAgent' }
   | { type: 'removeCustomAgent'; id: string }
+  /**
+   * Install a CLI ("claude-code" or a catalog agent id; Orka's fixed recipes only): asks first with
+   * the exact command, then runs it in a visible terminal, or shows a manual one to copy.
+   */
+  | { type: 'installCli'; id: string }
+  /** Look again whether a CLI being installed is there now (no close signal on macOS). */
+  | { type: 'checkInstall'; id: string }
+  /**
+   * Accounts: ask each CLI's own status command (all, or one CLI and Claude Code profile), or open
+   * the vendor's sign-in or sign-out in a terminal. `cli` is "claude-code" or a catalog agent id;
+   * `profile` a Claude Code profile id ('' or none = the default).
+   */
+  | { type: 'checkAccounts' }
+  | { type: 'checkAccount'; cli: string; profile?: string }
+  | { type: 'loginAccount'; cli: string; profile?: string }
+  | { type: 'logoutAccount'; cli: string; profile?: string }
+  /** Claude Code profiles (CLAUDE_CONFIG_DIR): add one (asks for a name when none is given), remove one, or pick the one Claude Code runs on ('' = default). */
+  | { type: 'addClaudeProfile'; name?: string }
+  | { type: 'removeClaudeProfile'; id: string }
+  | { type: 'setClaudeProfile'; id: string }
   /** Open an agent's documentation or terms (the URLs come from Orka's catalog, never from the page). */
-  | { type: 'openAgentLink'; id: string; link: 'docs' | 'terms' }
+  | { type: 'openAgentLink'; id: string; link: 'docs' | 'terms' | 'faq' }
   /** Continue the task in an external agent; text: what the user typed but did not send. */
   | Scoped<{ type: 'handoff'; agent: string; text?: string }>
   | { type: 'checkForUpdates' }
@@ -523,6 +595,13 @@ export type FromWebview =
   | { type: 'pickClaudeExecutable' }
   | { type: 'resetClaudeExecutable' }
   | Scoped<{ type: 'initMemory' }>
+  /**
+   * The composer's model menu: this session's model ('' = the provider's default), effort ('' =
+   * the provider's own) or Claude Code profile ('' = the default one), from its next request on.
+   */
+  | Scoped<{ type: 'setSessionModel'; model?: string; effort?: string; profile?: string; option?: { id: string; value: string } }>
+  /** Save this session's model, effort and profile as the settings' defaults for new sessions. */
+  | Scoped<{ type: 'useModelAsDefault' }>
   | { type: 'openSettings' }
   | { type: 'listTasks' }
   | { type: 'listSessions' }

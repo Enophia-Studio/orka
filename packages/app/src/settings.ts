@@ -13,6 +13,8 @@ import {
   type ProviderKind,
   type SupervisorSettings,
 } from '@orka/core';
+import * as path from 'node:path';
+import { PROFILE_ID } from './accounts';
 
 export interface Disposable {
   dispose(): void;
@@ -81,6 +83,11 @@ export interface AppSettings {
   provider: ProviderRef;
   /** The user chose the main provider (in the settings or the UI), rather than relying on the default. */
   providerExplicit: boolean;
+  /**
+   * The agent CLI id the "provider" setting names while it is not turned on, so the main agent
+   * runs on the default instead; the app says so once.
+   */
+  droppedMainAgent?: string;
   models: Record<ProviderKind, string>;
   customProviders: CustomProviderDef[];
   claude: { effort: ClaudeEffort; refusalFallback: boolean };
@@ -135,6 +142,12 @@ export interface AppSettings {
    * user's own settings only: a folder's settings can neither turn it on nor pick its provider.
    */
   radar: { enabled: boolean; provider: ProviderRef | ''; model: string; autoAnalyze: boolean };
+  /**
+   * Claude Code profiles: config folders of their own (CLAUDE_CONFIG_DIR), each signed in to a
+   * separate account, and the one Claude Code runs on ('' = the default, no variable set). From
+   * the user's own settings only: a folder's settings can point Claude Code at no other folder.
+   */
+  accounts: { claudeProfiles: Array<{ id: string; name: string; dir: string }>; claudeProfile: string };
 }
 
 export function isCustomRef(ref: string): ref is `custom:${string}` {
@@ -172,10 +185,13 @@ export function readSettings(c: SettingsStore): AppSettings {
   // Only the main agent can be an agent CLI, and only one the user turned on.
   const mainRef = c.get<string>('provider', 'claude');
   const agentMain = typeof mainRef === 'string' && isAgentRef(mainRef) && agentClis.enabled.includes(mainRef.slice('agent:'.length)) ? (mainRef as ProviderRef) : undefined;
+  const droppedMainAgent = !agentMain && typeof mainRef === 'string' && isAgentRef(mainRef) ? mainRef.slice('agent:'.length) : undefined;
 
   return {
     provider: agentMain ?? valid(mainRef) ?? 'claude',
-    providerExplicit: c.isSet('provider'),
+    // An agent that is turned off is no choice: the main agent falls back to the default.
+    providerExplicit: c.isSet('provider') && !droppedMainAgent,
+    droppedMainAgent,
     models,
     customProviders,
     claude: { effort: c.get<ClaudeEffort>('claude.effort', 'medium'), refusalFallback: c.get<boolean>('claude.refusalFallback', true) },
@@ -251,12 +267,28 @@ export function readSettings(c: SettingsStore): AppSettings {
     sessions: { maxRunning: maxRunning(c.get<unknown>('sessions.maxRunning', DEFAULT_MAX_RUNNING)) },
     radar: {
       enabled: userOnly('radar.enabled') === true,
-      // A model provider only: valid() never returns an agent CLI, and Claude Code is left out here.
-      provider: radarProvider && radarProvider !== 'claude-code' ? radarProvider : '',
+      // A model provider, or Claude Code once turned on (a plain model with no tools): valid() never returns an agent CLI.
+      provider: radarProvider ?? '',
       model: typeof radarModel === 'string' && MODEL_ID.test(radarModel.trim()) ? radarModel.trim() : '',
       autoAnalyze: userOnly('radar.autoAnalyze') === true,
     },
+    accounts: readAccounts(userOnly('accounts.claudeProfiles'), userOnly('accounts.claudeProfile')),
   };
+}
+
+/** Claude Code profiles: an id, a name and an absolute folder each; the chosen one only when it is listed. */
+function readAccounts(rawProfiles: unknown, rawChosen: unknown): AppSettings['accounts'] {
+  const claudeProfiles: AppSettings['accounts']['claudeProfiles'] = [];
+  for (const item of Array.isArray(rawProfiles) ? rawProfiles : []) {
+    if (!item || typeof item !== 'object') continue;
+    const p = item as Record<string, unknown>;
+    if (typeof p.id !== 'string' || !PROFILE_ID.test(p.id) || claudeProfiles.some((o) => o.id === p.id)) continue;
+    if (typeof p.dir !== 'string' || !path.isAbsolute(p.dir.trim())) continue;
+    const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim().slice(0, 40) : p.id;
+    claudeProfiles.push({ id: p.id, name, dir: p.dir.trim() });
+  }
+  const claudeProfile = typeof rawChosen === 'string' && claudeProfiles.some((p) => p.id === rawChosen) ? rawChosen : '';
+  return { claudeProfiles, claudeProfile };
 }
 
 /** MCP server entries: a command (stdio) or a url (Streamable HTTP); anything malformed is skipped. */
@@ -386,7 +418,7 @@ export const WEBVIEW_SETTINGS: Record<string, (value: unknown) => boolean> = {
   'radar.enabled': (v) => typeof v === 'boolean',
   'radar.autoAnalyze': (v) => typeof v === 'boolean',
   // '' = the main agent's provider. Never an agent CLI or Claude Code: Radar runs on a model API.
-  'radar.provider': (v) => v === '' || (typeof v === 'string' && /^(?:claude|openai|gemini|custom:[a-z0-9][a-z0-9-]{0,39})$/.test(v)),
+  'radar.provider': (v) => v === '' || (typeof v === 'string' && /^(?:claude|openai|gemini|claude-code|custom:[a-z0-9][a-z0-9-]{0,39})$/.test(v)),
   'radar.model': (v) => v === '' || (typeof v === 'string' && MODEL_ID.test(v)),
 };
 
@@ -406,6 +438,8 @@ export const MACHINE_SETTINGS = new Set([
   'claudeCode.path',
   'agentClis.paths',
   'agentClis.custom',
+  'accounts.claudeProfiles',
+  'accounts.claudeProfile',
   'browser.path',
   'mcpServers',
   'customProviders',

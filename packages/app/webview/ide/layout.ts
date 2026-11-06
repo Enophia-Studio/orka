@@ -22,10 +22,13 @@ export function appSkeleton(): string {
     <main class="transcript" id="transcript"></main>${views}
     <footer class="composer" id="composer">
       <div class="suggest" id="suggest" role="listbox" hidden></div>
+      <div class="model-menu" id="model-menu" role="dialog" hidden></div>
       <div class="chips" id="chips" hidden></div>
       <textarea id="input" rows="3"></textarea>
       <div class="composer-row">
         <button class="meta" id="meta" data-action="toggle-usage"></button>
+        <span class="composer-agent" id="composer-agent"></span>
+        <button class="context-ring" id="context-ring" data-action="toggle-usage" hidden></button>
         <button class="btn primary" id="send"></button>
       </div>
     </footer>`;
@@ -48,6 +51,7 @@ export function appSkeleton(): string {
         <div class="suggest" id="suggest" role="listbox" hidden></div>
         ${agents}
         <div class="composer-menu" id="composer-menu" role="menu" hidden></div>
+        <div class="model-menu" id="model-menu" role="dialog" hidden></div>
         <div class="chips" id="chips" hidden></div>
         <textarea id="input" rows="2"></textarea>
         <div class="composer-row">
@@ -55,6 +59,7 @@ export function appSkeleton(): string {
           <span class="composer-mode" id="composer-mode"></span>
           <span class="spacer"></span>
           <span class="composer-agent" id="composer-agent"></span>
+          <button class="context-ring" id="context-ring" data-action="toggle-usage" hidden></button>
           <button class="meta" id="meta" data-action="toggle-usage" hidden></button>
           <button class="btn primary" id="send"></button>
         </div>

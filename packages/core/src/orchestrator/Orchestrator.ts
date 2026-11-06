@@ -32,7 +32,7 @@ import {
   type ToolResultBlock,
   type Usage,
 } from '../types';
-import type { AgentEvent, AgentPhase, AgentUsage, RunEndReason, ToolCallView } from './events';
+import type { AgentEvent, AgentPhase, AgentUsage, ContextFill, RunEndReason, ToolCallView } from './events';
 import { Handoff, handoffBrief, recordChangesSince, userRequests } from '../handoff/Handoff';
 import type { AcpClient } from '../acp/AcpClient';
 import { AcpAgentSession, type AcpSessionContext, type AcpTurnResult } from '../acp/AcpAgentSession';
@@ -133,6 +133,11 @@ export interface OrchestratorOptions {
    * Needs commandSnapshots: without them the agent does not start.
    */
   getExternalAgent?: () => ExternalAgentRuntime | undefined;
+  /**
+   * The user's choices for the agent CLI's advertised options (option id -> value), set before
+   * each of its prompts where the agent lists them; read per prompt, so a change applies from the next one.
+   */
+  getAgentChoices?: () => Readonly<Record<string, string>> | undefined;
 }
 
 const MAX_TOOL_RESULT_CHARS = 40_000;
@@ -223,6 +228,8 @@ export class Orchestrator {
   private lastModel = '';
   /** Prompt size of the last main-agent request (input incl. cache), to decide on compaction. */
   private lastPromptTokens = 0;
+  /** How full the main agent's context is, when its provider reported the window (the composer's gauge). */
+  private contextFill?: ContextFill;
   /** Verbatim user requests and supervisor corrections of this task, for compaction handoffs. */
   private userRequests: string[] = [];
   private corrections: string[] = [];
@@ -318,7 +325,7 @@ export class Orchestrator {
   }
 
   private emitUsage(): void {
-    this.emit({ type: 'usage', total: this.combinedUsage(), model: this.lastModel, byAgent: this.usageByAgent });
+    this.emit({ type: 'usage', total: this.combinedUsage(), model: this.lastModel, byAgent: this.usageByAgent, context: this.contextFill });
   }
 
   /** Tell the model about something that happened outside the loop (e.g. the user reverted a file). */
@@ -356,6 +363,7 @@ export class Orchestrator {
     this.plan = state.plan;
     this.notes = [];
     this.agentUsage = new Map(state.usageByAgent.map((u) => [u.agent, { ...u, usage: { ...u.usage } }]));
+    this.contextFill = undefined;
     this.lastProviderKey = undefined;
     this.userRequests = [];
     this.corrections = [];
@@ -437,6 +445,7 @@ export class Orchestrator {
     this.agentUsage.clear();
     this.rewindPoints = [];
     this.lastPromptTokens = 0;
+    this.contextFill = undefined;
     this.lastProviderKey = undefined;
     this.userRequests = [];
     this.corrections = [];
@@ -631,6 +640,8 @@ export class Orchestrator {
       this.messages.push(response.message);
       this.lastModel = response.model;
       this.lastPromptTokens = response.usage.inputTokens + response.usage.cacheReadTokens + response.usage.cacheWriteTokens;
+      // The answer joins the context too; without a reported window the gauge stays hidden.
+      this.contextFill = response.contextWindow ? { used: this.lastPromptTokens + response.usage.outputTokens, size: response.contextWindow } : undefined;
       this.recordUsage(this.options.role?.name ?? 'main', provider.id, response.model, response.usage);
       this.emitUsage();
       this.emit({ type: 'assistant_end', id: assistantId, text: messageText(response.message), model: response.model });
@@ -961,6 +972,8 @@ export class Orchestrator {
         let result: AcpTurnResult | undefined;
         let failure: unknown;
         try {
+          await session.applyChoices(this.options.getAgentChoices?.());
+          if (signal.aborted || left()) return 'stopped';
           // A file the agent writes through Orka keeps its content from the turn's snapshot as its
           // original; a write still under way after a new task records nothing into that one.
           result = await session.prompt(blocks, signal, { recordBefore: (absPath) => net.recordBefore(absPath, () => !left()) });
@@ -1031,6 +1044,11 @@ export class Orchestrator {
       },
       label: agent.label,
       commandTimeoutMs: this.options.getSettings().commandTimeoutMs,
+      onOptions: (options) => this.emit({ type: 'agent_options', agent: agent.id, options }),
+      onContext: (fill) => {
+        this.contextFill = fill;
+        this.emitUsage();
+      },
     };
     const session = new AcpAgentSession(client, context);
     try {
@@ -1129,6 +1147,7 @@ export class Orchestrator {
     this.notes = [];
     this.activity = [];
     this.lastPromptTokens = 0;
+    this.contextFill = undefined;
     this.supervisor?.reset();
     this.emit({ type: 'rewound', id });
     this.emit({ type: 'plan', plan: this.plan });
@@ -1207,6 +1226,7 @@ export class Orchestrator {
       const handoff = await this.buildHandoff(note, last);
       this.messages = [{ role: 'user', content: [{ type: 'text', text: handoff }] }];
       this.lastPromptTokens = 0;
+      this.contextFill = undefined;
       // The earlier messages are gone, so there is nothing to go back to.
       this.rewindPoints = [];
       if (!this.options.changes) this.changes.clearEpochs();

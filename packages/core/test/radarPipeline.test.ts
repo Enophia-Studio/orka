@@ -630,10 +630,12 @@ describe('Radar analysis', () => {
     assert.ok(report.clusters[0].decision, 'the fallback clusters are still compared and decided');
   });
 
-  it('refuses the Claude Code provider', async () => {
+  it('runs on the Claude Code provider too, with no tools in any call', async () => {
     const provider = new FakeRadarProvider(validReply, 'claude-code');
-    await assert.rejects(analyzeEntries([entry(1)], provider, BUILTIN_INVENTORY), /Claude Code provider cannot run it/);
-    assert.equal(provider.calls(), 0);
+    const { report } = await analyzeEntries([entry(1)], provider, BUILTIN_INVENTORY);
+    assert.equal(report.items.length, 1);
+    assert.ok(provider.calls() > 0);
+    assert.ok(provider.requests.every((r) => r.tools === 0), 'a plain text model: nothing to run, nothing to approve');
   });
 
   it('reuses cluster keys of the previous report, and merges reports for the panel', async () => {
@@ -691,7 +693,6 @@ describe('Radar analysis', () => {
         [0, 0],
       );
       assert.deepEqual(mergeReports(failed, report!).needsHuman, [], 'read on the retry: no longer a part that needs a human');
-      await assert.rejects(radar.analyze(new FakeRadarProvider(validReply, 'claude-code')), /Claude Code/);
     } finally {
       cleanup();
     }

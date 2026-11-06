@@ -13,6 +13,7 @@ import {
   NOT_IN_CATALOG,
   pooledAgent,
   type AgentEvent,
+  type AgentOption,
   type AIProvider,
   applyEvent,
   checkAppUpdate,
@@ -55,10 +56,11 @@ import {
   VERSION,
 } from '@orka/core';
 import { execFile } from 'node:child_process';
-import { existsSync, promises as fs } from 'node:fs';
+import { existsSync, mkdirSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import type {
+  AccountView,
   AgentCliView,
   AgentView,
   AppVersionView,
@@ -75,6 +77,7 @@ import type {
   SessionOrganizeOp,
   SessionOrganizerView,
   SessionMessage,
+  SessionModelView,
   SettingsTab,
   SkillView,
 } from './protocol';
@@ -95,7 +98,21 @@ import {
   SHELL_CHOICES,
   WEBVIEW_SETTINGS,
 } from './settings';
-import { RunGate } from './runGate';
+import {
+  ACCOUNT_CLIS,
+  ACCOUNT_COMMANDS,
+  type AccountCli,
+  type AccountStatus,
+  copilotTokenVariable,
+  isAccountCli,
+  parseStatus,
+  type ProbeRunner,
+  profileId,
+  runProbe,
+} from './accounts';
+import { type InstallRecipe, installRecipe, nodeIsRecent, nodeVersion } from './install';
+import { RunGate, SharedAccounts } from './runGate';
+import { EFFORT_SETTING, effortLevels, isOptionText, type SessionChoice, settingsEffort } from './sessionModel';
 import { dropNotices, samePath, type SessionContext, SessionController } from './SessionController';
 import type { AppShell, PickItem } from './shell';
 
@@ -139,6 +156,8 @@ export const USER_SKILLS_DIR = path.join(homedir(), '.orka', 'skills');
 export interface AppControllerOptions {
   /** Tests: Radar's network, clock, timers and feeds. */
   radar?: RadarHooks;
+  /** Tests: what runs a CLI's account status command. */
+  probe?: ProbeRunner;
 }
 
 /**
@@ -166,6 +185,10 @@ export class AppController implements Disposable {
   private idleView: SessionView = emptySession();
   private readonly idleTaskId = newTaskId();
   private claudeCodeStatus: ClaudeCodeStatus = { state: 'unknown' };
+  /** Claude Code was ready when its check under way started (it counts as ready until that check says otherwise). */
+  private claudeCodeWasReady = false;
+  /** Agent CLIs that were ready when their check under way started. */
+  private readonly agentsWereReady = new Set<string>();
   /** Built-in and user skills (all of them; disabled ones are filtered when a task starts). */
   private skills: Skill[] = [];
   private builtinSkillNames = new Set<string>();
@@ -175,7 +198,7 @@ export class AppController implements Disposable {
   private appUpdateCheck?: Promise<void>;
   private appUpdateTimer?: ReturnType<typeof setInterval>;
   /** Sessions that may run at once: the process budget and one session per folder (and the folders inside it). */
-  private readonly gate = new RunGate(() => this.maxRunning());
+  private readonly gate: RunGate;
   /**
    * Agent CLI processes (ACP), shared by the tasks of every folder; and what their last check found.
    * The cap stays above the session budget, so a session the gate lets run finds room for its agent.
@@ -184,13 +207,24 @@ export class AppController implements Disposable {
   private readonly agentStatus = new Map<string, AgentCliView['status']>();
   /** "No Supervisor next to this agent" was said once already. */
   private supervisorSkipNoted = false;
+  /** Agent CLIs the "provider" setting named while turned off, already said once. */
+  private readonly droppedMainNoted = new Set<string>();
   /** The desktop app's Radar (VS Code and the CLI have none). */
   private readonly radar?: RadarController;
+  /**
+   * What each CLI's own status command last said, by "<cli>" or "claude-code:<profile>": in memory
+   * only, asked when the settings ask and after a sign-in terminal closes, never on a timer.
+   */
+  private readonly accountStatus = new Map<string, AccountStatus>();
+  private readonly probe: ProbeRunner;
 
   constructor(
     private readonly shell: AppShell,
     options: AppControllerOptions = {},
   ) {
+    this.probe = options.probe ?? runProbe;
+    // One profile of a CLI at a time across every Orka window and app: they share <orka home>/accounts.
+    this.gate = new RunGate(() => this.maxRunning(), new SharedAccounts(path.join(shell.orkaHome ?? (process.env.ORKA_HOME || path.join(homedir(), '.orka')), 'accounts')));
     this.settings = readSettings(shell.settings);
     this.sessionContext = this.createSessionContext();
     this.applyLocale();
@@ -231,8 +265,20 @@ export class AppController implements Disposable {
     void this.checkAppUpdate();
     this.appUpdateTimer = setInterval(() => void this.checkAppUpdate(), APP_UPDATE_POLL_MS);
     this.appUpdateTimer.unref?.();
-    for (const id of this.settings.agentClis.enabled) void this.checkAgent(id);
+    // Every catalog agent too, so the main agent picker can say which are installed (a version
+    // flag only, and only for a program found on PATH or at the user's path).
+    for (const entry of this.agentEntries()) if (entry.kind === 'builtin' || this.settings.agentClis.enabled.includes(entry.id)) void this.checkAgent(entry.id);
+    this.noteDroppedMainAgent();
     await this.radar?.initialize();
+  }
+
+  /** Says once that the "provider" setting names an agent CLI that is turned off, and what runs instead. */
+  private noteDroppedMainAgent(): void {
+    const id = this.settings.droppedMainAgent;
+    if (!id || this.droppedMainNoted.has(id)) return;
+    this.droppedMainNoted.add(id);
+    const label = this.agentEntry(id)?.label ?? id;
+    this.publishNotice('warning', t('Main agent {agent} is turned off; using {fallback}.', { agent: label, fallback: this.providerLabel(this.mainProvider()) }), 'agentClis');
   }
 
   private updateSetting(key: string, value: unknown, options?: { preferGlobal?: boolean }): Promise<void> {
@@ -328,9 +374,37 @@ export class AppController implements Disposable {
       case 'removeCustomAgent':
         await this.removeCustomAgent(message.id);
         break;
+      case 'installCli':
+        await this.installCli(message.id);
+        break;
+      case 'checkInstall':
+        await this.checkInstalled(message.id);
+        break;
+      case 'checkAccounts':
+        await this.checkAccounts();
+        break;
+      case 'checkAccount':
+        await this.checkAccount(message.cli, message.profile);
+        break;
+      case 'loginAccount':
+        this.loginAccount(message.cli, message.profile);
+        break;
+      case 'logoutAccount':
+        await this.logoutAccount(message.cli, message.profile);
+        break;
+      case 'addClaudeProfile':
+        await this.addClaudeProfile(message.name);
+        break;
+      case 'removeClaudeProfile':
+        await this.removeClaudeProfile(message.id);
+        break;
+      case 'setClaudeProfile':
+        await this.setClaudeProfile(message.id);
+        break;
       case 'openAgentLink': {
         const entry = this.agentEntry(message.id);
-        const url = message.link === 'terms' ? agentPolicy(entry?.policy ?? '')?.termsUrl : entry?.docsUrl;
+        const policy = agentPolicy(entry?.policy ?? '');
+        const url = message.link === 'terms' ? policy?.termsUrl : message.link === 'faq' ? policy?.faqUrl : entry?.docsUrl;
         if (url?.startsWith('https://')) await this.shell.openExternal(url);
         break;
       }
@@ -499,7 +573,7 @@ export class AppController implements Disposable {
       settings: () => this.settings,
       isActive: (session) => session.id === this.activeId,
       show: (session) => void this.showSession(session),
-      providerFor: (name) => this.providerFor(name),
+      providerFor: (name, session) => this.providerFor(name, session),
       externalAgent: (root) => this.externalAgent(root),
       mcpTools: (session) => this.mcpTools(session),
       skills: () => this.skills,
@@ -525,6 +599,15 @@ export class AppController implements Disposable {
         if (this.providersStale && !this.anyRunning()) this.disposeProviders();
       },
       gate: this.gate,
+      runAccounts: (session) => this.runAccounts(session),
+      defaultChoice: () => this.defaultChoice(),
+      sessionChoice: (session) => this.sessionChoice(session),
+      setSessionModel: (session, change) => this.setSessionModel(session, change),
+      useModelAsDefault: (session) => this.useModelAsDefault(session),
+      agentOptionsChanged: (session) => {
+        if (session.id === this.activeId) this.postConfig();
+      },
+      accountLabel: (account) => this.accountLabel(account),
     };
   }
 
@@ -1341,15 +1424,35 @@ export class AppController implements Disposable {
   }
 
   /**
-   * The main agent's provider. One the user picked is always used. Until they pick one, a
-   * provider that works right now is preferred over the default Claude API without a key: the
-   * logged-in Claude Code CLI (when turned on), else the first provider that has a key.
+   * The main agent's provider. One the user picked is always used. Until they pick one, a CLI
+   * that is ready comes first (CLI-first): the logged-in Claude Code CLI (when turned on), else
+   * an agent CLI the user turned on whose check passed. API providers come after, as a fallback:
+   * the default one when it has a key, else the first provider that has a key.
    */
   private mainProvider(): ProviderRef {
     const s = this.settings;
-    if (s.providerExplicit || this.isReady(s.provider)) return s.provider;
-    if (s.claudeCode.enabled && this.claudeCodeStatus.state === 'ready') return 'claude-code';
+    if (s.providerExplicit) return s.provider;
+    const cli = this.readyCli();
+    if (cli) return cli;
+    if (this.isReady(s.provider)) return s.provider;
     return this.allProviderRefs().find((ref) => ref !== 'claude-code' && this.isReady(ref)) ?? s.provider;
+  }
+
+  /** A provider that can still run: a model provider set up (Claude Code turned on), or an agent CLI turned on. */
+  private providerSetUp(ref: string): boolean {
+    return isAgentRef(ref) ? !!this.agentFor(ref) : this.allProviderRefs().includes(ref as ProviderRef);
+  }
+
+  /**
+   * The first CLI that is ready right now: Claude Code when turned on, else an agent CLI the user
+   * turned on. One that was ready stays ready while it is checked again: only a check that fails
+   * moves the main agent.
+   */
+  private readyCli(): ProviderRef | undefined {
+    const ready = (state: string | undefined, before: boolean) => state === 'ready' || (state === 'checking' && before);
+    if (this.settings.claudeCode.enabled && ready(this.claudeCodeStatus.state, this.claudeCodeWasReady)) return 'claude-code';
+    const id = this.settings.agentClis.enabled.find((a) => ready(this.agentStatus.get(a)?.state, this.agentsWereReady.has(a)) && this.agentEntry(a));
+    return id ? (`agent:${id}` as ProviderRef) : undefined;
   }
 
   /**
@@ -1368,11 +1471,18 @@ export class AppController implements Disposable {
     if (!this.activeSession && dropNotices(this.idleView, stale)) this.postInit();
   }
 
-  /** Provider/model an agent ("main", "supervisor" or a sub-agent) will actually run on. */
-  private resolveAgent(name: string): { provider: ProviderRef; model: string } {
+  /**
+   * Provider/model an agent ("main", "supervisor" or a sub-agent) will actually run on. With a
+   * session's model menu choice, the main agent and the roles that inherit it run on its model and
+   * effort (`effort` is set then).
+   */
+  private resolveAgent(name: string, session?: SessionChoice, pinned = false): { provider: ProviderRef; model: string; effort?: string } {
     const s = this.settings;
-    const mainRef = this.mainProvider();
-    const main = { provider: mainRef, model: this.defaultModel(mainRef) };
+    // `pinned`: a run under way stays on the provider it started with while that is still set up
+    // (a CLI that became ready meanwhile takes the main agent from the next run on).
+    const mainRef = pinned && session && this.providerSetUp(session.provider) ? (session.provider as ProviderRef) : this.mainProvider();
+    const own = session?.provider === mainRef ? session : undefined;
+    const main = own ? { provider: mainRef, model: own.model || this.defaultModel(mainRef), effort: own.effort } : { provider: mainRef, model: this.defaultModel(mainRef) };
     if (name === 'main') return main;
     const choice: AgentChoice | undefined =
       name === 'supervisor' ? s.supervisor : name === 'fallback' ? s.fallback : name === 'light' ? s.light : s.subagents.agents[name];
@@ -1382,8 +1492,13 @@ export class AppController implements Disposable {
     return { provider: choice.provider, model: choice.model || this.defaultModel(choice.provider) };
   }
 
-  private providerConfig(ref: string, model: string): ProviderConfig {
+  /**
+   * `use`: a session's effort (undefined = the settings' default, '' = the provider's own) and
+   * Claude Code profile (undefined = the settings' default).
+   */
+  private providerConfig(ref: string, model: string, use: { effort?: string; profile?: string } = {}): ProviderConfig {
     const s = this.settings;
+    const level = <T extends string>(fallback: T | undefined): T | undefined => (use.effort === undefined ? fallback : (use.effort as T) || undefined);
     const key = () => {
       const value = this.apiKey(ref);
       if (!value) throw new Error(t('No API key set for {provider}. Run "Orka: Set API Key".', { provider: this.providerLabel(ref) }));
@@ -1403,23 +1518,34 @@ export class AppController implements Disposable {
     }
     switch (ref as ProviderKind) {
       case 'claude':
-        return { kind: 'claude', apiKey: key(), model, effort: s.claude.effort, refusalFallback: s.claude.refusalFallback };
+        return { kind: 'claude', apiKey: key(), model, effort: level(s.claude.effort) ?? s.claude.effort, refusalFallback: s.claude.refusalFallback };
       case 'openai':
-        return { kind: 'openai', apiKey: key(), model, baseURL: s.openai.baseUrl, reasoningEffort: s.openai.reasoningEffort };
+        return { kind: 'openai', apiKey: key(), model, baseURL: s.openai.baseUrl, reasoningEffort: level(s.openai.reasoningEffort) };
       case 'gemini':
-        return { kind: 'gemini', apiKey: key(), model, thinkingLevel: s.gemini.thinkingLevel };
+        return { kind: 'gemini', apiKey: key(), model, thinkingLevel: level(s.gemini.thinkingLevel) };
       case 'claude-code':
         if (!s.claudeCode.enabled) throw new Error(t('Claude Code is turned off. Turn it on in Settings > Providers.'));
-        return { kind: 'claude-code', model, effort: s.claudeCode.effort, executable: s.claudeCode.path };
+        return { kind: 'claude-code', model, effort: level(s.claudeCode.effort), executable: s.claudeCode.path, configDir: this.claudeConfigDir(use.profile) };
       default:
         throw new Error(`Unknown provider "${ref}".`);
     }
   }
 
-  private providerFor(name: string): AIProvider {
-    const { provider: ref, model } = this.resolveAgent(name);
+  /** A run of the session is under way: it stays on the provider it started with (resolveAgent's `pinned`). */
+  private runUnderWay(session?: SessionController): boolean {
+    return !!session?.runChoice && session.isRunning;
+  }
+
+  /**
+   * A role's provider; for a session's run, on the choice the run started with (a change made in
+   * the model menu meanwhile gets a provider of its own from the next request: a running process
+   * is never stopped for it).
+   */
+  private providerFor(name: string, session?: SessionController): AIProvider {
+    const choice = session ? (session.runChoice ?? this.sessionChoice(session)) : undefined;
+    const { provider: ref, model, effort } = this.resolveAgent(name, choice, this.runUnderWay(session));
     if (!model && this.customDef(ref)) throw new Error(t('Pick a model for {provider} (Settings > Providers).', { provider: this.providerLabel(ref) }));
-    const config = this.providerConfig(ref, model);
+    const config = this.providerConfig(ref, model, { effort, profile: choice?.profile });
     const cacheKey = JSON.stringify(config);
     let provider = this.providers.get(cacheKey);
     if (!provider) {
@@ -1430,35 +1556,68 @@ export class AppController implements Disposable {
   }
 
   /**
-   * The model Radar analyzes with: the provider picked for Radar, else the main agent's when that is
-   * a model provider that is ready. Never an agent CLI or Claude Code (a subscription CLI is not
-   * meant to run automated analysis), and never one the user did not set up.
+   * The model Radar analyzes with: the provider picked for Radar; without a choice, Claude Code
+   * when it is turned on and logged in (CLI-first), else the main agent's provider when that is a
+   * model provider that is ready, else the first model API with a key. Claude Code runs Radar as a plain model: every built-in tool,
+   * MCP server, settings file and slash command of the CLI is off (ClaudeCodeProvider), and Radar
+   * offers no tools of its own, so there is nothing to run and nothing to ask permission for.
+   * Never an agent CLI (its own tools cannot be turned off), and never one the user did not set up.
    */
   private radarModel(): RadarModel {
     const plain = (ref: string) => this.radarCanUse(ref);
     const chosen = this.settings.radar.provider;
     const label = (ref: string, model: string) => `${this.providerLabel(ref)} · ${this.modelLabel(ref, model)}`;
+    // Claude Code counts as ready only once its check found it logged in.
+    const ready = (ref: string) => (ref === 'claude-code' ? this.claudeCodeStatus.state === 'ready' : this.isReady(ref));
     if (!chosen) {
-      const main = this.mainProvider();
-      const model = plain(main) && this.isReady(main) ? this.defaultModel(main) : '';
-      return model ? { provider: main, model, label: label(main, model), inherited: true } : { problem: t('Pick a provider and model for Radar.') };
+      const ref = ['claude-code', this.mainProvider(), ...this.allProviderRefs()].find((r) => plain(r) && ready(r) && this.defaultModel(r));
+      return ref ? { provider: ref, model: this.defaultModel(ref), label: label(ref, this.defaultModel(ref)), inherited: true } : { problem: t('Pick a provider and model for Radar.') };
     }
     if (!plain(chosen)) return { problem: t('Pick a provider and model for Radar.') };
+    if (chosen === 'claude-code' && !ready(chosen)) return { problem: t('{provider} is not ready.', { provider: this.providerLabel(chosen) }) };
     if (!this.isReady(chosen)) return { problem: t('{provider} needs an API key.', { provider: this.providerLabel(chosen) }) };
     const model = this.settings.radar.model || this.defaultModel(chosen);
     if (!model) return { problem: t('Pick a model for {provider} (Settings > Providers).', { provider: this.providerLabel(chosen) }) };
     return { provider: chosen, model, label: label(chosen, model), inherited: false };
   }
 
-  /** A model provider the user set up (never an agent CLI or Claude Code). */
+  /** A model provider the user set up, or Claude Code once turned on (never an agent CLI). */
   private radarCanUse(ref: string): boolean {
-    return !isAgentRef(ref) && ref !== 'claude-code' && this.allProviderRefs().includes(ref as ProviderRef);
+    return !isAgentRef(ref) && this.allProviderRefs().includes(ref as ProviderRef);
   }
 
-  /** A provider of its own for one analysis (disposed after it), on the user's own key. */
+  /**
+   * A provider of its own for one analysis (disposed after it), on the user's own key or Claude Code
+   * login. On Claude Code it holds the settings' profile in the run gate until it is disposed, so a
+   * session on another profile waits for it, and it is refused while one runs.
+   */
   private radarProvider(ref: string, model: string): AIProvider {
-    if (isAgentRef(ref) || ref === 'claude-code') throw new Error(t('The radar needs an API provider; the Claude Code provider cannot run it.'));
-    return createProvider(this.providerConfig(ref, model));
+    if (isAgentRef(ref)) throw new Error(t('Radar cannot run on an agent CLI: its own tools cannot be turned off.'));
+    const config = this.providerConfig(ref, model);
+    if (ref !== 'claude-code') return createProvider(config);
+    const hold = this.gate.holdAccounts('radar', [this.accountKey('claude-code', this.settings.accounts.claudeProfile)]);
+    if (!hold.ok) {
+      throw new Error(
+        t('A session runs {account}. Orka runs one profile of a CLI at a time: analyze when it ends.', { account: this.accountLabel(hold.account) }),
+      );
+    }
+    let provider: AIProvider;
+    try {
+      provider = createProvider(config);
+    } catch (error) {
+      hold.release();
+      throw error;
+    }
+    return {
+      id: provider.id,
+      label: provider.label,
+      model: provider.model,
+      chat: (request, onEvent) => provider.chat(request, onEvent),
+      dispose: () => {
+        hold.release();
+        provider.dispose?.();
+      },
+    };
   }
 
   /**
@@ -1584,14 +1743,23 @@ export class AppController implements Disposable {
   }
 
   private async setAgent(agent: string, provider: string, model: string): Promise<void> {
-    // An agent CLI the user turned on can be the main agent, never another role.
-    const asAgent = agent === 'main' && !!this.agentFor(provider);
-    const valid = provider === 'inherit' || asAgent || this.allProviderRefs().includes(provider as ProviderRef);
+    // An agent CLI can be the main agent, never another role. Picking one for the main agent
+    // turns it on (the picker lists every agent, also those that are off).
+    const agentEntry = agent === 'main' && isAgentRef(provider) ? this.agentEntry(provider.slice('agent:'.length)) : undefined;
+    const valid = provider === 'inherit' || !!agentEntry || this.allProviderRefs().includes(provider as ProviderRef);
     if (!valid || (model && !isModelId(model))) return;
     if (agent === 'main') {
       if (provider === 'inherit') return;
+      if (agentEntry && !this.settings.agentClis.enabled.includes(agentEntry.id)) {
+        await this.updateSetting('agentClis.enabled', [...this.settings.agentClis.enabled, agentEntry.id], { preferGlobal: true });
+      }
       if (provider !== this.settings.provider || !this.settings.providerExplicit) await this.updateSetting('provider', provider);
-      if (!asAgent && model && model !== this.defaultModel(provider)) await this.setDefaultModel(provider, model);
+      if (!agentEntry && model && model !== this.defaultModel(provider)) await this.setDefaultModel(provider, model);
+      // The session shown follows the Agents panel's pick; the other sessions keep their own choice.
+      const shown = this.activeSession;
+      if (shown) shown.choice = { ...this.defaultChoice(), profile: shown.choice.profile };
+      if (agentEntry) await this.noteAgentNotInstalled(agentEntry);
+      this.postConfig();
       return;
     }
     if (agent === 'light') {
@@ -1710,17 +1878,23 @@ export class AppController implements Disposable {
 
   /** Detect the Claude Code CLI, its version and login state (shown in Settings > Providers). */
   async checkClaudeCode(): Promise<void> {
+    this.claudeCodeWasReady = this.claudeCodeStatus.state === 'ready' || (this.claudeCodeStatus.state === 'checking' && this.claudeCodeWasReady);
     this.claudeCodeStatus = { state: 'checking' };
     this.postConfig();
     const executable = resolveClaudeExecutable(this.settings.claudeCode.path);
     if (!executable) {
-      this.claudeCodeStatus = { state: 'not_found', detail: t('Install it with: npm install -g @anthropic-ai/claude-code') };
+      // The native installer is Anthropic's recommended way; npm still works for those who prefer it.
+      const command = installRecipe('claude-code')!.command;
+      this.claudeCodeStatus = { state: 'not_found', detail: t('Install it with: {command} (or: npm install -g @anthropic-ai/claude-code)', { command }) };
       this.postConfig();
       return;
     }
+    // The chosen profile's account (CLAUDE_CONFIG_DIR), as the runs will use it.
+    const configDir = this.claudeConfigDir();
+    const env = configDir ? { ...process.env, CLAUDE_CONFIG_DIR: configDir } : undefined;
     const run = (args: string[]) =>
       new Promise<string>((resolve, reject) =>
-        execFile(executable, args, { timeout: 20_000, windowsHide: true }, (error, stdout) => (error && !stdout ? reject(error) : resolve(stdout))),
+        execFile(executable, args, { timeout: 20_000, windowsHide: true, env }, (error, stdout) => (error && !stdout ? reject(error) : resolve(stdout))),
       );
     try {
       const version = (await run(['--version'])).trim().split(/\s/)[0];
@@ -1933,17 +2107,160 @@ export class AppController implements Disposable {
   // ---------------------------------------------------------------- agent CLIs (ACP)
 
   private async toggleAgentCli(id: string, enabled: boolean): Promise<void> {
-    if (!this.agentEntry(id)) return;
+    const entry = this.agentEntry(id);
+    if (!entry) return;
+    if (!enabled && this.settings.provider === `agent:${id}` && this.settings.agentClis.enabled.includes(id)) {
+      // It is the main agent: turning it off moves the main agent elsewhere, so ask first.
+      const turnOff = t('Turn off');
+      const choice = await this.shell.message(
+        'warning',
+        t('{agent} is the main agent. Turn it off? The main agent then runs on the default provider.', { agent: entry.label }),
+        { modal: true },
+        turnOff,
+      );
+      if (choice !== turnOff) {
+        this.postConfig(); // the checkbox shows it on again
+        return;
+      }
+      this.droppedMainNoted.add(id); // the user just chose this; no notice about it
+    }
     const list = this.settings.agentClis.enabled.filter((x) => x !== id);
     if (enabled) list.push(id);
     await this.updateSetting('agentClis.enabled', list, { preferGlobal: true });
     if (enabled) await this.checkAgent(id);
   }
 
+  /** After the agent was picked as the main agent: when it is not installed, say how to install it. */
+  private async noteAgentNotInstalled(entry: AgentCliEntry): Promise<void> {
+    const state = this.agentStatus.get(entry.id)?.state;
+    if (!state || state === 'unknown' || state === 'checking') await this.checkAgent(entry.id);
+    if (this.agentStatus.get(entry.id)?.state !== 'not_found') return;
+    const hint = installHint(entry);
+    const recipe = installRecipe(entry.id);
+    this.publishNotice(
+      'warning',
+      recipe?.runnable
+        ? t('{agent} is not installed. Install it from here, or yourself: {hint}', { agent: entry.label, hint: recipe.command })
+        : hint
+          ? t('{agent} is not installed. Install it ({hint}), then check it again in Settings > Providers.', { agent: entry.label, hint })
+          : t('{agent} was not found at "{path}".', { agent: entry.label, path: this.settings.agentClis.paths[entry.id] || entry.bin }),
+      recipe ? `install:${recipe.id}` : 'agentClis',
+    );
+  }
+
+  // ---------------------------------------------------------------- installing CLIs
+
+  /**
+   * Install a CLI from Orka's fixed recipes. A runnable one asks first, showing the exact command,
+   * where it comes from and where it goes; only "Install" runs it, in a terminal the user sees, in
+   * the home folder. A manual one is shown to copy. Nothing runs without the click.
+   */
+  private async installCli(id: string): Promise<void> {
+    const recipe = installRecipe(id);
+    if (!recipe) return;
+    const copy = t('Copy command');
+    const docs = t('Open docs');
+    if (!recipe.runnable) {
+      const choice = await this.shell.message('info', t('Install {cli} yourself with: {command}', { cli: recipe.label, command: recipe.command }), {}, copy, docs);
+      await this.installChoice(recipe, choice, copy, docs);
+      return;
+    }
+    const install = t('Install');
+    const choice = await this.shell.message('info', t('Install {cli}?', { cli: recipe.label }), { modal: true, detail: installDetail(recipe) }, install, copy, docs);
+    if (choice !== install) {
+      await this.installChoice(recipe, choice, copy, docs);
+      return;
+    }
+    if (recipe.node) {
+      const version = await nodeVersion();
+      if (!nodeIsRecent(version, recipe.node)) {
+        const site = 'https://nodejs.org/en/download';
+        const open = t('Open nodejs.org');
+        const text = version
+          ? t('{cli} needs Node.js {min} or newer for npm; this machine has {version}. Update Node.js, then install again.', { cli: recipe.label, min: recipe.node, version })
+          : t('{cli} needs Node.js {min} or newer for npm, and Node.js was not found. Install it, then install again.', { cli: recipe.label, min: recipe.node });
+        if ((await this.shell.message('warning', text, {}, open)) === open) await this.shell.openExternal(site);
+        return;
+      }
+    }
+    this.shell
+      .runInTerminal({
+        name: t('Install {agent}', { agent: recipe.label }),
+        cwd: homedir(),
+        command: recipe.command,
+        onClose: () => void this.checkInstalled(recipe.id),
+      })
+      .show();
+    this.publishNotice('info', t('{cli} is being installed in a terminal. Orka checks it when the terminal closes, or when you click Check again.', { cli: recipe.label }), `checkInstall:${recipe.id}`);
+  }
+
+  /** "Copy command" or "Open docs" in an install dialog. */
+  private async installChoice(recipe: InstallRecipe, choice: string | undefined, copy: string, docs: string): Promise<void> {
+    if (choice === copy) {
+      await this.shell.writeClipboard(recipe.command);
+      this.shell.notify?.(t('Copied: {command}', { command: recipe.command }));
+    } else if (choice === docs && recipe.docsUrl.startsWith('https://')) {
+      await this.shell.openExternal(recipe.docsUrl);
+    }
+  }
+
+  /**
+   * After an install: is the program there now? Found: say so (Claude Code: offer to turn it on).
+   * Not found: the running app's PATH may predate the install, so offer to choose the program.
+   */
+  private async checkInstalled(id: string): Promise<void> {
+    const recipe = installRecipe(id);
+    if (!recipe) return;
+    let found: boolean;
+    let version: string | undefined;
+    if (recipe.verify.kind === 'claude-code') {
+      await this.checkClaudeCode();
+      found = this.claudeCodeStatus.state !== 'not_found';
+      version = this.claudeCodeStatus.version;
+    } else {
+      await this.checkAgent(recipe.verify.id);
+      const status = this.agentStatus.get(recipe.verify.id);
+      found = !!status && status.state !== 'not_found';
+      version = status?.version;
+    }
+    // An adapter that signs in with the vendor's other program (codex-acp: "codex login") needs that one too.
+    const entry = recipe.verify.kind === 'agent' ? this.agentEntry(recipe.verify.id) : undefined;
+    if (found && entry?.login?.bin && !agentLogin(entry, this.settings.agentClis.paths[entry.id])) {
+      this.publishNotice(
+        'warning',
+        t('{program} was not found yet, so {cli} cannot sign in. If the installer finished, restart Orka so it sees the new PATH.', { program: entry.login.bin, cli: recipe.label }),
+      );
+      return;
+    }
+    if (found) {
+      this.publishNotice('info', t('{cli} is installed ({version}).', { cli: recipe.label, version: version ?? '?' }));
+      if (recipe.verify.kind === 'claude-code' && !this.settings.claudeCode.enabled) {
+        const turnOn = t('Turn on');
+        if ((await this.shell.message('info', t('Use Claude Code in Orka? It runs on your own Claude Code login.'), {}, turnOn)) === turnOn) {
+          await this.updateSetting('claudeCode.enabled', true);
+        }
+      }
+      return;
+    }
+    const choose = t('Choose file…');
+    const choice = await this.shell.message(
+      'warning',
+      t('{cli} was not found yet. If the installer finished, restart Orka so it sees the new PATH, or choose the program.', { cli: recipe.label }),
+      {},
+      choose,
+    );
+    if (choice !== choose) return;
+    if (recipe.verify.kind === 'claude-code') await this.pickClaudeExecutable();
+    else await this.pickAgentExecutable(recipe.verify.id);
+  }
+
   /** Is the agent's program there, and which version? (`--version` only; a sign-in problem shows on the first request.) */
   private async checkAgent(id: string): Promise<void> {
     const entry = this.agentEntry(id);
     if (!entry) return;
+    const before = this.agentStatus.get(id)?.state;
+    if (before === 'ready') this.agentsWereReady.add(id);
+    else if (before !== 'checking') this.agentsWereReady.delete(id);
     this.agentStatus.set(id, { state: 'checking' });
     this.postConfig();
     const result = await checkAgentCli(entry, this.settings.agentClis.paths[id]).catch((error: unknown) => ({
@@ -1978,6 +2295,370 @@ export class AppController implements Disposable {
         onClose: () => void this.checkAgent(id),
       })
       .show();
+  }
+
+  // ---------------------------------------------------------------- accounts
+
+  /** The program a CLI's account commands run: Claude Code's executable, or the agent's sign-in program (Codex: the Codex CLI). */
+  private accountProgram(cli: AccountCli): string | undefined {
+    if (cli === 'claude-code') return resolveClaudeExecutable(this.settings.claudeCode.path) || undefined;
+    const entry = this.agentEntry(cli);
+    return entry ? agentLogin(entry, this.settings.agentClis.paths[cli])?.file : undefined;
+  }
+
+  /**
+   * The extra environment for a CLI's account commands: a Claude Code profile's CLAUDE_CONFIG_DIR
+   * ('' = the default profile, no variable). Undefined for a profile that does not exist, or a
+   * profile asked of another CLI.
+   */
+  private accountEnv(cli: AccountCli, profile = ''): Record<string, string> | undefined {
+    if (!profile) return {};
+    if (cli !== 'claude-code') return undefined;
+    const found = this.settings.accounts.claudeProfiles.find((p) => p.id === profile);
+    return found ? { CLAUDE_CONFIG_DIR: found.dir } : undefined;
+  }
+
+  /** The folder Claude Code runs on for a profile (by default the settings' one), or undefined for the default profile. */
+  private claudeConfigDir(profile = this.settings.accounts.claudeProfile): string | undefined {
+    return this.settings.accounts.claudeProfiles.find((p) => p.id === profile)?.dir;
+  }
+
+  private accountKey(cli: AccountCli, profile = ''): string {
+    return cli === 'claude-code' ? `claude-code:${profile}` : cli;
+  }
+
+  /**
+   * The accounts a run would use now, for the gate: the Claude Code profile of the session's run
+   * (by default the settings' one) when any role runs on Claude Code. A fallback runs on the same
+   * profile: no role ever goes on with another account.
+   */
+  private runAccounts(session?: SessionController): string[] {
+    const choice = session ? (session.runChoice ?? this.sessionChoice(session)) : undefined;
+    const profile = choice ? choice.profile : this.settings.accounts.claudeProfile;
+    return this.usesClaudeCode(choice, this.runUnderWay(session)) ? [`claude-code:${profile}`] : [];
+  }
+
+  /** Some role runs on Claude Code (with a session's choice: in that session; `pinned`: a run's own choice). */
+  private usesClaudeCode(choice?: SessionChoice, pinned = false): boolean {
+    const roles = ['main', 'supervisor', 'fallback', 'light', ...Object.keys(this.settings.subagents.agents)];
+    return roles.some((name) => this.resolveAgent(name, choice, pinned).provider === 'claude-code');
+  }
+
+  // ---------------------------------------------------------------- the composer's model menu (per session)
+
+  /** A new session's choice: a copy of the settings (the main agent's model and effort, Claude Code's profile). */
+  private defaultChoice(): SessionChoice {
+    const provider = this.mainProvider();
+    return { provider, model: this.defaultModel(provider), effort: settingsEffort(this.settings, provider), profile: this.settings.accounts.claudeProfile };
+  }
+
+  /**
+   * The session's choice as it holds now: when the main agent's provider changed since (in the
+   * Agents panel, or a CLI became ready), it starts again from the settings for that provider (the
+   * session keeps its own choice for when that provider comes back); a profile that was removed
+   * becomes the default one, and a value the provider does not take its default.
+   */
+  private sessionChoice(session: SessionController): SessionChoice {
+    const c = session.choice;
+    const main = this.mainProvider();
+    const profile = !c.profile || this.settings.accounts.claudeProfiles.some((p) => p.id === c.profile) ? c.profile : '';
+    if (c.provider !== main) return { ...this.defaultChoice(), profile };
+    const next: SessionChoice = {
+      provider: main,
+      model: isAgentRef(main) ? '' : c.model && isModelId(c.model) ? c.model : this.defaultModel(main),
+      effort: effortLevels(main).includes(c.effort) ? c.effort : settingsEffort(this.settings, main),
+      profile,
+      ...(c.options ? { options: c.options } : {}),
+    };
+    session.choice = next;
+    return next;
+  }
+
+  /** The model menu changed a session's model, effort or profile: from its next request on. */
+  private async setSessionModel(session: SessionController, change: { model?: unknown; effort?: unknown; profile?: unknown; option?: unknown }): Promise<void> {
+    const c = { ...this.sessionChoice(session) };
+    if (change.option !== undefined) {
+      // Only an option the session's agent CLI advertised, with a value it listed.
+      const { id, value } = (change.option ?? {}) as { id?: unknown; value?: unknown };
+      if (!isOptionText(id) || !isOptionText(value)) return;
+      const option = this.advertisedOptions(session, c).find((o) => o.id === id);
+      if (!option?.options.some((v) => v.value === value)) return;
+      c.options = { ...c.options, [option.id]: value };
+    }
+    if (change.model !== undefined) {
+      if (isAgentRef(c.provider) || typeof change.model !== 'string' || (change.model && !isModelId(change.model))) return;
+      c.model = change.model || this.defaultModel(c.provider);
+    }
+    if (change.effort !== undefined) {
+      if (typeof change.effort !== 'string' || !effortLevels(c.provider).includes(change.effort)) return;
+      c.effort = change.effort;
+    }
+    if (change.profile !== undefined) {
+      if (typeof change.profile !== 'string' || (change.profile && !this.settings.accounts.claudeProfiles.some((p) => p.id === change.profile))) return;
+      c.profile = change.profile;
+    }
+    session.choice = c;
+    if (session.id === this.activeId) this.postConfig();
+  }
+
+  /** "Use as default": the session's model, effort and profile become the settings' defaults; other sessions keep theirs. */
+  private async useModelAsDefault(session: SessionController): Promise<void> {
+    const c = this.sessionChoice(session);
+    if (!isAgentRef(c.provider) && c.model && c.model !== this.defaultModel(c.provider)) await this.setDefaultModel(c.provider, c.model);
+    const key = EFFORT_SETTING[c.provider];
+    if (key && c.effort !== settingsEffort(this.settings, c.provider)) await this.updateSetting(key, c.effort);
+    if (c.profile !== this.settings.accounts.claudeProfile) await this.updateSetting('accounts.claudeProfile', c.profile, { preferGlobal: true });
+    this.postConfig();
+  }
+
+  /** The choices the session's agent CLI advertised, when the main agent is that agent (none otherwise). */
+  private advertisedOptions(session: SessionController, choice: SessionChoice): AgentOption[] {
+    const advertised = session.agentOptions;
+    return advertised && isAgentRef(choice.provider) && choice.provider === `agent:${advertised.agent}` ? advertised.options : [];
+  }
+
+  /** The model menu of the session shown. */
+  private sessionModelView(session: SessionController): SessionModelView {
+    const c = this.sessionChoice(session);
+    const provider = c.provider;
+    const defaults = this.defaultChoice();
+    const profiles = this.settings.accounts.claudeProfiles;
+    const onClaudeCode = this.usesClaudeCode(c);
+    return {
+      provider,
+      model: c.model,
+      effort: c.effort,
+      efforts: effortLevels(provider),
+      defaultEffort: settingsEffort(this.settings, provider),
+      profiles: onClaudeCode && profiles.length ? [{ id: '', name: t('Default profile') }, ...profiles.map((p) => ({ id: p.id, name: p.name }))] : [],
+      profile: c.profile,
+      differs: defaults.provider === provider && (defaults.model !== c.model || defaults.effort !== c.effort || defaults.profile !== c.profile),
+      // What the agent's next prompt runs on: the session's pick where the agent lists it, else the agent's own value.
+      agentOptions: this.advertisedOptions(session, c).map((o) => {
+        const picked = c.options && Object.prototype.hasOwnProperty.call(c.options, o.id) ? c.options[o.id] : undefined;
+        return picked !== undefined && o.options.some((v) => v.value === picked) ? { ...o, currentValue: picked } : o;
+      }),
+    };
+  }
+
+  /** "Claude Code (Work)" for "claude-code:work"; "Claude Code (Default profile)" for "claude-code:". */
+  private accountLabel(account: string): string {
+    const colon = account.indexOf(':');
+    const cli = colon < 0 ? account : account.slice(0, colon);
+    const profile = colon < 0 ? '' : account.slice(colon + 1);
+    const label = cli === 'claude-code' ? 'Claude Code' : (this.agentEntry(cli)?.label ?? cli);
+    if (cli !== 'claude-code') return label;
+    const name = profile ? (this.settings.accounts.claudeProfiles.find((p) => p.id === profile)?.name ?? profile) : t('Default profile');
+    return `${label} (${name})`;
+  }
+
+  /** Ask every CLI's own status command (and each Claude Code profile's) at once. */
+  private async checkAccounts(): Promise<void> {
+    const targets: Array<[AccountCli, string]> = ACCOUNT_CLIS.map((cli) => [cli, '']);
+    for (const p of this.settings.accounts.claudeProfiles) targets.push(['claude-code', p.id]);
+    for (const [cli, profile] of targets) this.accountStatus.set(this.accountKey(cli, profile), { state: 'checking' });
+    this.postConfig();
+    await Promise.all(targets.map(([cli, profile]) => this.probeAccount(cli, profile)));
+    this.postConfig();
+  }
+
+  /** Ask one CLI's status command (`cli` and `profile` come from the page: only known ids are used). */
+  private async checkAccount(cli: string, profile?: string): Promise<void> {
+    if (!isAccountCli(cli) || !this.accountEnv(cli, profile)) return;
+    this.accountStatus.set(this.accountKey(cli, profile), { state: 'checking' });
+    this.postConfig();
+    await this.probeAccount(cli, profile);
+    this.postConfig();
+  }
+
+  /**
+   * Run the CLI's own status command and keep what it said (in memory only). A CLI without one
+   * stays "unknown" with what to do instead; Copilot also says when a token variable stands in
+   * for its stored sign-in (the variable's name, never its value).
+   */
+  private async probeAccount(cli: AccountCli, profile = ''): Promise<void> {
+    const key = this.accountKey(cli, profile);
+    const env = this.accountEnv(cli, profile);
+    const file = this.accountProgram(cli);
+    const status = ACCOUNT_COMMANDS[cli].status;
+    if (!env) return;
+    if (!file) {
+      this.accountStatus.set(key, { state: 'not_installed' });
+      return;
+    }
+    if (!status) {
+      const token = cli === 'copilot' ? copilotTokenVariable() : undefined;
+      this.accountStatus.set(key, {
+        state: 'unknown',
+        label: token ? t('{name} is set: Copilot CLI signs in with that token instead.', { name: token }) : undefined,
+        hint:
+          cli === 'copilot'
+            ? t('Copilot CLI has no status command: type /user in it to see the account.')
+            : t('{cli} has no status command: its sign-in is chosen inside the CLI.', { cli: this.accountLabel(cli) }),
+      });
+      return;
+    }
+    const output = await this.probe(file, status, env).catch((error: unknown) => ({
+      code: null,
+      stdout: '',
+      stderr: error instanceof Error ? error.message : String(error),
+    }));
+    this.accountStatus.set(key, parseStatus(cli, output));
+  }
+
+  /**
+   * The vendor's own sign-in, in a terminal the user types into (for a Claude Code profile, with
+   * its CLAUDE_CONFIG_DIR); its status is asked again when the terminal closes. Orka never sees
+   * the password or the token.
+   */
+  private loginAccount(cli: string, profile?: string): void {
+    if (!isAccountCli(cli)) return;
+    this.runAccountCommand(cli, profile, ACCOUNT_COMMANDS[cli].login, t('{account}: sign in', { account: this.accountLabel(this.accountKey(cli, profile)) }));
+  }
+
+  /**
+   * The vendor's own sign-out, after the user confirms. A CLI that signs out only from inside
+   * itself is opened in a terminal, with what to type there.
+   */
+  private async logoutAccount(cli: string, profile?: string): Promise<void> {
+    if (!isAccountCli(cli) || !this.accountEnv(cli, profile)) return;
+    const commands = ACCOUNT_COMMANDS[cli];
+    const account = this.accountLabel(this.accountKey(cli, profile));
+    if (!commands.logout) {
+      this.runAccountCommand(cli, profile, [], t('{account}: sign out', { account }));
+      if (commands.logoutHint) this.publishNotice('info', t(commands.logoutHint));
+      return;
+    }
+    const signOut = t('Sign out');
+    if ((await this.shell.message('warning', t('Sign out of {account}?', { account }), { modal: true }, signOut)) !== signOut) return;
+    this.runAccountCommand(cli, profile, commands.logout, t('{account}: sign out', { account }));
+  }
+
+  /** One of the CLI's own commands, by its full path, in the home folder, in a terminal the user sees. */
+  private runAccountCommand(cli: AccountCli, profile: string | undefined, args: readonly string[], name: string): void {
+    const env = this.accountEnv(cli, profile);
+    if (!env) return;
+    const file = this.accountProgram(cli);
+    if (!file) {
+      const recipe = installRecipe(cli);
+      this.publishNotice(
+        'warning',
+        t('{cli} is not installed. Install it first, then sign in.', { cli: this.accountLabel(cli) }),
+        recipe ? `install:${recipe.id}` : undefined,
+      );
+      return;
+    }
+    if (env.CLAUDE_CONFIG_DIR) mkdirSync(env.CLAUDE_CONFIG_DIR, { recursive: true });
+    this.shell
+      .runInTerminal({
+        name,
+        cwd: homedir(),
+        command: { file, args: [...args] },
+        env: Object.keys(env).length ? env : undefined,
+        onClose: () => void this.checkAccount(cli, profile),
+      })
+      .show();
+  }
+
+  /**
+   * A Claude Code profile: a name, and a config folder of its own (~/.claude-<id>) that Orka
+   * creates empty; Claude Code keeps that account's sign-in there. Separate accounts are for
+   * separate work, which the dialog says.
+   */
+  private async addClaudeProfile(given?: string): Promise<void> {
+    const taken = new Set(this.settings.accounts.claudeProfiles.map((p) => p.id));
+    const invalid = (v: string) => {
+      const id = profileId(v);
+      if (!id) return t('Enter a name with letters or digits.');
+      if (taken.has(id)) return t('A profile with this name exists.');
+      return undefined;
+    };
+    const notice = t("Separate accounts are for separate work, such as work and personal. Using them to get around a usage limit may break the vendor's terms.");
+    let name = typeof given === 'string' ? given.trim().slice(0, 40) : '';
+    if (name) {
+      const add = t('Add profile');
+      if (invalid(name) || (await this.shell.message('info', t('Add the Claude Code profile "{name}"?', { name }), { modal: true, detail: notice }, add)) !== add) return;
+    } else {
+      name = (await this.shell.input({ title: t('Add a Claude Code profile'), prompt: notice, placeHolder: t('e.g. Work'), validate: invalid }))?.trim().slice(0, 40) ?? '';
+      if (!name || invalid(name)) return;
+    }
+    const id = profileId(name);
+    const dir = path.join(homedir(), `.claude-${id}`);
+    mkdirSync(dir, { recursive: true });
+    await this.updateSetting('accounts.claudeProfiles', [...this.settings.accounts.claudeProfiles, { id, name, dir }], { preferGlobal: true });
+    const signIn = t('Sign in');
+    if ((await this.shell.message('info', t('Profile "{name}" added. Sign in to its account now?', { name }), {}, signIn)) === signIn) this.loginAccount('claude-code', id);
+    else this.postConfig();
+  }
+
+  /**
+   * Forget a Claude Code profile (not while a run uses it). Its folder stays: it holds that
+   * account's sign-in, which only Claude Code touches.
+   */
+  private async removeClaudeProfile(id: string): Promise<void> {
+    const profile = this.settings.accounts.claudeProfiles.find((p) => p.id === id);
+    if (!profile) return;
+    if (this.gate.profileInUse('claude-code') === id) {
+      this.publishNotice('warning', t('A session runs on the profile {name}. Remove it when the run ends.', { name: profile.name }));
+      return;
+    }
+    const remove = t('Remove');
+    const text = t('Remove the profile {name}? Its folder {dir} stays, with its sign-in: sign out first, or delete the folder yourself.', { name: profile.name, dir: profile.dir });
+    if ((await this.shell.message('warning', text, { modal: true }, remove)) !== remove) return;
+    if (this.settings.accounts.claudeProfile === id) await this.updateSetting('accounts.claudeProfile', '', { preferGlobal: true });
+    await this.updateSetting('accounts.claudeProfiles', this.settings.accounts.claudeProfiles.filter((p) => p.id !== id), { preferGlobal: true });
+    this.accountStatus.delete(this.accountKey('claude-code', id));
+    this.postConfig();
+  }
+
+  /**
+   * The profile Claude Code runs on from the next run ('' = the default). Only by the user's
+   * choice: no code path switches it on its own (a usage limit never does).
+   */
+  private async setClaudeProfile(id: string): Promise<void> {
+    if (id && !this.settings.accounts.claudeProfiles.some((p) => p.id === id)) return;
+    if (id === this.settings.accounts.claudeProfile) return;
+    await this.updateSetting('accounts.claudeProfile', id, { preferGlobal: true });
+    // The default for new sessions, and the session shown (other sessions keep their profile).
+    const shown = this.activeSession;
+    if (shown) shown.choice = { ...shown.choice, profile: id };
+    const inUse = this.gate.profileInUse('claude-code');
+    if (inUse !== undefined && inUse !== id) {
+      this.publishNotice(
+        'info',
+        t('Running sessions finish on {old}. New runs use {new}; one profile of a CLI runs at a time, so they wait for those runs to end.', {
+          old: this.accountLabel(`claude-code:${inUse}`),
+          new: this.accountLabel(`claude-code:${id}`),
+        }),
+      );
+    }
+    void this.checkClaudeCode();
+  }
+
+  /** Settings > Accounts: one row per CLI, and per Claude Code profile. */
+  private accountsView(): AccountView[] {
+    const { claudeProfiles, claudeProfile } = this.settings.accounts;
+    const row = (cli: AccountCli, profile?: AccountView['profile']): AccountView => {
+      const commands = ACCOUNT_COMMANDS[cli];
+      const entry = cli === 'claude-code' ? undefined : this.agentEntry(cli);
+      const program = cli === 'claude-code' ? 'claude' : entry?.login?.bin ?? entry?.bin ?? cli;
+      const line = (args: readonly string[]) => [program, ...args].join(' ');
+      return {
+        cli,
+        label: cli === 'claude-code' ? 'Claude Code' : (entry?.label ?? cli),
+        profile,
+        status: this.accountStatus.get(this.accountKey(cli, profile?.id)) ?? { state: 'unknown' },
+        loginCommand: line(commands.login),
+        logoutCommand: commands.logout ? line(commands.logout) : undefined,
+        logoutHint: commands.logoutHint ? t(commands.logoutHint) : undefined,
+        installable: !!installRecipe(cli)?.runnable,
+      };
+    };
+    const claude = [
+      row('claude-code', { id: '', name: t('Default profile'), dir: '', chosen: !claudeProfile }),
+      ...claudeProfiles.map((p) => row('claude-code', { ...p, chosen: p.id === claudeProfile })),
+    ];
+    return [...claude, ...ACCOUNT_CLIS.filter((cli) => cli !== 'claude-code' && this.agentEntry(cli)).map((cli) => row(cli))];
   }
 
   private async pickAgentExecutable(id: string): Promise<void> {
@@ -2064,6 +2745,7 @@ export class AppController implements Disposable {
         commandLine: custom ? [custom.command, ...custom.args].join(' ') : undefined,
         note: policy ? t(policy.note) : '',
         termsUrl: policy?.termsUrl ?? '',
+        faqUrl: policy?.faqUrl ?? '',
         docsUrl: entry.docsUrl,
         installHint: installHint(entry),
         loginCommand: loginCommand(entry, s.paths[entry.id], this.agentStatus.get(entry.id)?.executable),
@@ -2207,6 +2889,7 @@ export class AppController implements Disposable {
     this.radar?.apply(this.settings.radar);
     this.updateStatus();
     this.postConfig();
+    this.noteDroppedMainAgent();
   }
 
   private reportError(error: unknown): void {
@@ -2215,13 +2898,12 @@ export class AppController implements Disposable {
 
   private configView(): ConfigView {
     const s = this.settings;
-    const agentView = (name: string, choice: AgentChoice, extra: Partial<AgentView> = {}): AgentView => ({
-      name,
-      provider: choice.provider,
-      model: choice.model,
-      effective: this.resolveAgent(name),
-      ...extra,
-    });
+    // What runs is what the session shown would run on (its model menu choice).
+    const shownChoice = this.activeSession ? this.sessionChoice(this.activeSession) : undefined;
+    const agentView = (name: string, choice: AgentChoice, extra: Partial<AgentView> = {}): AgentView => {
+      const { provider, model } = this.resolveAgent(name, shownChoice);
+      return { name, provider: choice.provider, model: choice.model, effective: { provider, model }, ...extra };
+    };
     const keyInfo = (ref: string): ProviderView['key'] => {
       const stored = this.apiKeys.get(ref);
       if (stored) return { source: 'stored', hint: stored.length > 8 ? `${stored.slice(0, 6)}••••${stored.slice(-4)}` : '••••' };
@@ -2288,6 +2970,7 @@ export class AppController implements Disposable {
       externalAgents: this.externalAgentsView(),
       pricing: s.pricing,
       providers: [...builtIns, ...customs, ...agents],
+      sessionModel: session ? this.sessionModelView(session) : undefined,
       main: agentView('main', { provider: this.mainProvider(), model: this.defaultModel(this.mainProvider()) }),
       supervisor: agentView(
         'supervisor',
@@ -2348,6 +3031,7 @@ export class AppController implements Disposable {
       },
       app: this.appVersionView(),
       agentClis: this.agentClisView(),
+      accounts: this.accountsView(),
       agentClisLeftOut: NOT_IN_CATALOG.map((a) => ({ id: a.id, reason: t(a.reason) })),
       ui: this.shell.kind === 'desktop' ? { layout: s.desktop.layout, theme: s.desktop.theme, maxRunning: s.sessions.maxRunning } : undefined,
     };
@@ -2404,6 +3088,21 @@ export class AppController implements Disposable {
     this.mcp.dispose();
     for (const d of this.disposables) d.dispose();
   }
+}
+
+/** What the install dialog says under its title: the exact command, its source, folder and docs. */
+function installDetail(recipe: InstallRecipe): string {
+  return [
+    recipe.command,
+    '',
+    t('Official installer from {source}.', { source: recipe.sources.join(', ') }),
+    recipe.folder ? t('It installs to {folder}.', { folder: recipe.folder }) : '',
+    recipe.node ? t('Needs Node.js {min} or newer (npm); Orka checks it first.', { min: recipe.node }) : '',
+    t('Docs: {url}', { url: recipe.docsUrl }),
+    t('It runs in a terminal you can see, without administrator rights. Orka does not sign you in.'),
+  ]
+    .filter((line, i) => line || i === 1)
+    .join('\n');
 }
 
 /** A command line typed by the user: words, or "quoted words" with spaces. */

@@ -23,7 +23,7 @@ process.stdin.on('data', (chunk) => {
 
 function handle(message) {
   const text = message.message.content;
-  if (log) appendFileSync(log, `${JSON.stringify({ pid: process.pid, turn, text, argv })}\n`);
+  if (log) appendFileSync(log, `${JSON.stringify({ pid: process.pid, turn, text, argv, configDir: process.env.CLAUDE_CONFIG_DIR ?? null })}\n`);
   const reply = replies[turn++] ?? 'no more scripted replies';
   out({ type: 'system', subtype: 'init', model: 'claude-fake-1', tools: [] });
   if (reply.startsWith('__ERROR__:')) {
@@ -46,5 +46,6 @@ function handle(message) {
     result: reply,
     stop_reason: 'end_turn',
     usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 100, cache_creation_input_tokens: 5 },
+    modelUsage: { 'claude-test': { inputTokens: 11, contextWindow: 200000 } },
   });
 }

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { type Locale, t } from '../i18n';
+import type { Locale } from '../i18n';
 import { isAbortError, type AIProvider, type ChatResponse, ProviderError } from '../providers/AIProvider';
 import { type ChatMessage, messageText } from '../types';
 import { fetchSource, type HostPacer } from './fetch';
@@ -156,9 +156,6 @@ export interface RadarAnalysis {
    */
   failed: string[];
 }
-
-/** Providers the radar refuses: a subscription CLI is not meant to run automated analysis. */
-export const RADAR_REFUSED_PROVIDERS: readonly string[] = ['claude-code'];
 
 const ITEMS_TO_CLUSTER = 120;
 const MAP_BATCH = 12;
@@ -377,7 +374,6 @@ async function pool<T>(list: readonly T[], limit: number, run: Run, work: (item:
  * what did not reach a decision is handed back (`unfinished`) for the next run to continue.
  */
 export async function analyzeEntries(entries: readonly RadarEntry[], provider: AIProvider, inventory: FeatureInventory, opts: AnalyzeEntriesOptions = {}): Promise<RadarAnalysis> {
-  if (RADAR_REFUSED_PROVIDERS.includes(provider.id)) throw new Error(t('The radar needs an API provider; the Claude Code provider cannot run it.'));
   const maxEntries = Math.max(1, opts.maxEntries ?? 40);
   const maxCalls = Math.max(1, opts.maxCalls ?? 100);
   const concurrency = Math.max(1, Math.min(opts.concurrency ?? 3, 8));

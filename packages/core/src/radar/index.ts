@@ -9,7 +9,6 @@ export {
   analyzeEntries,
   type AnalyzeEntriesOptions,
   pollSources,
-  RADAR_REFUSED_PROVIDERS,
   type RadarAnalysis,
   type RadarAnalyzeOptions,
   type RadarPollOptions,

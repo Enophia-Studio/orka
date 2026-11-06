@@ -20,6 +20,8 @@ const HAS_GIT = spawnSync('git', ['--version'], { windowsHide: true }).status ==
  */
 const BARE_PATH = mkdtempSync(path.join(tmpdir(), 'orka-agents-path-'));
 after(() => rmSync(BARE_PATH, { recursive: true, force: true }));
+/** No agent CLI found: an empty PATH, and the same empty folder where installers put agy (LOCALAPPDATA, ~/.local/bin). */
+const BARE = { PATH: BARE_PATH, Path: BARE_PATH, LOCALAPPDATA: BARE_PATH, HOME: BARE_PATH, USERPROFILE: BARE_PATH };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => {
@@ -81,9 +83,13 @@ describe('orka CLI agent mode', { skip: !existsSync(ORKA) && 'build the CLI firs
         ],
       },
     });
-    const { code, stdout, stderr } = await orka(['agents'], { env: { PATH: BARE_PATH, Path: BARE_PATH } });
+    const { code, stdout, stderr } = await orka(['agents'], { env: BARE });
     assert.equal(code, 0, stderr);
-    assert.match(stdout, /^gemini +Gemini CLI · Google {2}· {2}not installed$/m);
+    assert.match(stdout, /^antigravity +Antigravity CLI · Google {2}· {2}not installed$/m);
+    assert.match(stdout, /Google's FAQ calls wrapping agy in third-party apps unsupported on consumer plans/, "Antigravity's note is shown");
+    assert.match(stdout, /Runs: agy acp\n/);
+    assert.match(stdout, /Terms: https:\/\/antigravity\.google\/terms {2}· {2}FAQ: https:\/\/antigravity\.google\/docs\/faq {2}· {2}Docs: https:\/\/antigravity\.google\/docs\/ide\/extensions\/acp\//);
+    assert.match(stdout, /^gemini +Gemini CLI \(legacy\) · Google {2}· {2}not installed$/m);
     assert.match(stdout, /Orka never uses Gemini CLI's sign-in itself/, 'the policy note is shown');
     assert.match(stdout, /Install: npm install -g @google\/gemini-cli {2}· {2}Sign in: run "gemini" in a terminal/);
     assert.match(stdout, /Terms: https:\/\/geminicli\.com\//);
@@ -91,7 +97,7 @@ describe('orka CLI agent mode', { skip: !existsSync(ORKA) && 'build the CLI firs
     assert.match(stdout, /^copilot +GitHub Copilot CLI · GitHub · public preview/m);
     assert.match(stdout, /^custom:fake-agent Fake agent · your own ACP agent {2}· {2}installed {2}· {2}turned on$/m);
     assert.ok(stdout.includes(`Runs: ${/\s/.test(process.execPath) ? `"${process.execPath}"` : process.execPath} ${FAKE}`), 'the exact command line is shown');
-    assert.match(stdout, /Not in the catalog\n {2}antigravity .*\n {2}claude-agent-acp /);
+    assert.match(stdout, /Not in the catalog\n {2}claude-agent-acp /);
     // What is wrong in the config is said, and the rest still works.
     assert.match(stdout, /! Skipped an entry of "agentClis\.custom": it needs a "name" and a "command"/);
     assert.match(stdout, /! Skipped the custom agent "Fake agent": another one already has the id custom:fake-agent\./);
@@ -99,22 +105,22 @@ describe('orka CLI agent mode', { skip: !existsSync(ORKA) && 'build the CLI firs
     assert.match(stdout, /^custom:x{40} x{45} · your own ACP agent {2}· {2}not installed$/m);
     assert.equal(stdout.match(/^custom:/gm).length, 2);
 
-    const one = await orka(['--lang', 'tr', 'agents', 'agent:custom:fake-agent'], { env: { PATH: BARE_PATH, Path: BARE_PATH } });
+    const one = await orka(['--lang', 'tr', 'agents', 'agent:custom:fake-agent'], { env: BARE });
     assert.equal(one.code, 0, one.stderr);
     assert.match(one.stdout, /^custom:fake-agent Fake agent · kendi ACP agent'ınız {2}· {2}kurulu {2}· {2}açık$/m, 'one agent, in Turkish');
     assert.doesNotMatch(one.stdout, /^gemini /m);
 
-    const unknown = await orka(['agents', 'antigravity']);
+    const unknown = await orka(['agents', 'claude-agent-acp']);
     assert.equal(unknown.code, 1);
-    assert.match(unknown.stderr, /Unknown agent "antigravity"\. Known: gemini, codex, copilot, cursor, custom:fake-agent, custom:x{40}\./);
+    assert.match(unknown.stderr, /Unknown agent "claude-agent-acp"\. Known: antigravity, codex, copilot, cursor, gemini, custom:fake-agent, custom:x{40}\./);
   });
 
   it('refuses an unknown agent, an agent in any other role, and a model for an agent; says what is missing', async () => {
     writeConfig({ agentClis: { custom: [fakeAgent()] } });
-    for (const id of ['nope', 'antigravity', 'custom:Fake_Agent', 'custom:other', '']) {
+    for (const id of ['nope', 'claude-agent-acp', 'custom:Fake_Agent', 'custom:other', '']) {
       const { code, stderr } = await orka(['--provider', `agent:${id}`, '-p', 'hi', '-C', work]);
       assert.equal(code, 2, id);
-      assert.match(stderr, new RegExp(`Unknown agent "${id}"\\. Known: gemini, codex, copilot, cursor, custom:fake-agent\\. Add your own ACP agent under "agentClis\\.custom"`), id);
+      assert.match(stderr, new RegExp(`Unknown agent "${id}"\\. Known: antigravity, codex, copilot, cursor, gemini, custom:fake-agent\\. Add your own ACP agent under "agentClis\\.custom"`), id);
     }
     const supervisor = await orka(['--provider', 'claude', '--supervisor', 'agent:gemini', '-p', 'hi', '-C', work], { env: { ANTHROPIC_API_KEY: 'test-key' } });
     assert.equal(supervisor.code, 2);
@@ -123,14 +129,14 @@ describe('orka CLI agent mode', { skip: !existsSync(ORKA) && 'build the CLI firs
     assert.equal(model.code, 2);
     assert.match(model.stderr, /Fake agent uses the model set in its own settings; Orka does not choose one for it\./);
 
-    const missing = await orka(['--provider', 'agent:gemini', '-p', 'hi', '-C', work], { env: { PATH: BARE_PATH, Path: BARE_PATH } });
+    const missing = await orka(['--provider', 'agent:gemini', '-p', 'hi', '-C', work], { env: BARE });
     assert.equal(missing.code, 2);
-    assert.match(missing.stderr, /Gemini CLI is not installed\. Install it with: npm install -g @google\/gemini-cli\nIf it is installed somewhere else, set its path in "agentClis\.paths"/);
+    assert.match(missing.stderr, /Gemini CLI \(legacy\) is not installed\. Install it with: npm install -g @google\/gemini-cli\nIf it is installed somewhere else, set its path in "agentClis\.paths"/);
 
     writeConfig({ agentClis: { paths: { gemini: path.join(work, 'nowhere', 'gemini') }, custom: [{ name: 'Gone', command: path.join(work, 'gone.exe') }] }, trackCommandChanges: false });
     const wrongPath = await orka(['--provider', 'agent:gemini', '-p', 'hi', '-C', work]);
     assert.equal(wrongPath.code, 2);
-    assert.match(wrongPath.stderr, /Gemini CLI was not found at ".*nowhere.gemini"\.\nFix or remove its entry in "agentClis\.paths"/);
+    assert.match(wrongPath.stderr, /Gemini CLI \(legacy\) was not found at ".*nowhere.gemini"\.\nFix or remove its entry in "agentClis\.paths"/);
     const gone = await orka(['--provider', 'agent:custom:gone', '-p', 'hi', '-C', work]);
     assert.match(gone.stderr, /Gone was not found at ".*gone\.exe"\.\nCheck its "command" in "agentClis\.custom"/);
 

@@ -120,9 +120,9 @@ API keys come from the environment only: ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMI
 (custom endpoints: "apiKeyEnv" in the config). Claude Code (unofficial, opt-in with
 "claudeCode": { "enabled": true } in the config) needs no key: it uses your logged-in claude CLI.
 
-Agent mode: --provider agent:gemini (or agent:codex, agent:copilot, agent:cursor, or
-agent:custom:<name> for an agent in "agentClis.custom" in the config) makes an agent CLI you
-installed and signed in to yourself the main agent. Orka never reads its sign-in. Orka's
+Agent mode: --provider agent:antigravity (or agent:codex, agent:copilot, agent:cursor,
+agent:gemini for the legacy Gemini CLI, or agent:custom:<name> for an agent in "agentClis.custom"
+in the config) makes an agent CLI you installed and signed in to yourself the main agent. Orka never reads its sign-in. Orka's
 permission rules (and you, where they ask) answer the agent's permission requests, file writes and
 commands; every file the agent changes stays reviewable and revertible (/diff, /undo; needs git),
 and the Supervisor reviews the final result. "provider" in the config may only name agents in
@@ -167,9 +167,9 @@ API key'ler yalnızca ortam değişkenlerinden okunur: ANTHROPIC_API_KEY, OPENAI
 GEMINI_API_KEY (custom endpoint'ler: config'de "apiKeyEnv"). Claude Code (resmi değil, config'de
 "claudeCode": { "enabled": true } ile açılır) key istemez: giriş yapılmış claude CLI'ını kullanır.
 
-Agent modu: --provider agent:gemini (ya da agent:codex, agent:copilot, agent:cursor veya config'deki
-"agentClis.custom" listesinde bir agent için agent:custom:<ad>) kendiniz kurup giriş yaptığınız bir
-agent CLI'ı ana agent yapar. Orka onun oturum bilgilerini asla okumaz. Agent'ın izin isteklerini,
+Agent modu: --provider agent:antigravity (ya da agent:codex, agent:copilot, agent:cursor, eski
+Gemini CLI için agent:gemini veya config'deki "agentClis.custom" listesinde bir agent için
+agent:custom:<ad>) kendiniz kurup giriş yaptığınız bir agent CLI'ı ana agent yapar. Orka onun oturum bilgilerini asla okumaz. Agent'ın izin isteklerini,
 dosya yazmalarını ve komutlarını Orka'nın izin kuralları (ve kuralların sorduğu yerde siz)
 yanıtlar; agent'ın değiştirdiği her dosya incelenebilir ve geri alınabilir kalır (/diff, /undo; git
 gerekir) ve Supervisor son sonucu inceler. Config'deki "provider" yalnızca "agentClis.enabled"

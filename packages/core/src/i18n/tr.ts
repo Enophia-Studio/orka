@@ -262,7 +262,7 @@ export const TR: Record<string, string> = {
   'Could not read {file}: {error}': '{file} okunamadı: {error}',
   '{file} is not valid JSON: {error}': '{file} geçerli bir JSON değil: {error}',
   '{file} cannot be used: {errors}': '{file} kullanılamıyor: {errors}',
-  'The radar needs an API provider; the Claude Code provider cannot run it.': "Radar bir API provider'ı gerektirir; Claude Code provider'ı onu çalıştıramaz.",
+  'Radar cannot run on an agent CLI: its own tools cannot be turned off.': "Radar bir agent CLI üzerinde çalışamaz: agent'ın kendi araçları kapatılamıyor.",
   'The radar is already analyzing new entries.': 'Radar zaten yeni kayıtları analiz ediyor.',
   'Radar report': 'Radar raporu',
   'Generated {date} with {provider}. Based on public release notes only; summaries and comparisons are written by a model and can be wrong.':
@@ -353,7 +353,7 @@ export const TR: Record<string, string> = {
   '{provider} key saved.': '{provider} anahtarı kaydedildi.',
   'Remove the stored API key for...': 'Kayıtlı API anahtarını kaldır...',
   'Remove the stored {provider} key?': 'Kayıtlı {provider} anahtarı kaldırılsın mı?',
-  'Install it with: npm install -g @anthropic-ai/claude-code': 'Şununla kurun: npm install -g @anthropic-ai/claude-code',
+  'Install it with: {command} (or: npm install -g @anthropic-ai/claude-code)': 'Şununla kurun: {command} (ya da: npm install -g @anthropic-ai/claude-code)',
   'Run "claude" in a terminal and log in.': 'Bir terminalde "claude" çalıştırıp giriş yapın.',
   'Select the claude executable': 'claude çalıştırılabilir dosyasını seçin',
   'no model yet': 'henüz model yok',
@@ -805,6 +805,7 @@ export const TR: Record<string, string> = {
   'Sign in: run "{command}" in a terminal': 'Giriş: bir terminalde "{command}" çalıştırın',
   'Terms: {url}': 'Koşullar: {url}',
   'Docs: {url}': 'Belgeler: {url}',
+  'FAQ: {url}': 'SSS: {url}',
   'Not in the catalog': 'Katalogda olmayanlar',
   '--provider agent:<id> runs any agent above; "provider" in {file} may only name the ones in "agentClis.enabled". More: {url}':
     '--provider agent:<id> yukarıdaki her agent\'ı çalıştırır; {file} içindeki "provider" yalnızca "agentClis.enabled" listesindekileri seçebilir. Ayrıntılar: {url}',
@@ -885,6 +886,98 @@ export const TR: Record<string, string> = {
   'That agent CLI is turned off. Turn it on in Settings > Providers > Agent CLIs.': "Bu agent CLI kapalı. Ayarlar > Providers > Agent CLI'lar bölümünden açın.",
   'An agent CLI can only be the main agent.': 'Bir agent CLI yalnızca ana agent olabilir.',
   '{agent}: sign in': '{agent}: giriş',
+  // Installing CLIs (the vendor's own installer, after the user's click, in a visible terminal)
+  '{agent} is not installed. Install it from here, or yourself: {hint}': '{agent} kurulu değil. Buradan ya da kendiniz kurun: {hint}',
+  'Copy command': 'Komutu kopyala',
+  'Open docs': 'Belgeleri aç',
+  'Install {cli} yourself with: {command}': '{cli} için şu kurulum komutunu kendiniz çalıştırın: {command}',
+  'Install {cli}?': '{cli} kurulsun mu?',
+  'Open nodejs.org': "nodejs.org'u aç",
+  '{cli} needs Node.js {min} or newer for npm; this machine has {version}. Update Node.js, then install again.':
+    "{cli} npm için Node.js {min} veya üstünü gerektiriyor; bu makinede {version} var. Node.js'i güncelleyip yeniden kurun.",
+  '{cli} needs Node.js {min} or newer for npm, and Node.js was not found. Install it, then install again.':
+    "{cli} npm için Node.js {min} veya üstünü gerektiriyor ve Node.js bulunamadı. Node.js'i kurup yeniden deneyin.",
+  '{cli} is being installed in a terminal. Orka checks it when the terminal closes, or when you click Check again.':
+    '{cli} bir terminalde kuruluyor. Orka terminal kapanınca ya da "Yeniden kontrol et"e tıkladığınızda kontrol eder.',
+  'Copied: {command}': 'Kopyalandı: {command}',
+  '{cli} is installed ({version}).': '{cli} kuruldu ({version}).',
+  'Use Claude Code in Orka? It runs on your own Claude Code login.': "Claude Code Orka'da kullanılsın mı? Kendi Claude Code girişinizle çalışır.",
+  'Turn on': 'Aç',
+  'Choose file…': 'Dosya seç…',
+  '{cli} was not found yet. If the installer finished, restart Orka so it sees the new PATH, or choose the program.':
+    "{cli} henüz bulunamadı. Kurulum bittiyse yeni PATH'i görmesi için Orka'yı yeniden başlatın ya da programı seçin.",
+  '{program} was not found yet, so {cli} cannot sign in. If the installer finished, restart Orka so it sees the new PATH.':
+    "{program} henüz bulunamadı, bu yüzden {cli} oturum açamaz. Kurulum bittiyse yeni PATH'i görmesi için Orka'yı yeniden başlatın.",
+  'Official installer from {source}.': '{source} kaynağından resmî kurulum.',
+  'It installs to {folder}.': '{folder} klasörüne kurulur.',
+  'Needs Node.js {min} or newer (npm); Orka checks it first.': 'Node.js {min} veya üstü gerekir (npm); Orka önce bunu kontrol eder.',
+  'It runs in a terminal you can see, without administrator rights. Orka does not sign you in.':
+    'Görebileceğiniz bir terminalde, yönetici hakları olmadan çalışır. Orka sizin yerinize giriş yapmaz.',
+  'Install…': 'Kur…',
+  'Check again': 'Yeniden kontrol et',
+  // Accounts (each CLI's own status, sign-in and sign-out commands; Claude Code profiles)
+  'Default profile': 'Varsayılan Profile',
+  'The status command did not answer within {n} seconds.': 'Durum komutu {n} saniye içinde yanıt vermedi.',
+  '{name} is set: Copilot CLI signs in with that token instead.': '{name} tanımlı: Copilot CLI bunun yerine o Token ile giriş yapar.',
+  'Copilot CLI has no status command: type /user in it to see the account.': "Copilot CLI'ın durum komutu yok: hesabı görmek için içinde /user yazın.",
+  '{cli} has no status command: its sign-in is chosen inside the CLI.': "{cli} için durum komutu yok: giriş yöntemi CLI'ın içinde seçilir.",
+  'Type /logout in Copilot CLI to sign out; /user shows the account.': "Çıkış için Copilot CLI'da /logout yazın; /user hesabı gösterir.",
+  'Sign out inside agy (see its docs).': "agy'nin içinden çıkış yapın (belgelerine bakın).",
+  'Sign out inside Gemini CLI (see its docs).': "Gemini CLI'ın içinden çıkış yapın (belgelerine bakın).",
+  '{account}: sign in': '{account}: giriş',
+  '{account}: sign out': '{account}: çıkış',
+  'Sign in': 'Giriş yap',
+  'Sign out': 'Çıkış yap',
+  'Sign out of {account}?': '{account} hesabından çıkış yapılsın mı?',
+  '{cli} is not installed. Install it first, then sign in.': '{cli} kurulu değil. Önce kurun, sonra giriş yapın.',
+  'Enter a name with letters or digits.': 'Harf veya rakam içeren bir ad girin.',
+  'A profile with this name exists.': 'Bu adda bir Profile zaten var.',
+  "Separate accounts are for separate work, such as work and personal. Using them to get around a usage limit may break the vendor's terms.":
+    'Ayrı hesaplar iş ve kişisel gibi ayrı işler içindir. Bunları bir kullanım limitini aşmak için kullanmak sağlayıcının koşullarını ihlal edebilir.',
+  'Add profile': 'Profile ekle',
+  'Add the Claude Code profile "{name}"?': '"{name}" Claude Code Profile\'ı eklensin mi?',
+  'Add a Claude Code profile': 'Claude Code Profile ekle',
+  'e.g. Work': 'örn. İş',
+  'Profile "{name}" added. Sign in to its account now?': '"{name}" Profile\'ı eklendi. Hesabına şimdi giriş yapılsın mı?',
+  'A session runs on the profile {name}. Remove it when the run ends.': '{name} Profile\'ında çalışan bir oturum var. Çalışma bitince kaldırın.',
+  'Remove the profile {name}? Its folder {dir} stays, with its sign-in: sign out first, or delete the folder yourself.':
+    '{name} Profile\'ı kaldırılsın mı? {dir} klasörü girişiyle birlikte kalır: önce çıkış yapın ya da klasörü kendiniz silin.',
+  'Running sessions finish on {old}. New runs use {new}; one profile of a CLI runs at a time, so they wait for those runs to end.':
+    "Çalışan oturumlar {old} ile biter. Yeni çalışmalar {new} kullanır; bir CLI'ın aynı anda tek Profile'ı çalışır, bu yüzden o çalışmaların bitmesini beklerler.",
+  'Another session runs {account}. Orka runs one profile of a CLI at a time: wait for it to finish or stop it, or switch back to that profile.':
+    "Başka bir oturum {account} ile çalışıyor. Orka bir CLI'ın aynı anda tek Profile'ını çalıştırır: bitmesini bekleyin, durdurun ya da o Profile'a geri dönün.",
+  'A session runs {account}. Orka runs one profile of a CLI at a time: analyze when it ends.':
+    "Bir oturum {account} ile çalışıyor. Orka bir CLI'ın aynı anda tek Profile'ını çalıştırır: o bitince analiz edin.",
+  // Accounts in the sidebar, the Add account popup and Settings > Accounts
+  Accounts: 'Hesaplar',
+  'Accounts…': 'Hesaplar…',
+  'Accounts: {n} of {total} signed in': "Hesaplar: {total} hesabın {n} tanesinde giriş yapılmış",
+  'Add account': 'Hesap ekle',
+  'More for {account}': '{account} için diğer işlemler',
+  'Use for new sessions': 'Yeni oturumlarda kullan',
+  'Sign out…': 'Çıkış yap…',
+  'All accounts…': 'Tüm hesaplar…',
+  Profile: 'Profile',
+  'New profile…': 'Yeni Profile…',
+  'Sign in to {cli}': '{cli} ile giriş yap',
+  "A terminal opens; finish the sign-in there or on the vendor's page. Orka never sees your password or token.":
+    "Bir terminal açılır; girişi orada ya da sağlayıcının sayfasında tamamlayın. Orka parolanızı ya da Token'ınızı hiçbir zaman görmez.",
+  Back: 'Geri',
+  'Open terminal': 'Terminali aç',
+  'No CLI is installed yet.': 'Henüz kurulu bir CLI yok.',
+  'Not installed:': 'Kurulu değil:',
+  'Install {cli}': '{cli} kur',
+  'Sign in with which CLI?': 'Hangi CLI ile giriş yapılsın?',
+  'Check all': 'Tümünü kontrol et',
+  'Signed in': 'Giriş yapılmış',
+  'Signed out': 'Giriş yapılmamış',
+  'new sessions': 'yeni oturumlar',
+  "Each CLI signs in with its own command, in a terminal you can see. Orka asks only the CLI's own status command and never reads or stores a sign-in.":
+    'Her CLI kendi komutuyla, görebileceğiniz bir terminalde giriş yapar. Orka yalnızca CLI\'ın kendi durum komutunu çalıştırır; giriş bilgilerini hiçbir zaman okumaz ya da saklamaz.',
+  'Claude Code profiles': "Claude Code Profile'ları",
+  'A profile is its own Claude Code sign-in, kept by Claude Code in its own folder (CLAUDE_CONFIG_DIR). One profile runs at a time; you pick it here.':
+    "Her Profile ayrı bir Claude Code girişidir; Claude Code onu kendi klasöründe tutar (CLAUDE_CONFIG_DIR). Aynı anda tek Profile çalışır; hangisi olacağını burada seçersiniz.",
+  'Sign in and out in Settings > Accounts.': 'Giriş ve çıkış: Ayarlar > Hesaplar.',
   'cmd.exe cannot run {part} safely. Run this in a terminal yourself: {command}':
     'cmd.exe {part} öğesini güvenle çalıştıramıyor. Şunu bir terminalde kendiniz çalıştırın: {command}',
   'Choose the {agent} program': '{agent} programını seçin',
@@ -915,6 +1008,12 @@ export const TR: Record<string, string> = {
   'Sign in…': 'Giriş yap…',
   Docs: 'Belgeler',
   Terms: 'Şartlar',
+  FAQ: 'SSS',
+  'No agent CLI installed yet.': 'Henüz kurulu bir agent CLI yok.',
+  'Main agent {agent} is turned off; using {fallback}.': 'Ana agent {agent} kapalı; yerine {fallback} kullanılıyor.',
+  'Turn off': 'Kapat',
+  '{agent} is the main agent. Turn it off? The main agent then runs on the default provider.':
+    "{agent} ana agent. Kapatılsın mı? Ana agent bundan sonra varsayılan provider'da çalışır.",
   preview: 'önizleme',
   'Offer it as the main agent': 'Ana agent olarak sun',
   'Coding agents you installed and signed in to yourself. As the main agent they run their own tools; Orka answers their permission requests, keeps their file changes reviewable and revertible, and its Supervisor reviews the result. Orka never reads or stores their sign-in.':
@@ -987,8 +1086,12 @@ export const TR: Record<string, string> = {
   '{agent} keeps its own context; there is nothing for Orka to compact.': "{agent} kendi bağlamını kendisi tutuyor; Orka'nın compact edeceği bir şey yok.",
   '{agent} takes over as the main agent, with a summary of this task so far.': '{agent} ana agent olarak devralıyor; bu görevin şu ana kadarki özetiyle birlikte.',
   // Agent policy notes and catalog exclusions (dynamic keys)
-  "Runs your installed Gemini CLI in its ACP mode. Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it. Google moved unpaid and Google One accounts from Gemini CLI to Antigravity.":
-    "Kurulu Gemini CLI'ınızı ACP modunda çalıştırır. Orka, Gemini CLI'ın oturumunu asla kendisi kullanmaz: Google'ın koşulları başka yazılımların bunu kullanmasını yasaklar. Google, ücretsiz ve Google One hesaplarını Gemini CLI'dan Antigravity'ye taşıdı.",
+  "Runs your installed Antigravity CLI (\"agy acp\"), which Google documents for any ACP client. Google's FAQ calls wrapping agy in third-party apps unsupported on consumer plans: read both and decide how you sign in.":
+    "Kurulu Antigravity CLI'ınızı (\"agy acp\") çalıştırır; Google bu modu her ACP istemcisi için belgeliyor. Google'ın SSS'i ise agy'nin üçüncü taraf uygulamalar içinde bireysel planlarla kullanılmasını desteklenmiyor olarak tanımlıyor: ikisini de okuyup nasıl giriş yapacağınıza siz karar verin.",
+  "Legacy: only for a Gemini API key or Code Assist Standard/Enterprise; personal Google accounts moved to Antigravity CLI. Runs your installed Gemini CLI in its ACP mode; Orka never uses Gemini CLI's sign-in itself: Google's terms forbid other software from using it.":
+    "Eski sürüm: yalnızca Gemini API key ya da Code Assist Standard/Enterprise için; kişisel Google hesapları Antigravity CLI'a taşındı. Kurulu Gemini CLI'ınızı ACP modunda çalıştırır; Orka, Gemini CLI'ın oturumunu asla kendisi kullanmaz: Google'ın koşulları başka yazılımların bunu kullanmasını yasaklar.",
+  '{agent} {version} has no ACP mode yet; version {min} or newer is needed. Update it with "{command}".':
+    '{agent} {version} sürümünde henüz ACP modu yok; {min} ya da daha yeni bir sürüm gerekiyor. "{command}" ile güncelleyin.',
   'Runs the codex-acp adapter (Apache-2.0) you installed. Sign in with Codex itself, with a ChatGPT plan or an API key.':
     "Kurduğunuz codex-acp adaptörünü (Apache-2.0) çalıştırır. Codex'in kendisiyle, bir ChatGPT planı ya da API key ile giriş yapın.",
   'Runs your installed GitHub Copilot CLI as an ACP server. GitHub documents this mode for other clients; it is a public preview and may change.':
@@ -997,8 +1100,6 @@ export const TR: Record<string, string> = {
     'Kurulu Cursor CLI\'ınızı ("agent acp") çalıştırır; Cursor bu modu özel istemciler için belgeliyor.',
   "An ACP agent you added yourself. Orka runs exactly the command you entered; make sure your use follows that agent's terms.":
     "Kendi eklediğiniz bir ACP agent'ı. Orka tam olarak girdiğiniz komutu çalıştırır; kullanımınızın o agent'ın koşullarına uygun olduğundan emin olun.",
-  "Google's terms do not allow using Antigravity through third-party software on consumer plans.":
-    "Google'ın koşulları, bireysel planlarda Antigravity'nin üçüncü taraf yazılımlar üzerinden kullanılmasına izin vermiyor.",
   "The Claude ACP adapter's licence is unclear. Claude stays available through the Claude API provider and the opt-in Claude Code provider.":
     "Claude ACP adaptörünün lisansı belirsiz. Claude, Claude API provider'ı ve isteğe bağlı Claude Code provider'ı üzerinden kullanılabilir olmaya devam ediyor.",
 
@@ -1042,6 +1143,8 @@ export const TR: Record<string, string> = {
     "Radar, diğer AI kodlama araçlarının herkese açık sürüm notlarını okur ve Orka'ya neler eklenebileceğini önerir. Şu an kapalı: hiçbir şey indirilmiyor.",
   "While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on your own provider and API key.":
     "Açıkken bu siteleri saatte bir kontrol eder. İstekler yalnızca Orka'nın adını ve sürümünü taşır; sizinle ya da projelerinizle ilgili hiçbir şey taşımaz. Analiz yalnızca Analiz et'e tıkladığınızda, kendi provider'ınız ve API anahtarınızla çalışır.",
+  "While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. An analysis runs only when you click Analyze, on Claude Code with your own sign-in, as a plain model with no tools.":
+    "Açıkken bu siteleri saatte bir kontrol eder. İstekler yalnızca Orka'nın adını ve sürümünü taşır; sizinle ya da projelerinizle ilgili hiçbir şey taşımaz. Analiz yalnızca Analiz et'e tıkladığınızda, Claude Code üzerinde kendi oturumunuzla ve hiçbir araç olmadan düz bir model olarak çalışır.",
   "While it is on, it checks these sites once an hour. The requests carry only Orka's name and version, nothing about you or your projects. Automatic analysis is on: when a check finds something, Radar analyzes it right away on your own provider and API key.":
     "Açıkken bu siteleri saatte bir kontrol eder. İstekler yalnızca Orka'nın adını ve sürümünü taşır; sizinle ya da projelerinizle ilgili hiçbir şey taşımaz. Otomatik analiz açık: bir kontrol yeni bir şey bulduğunda Radar onu hemen kendi provider'ınız ve API anahtarınızla analiz eder.",
   'Turn on Radar': "Radar'ı aç",
@@ -1058,7 +1161,8 @@ export const TR: Record<string, string> = {
   Analyze: 'Analiz et',
   'Analyze right after a check finds something': 'Kontrol yeni bir şey bulunca hemen analiz et',
   'Uses your provider and tokens, at most {n} model calls a run.': "Kendi provider'ınızı ve token'larınızı kullanır; çalışma başına en fazla {n} model çağrısı.",
-  'Same as main ({provider})': 'Ana ile aynı ({provider})',
+  'Paused while Radar runs on Claude Code: it analyzes only when you click Analyze.': "Radar Claude Code üzerinde çalıştığı sürece duraklatıldı: yalnızca Analiz et'e tıkladığınızda analiz eder.",
+  'Automatic ({provider})': 'Otomatik ({provider})',
   'Choose a provider…': 'Provider seçin…',
   'Analyze with': 'Analizi yapan',
   Summarizing: 'Özetleniyor',
@@ -1194,4 +1298,16 @@ export const TR: Record<string, string> = {
   close: 'kapat',
   'Go to line': 'Satıra git',
   go: 'git',
+  // The message box's model menu (per session).
+  'Model and effort for this session': 'Bu oturumun modeli ve Effort ayarı',
+  'The provider’s own default': 'Provider’ın kendi varsayılanı',
+  'Applies from your next message.': 'Bir sonraki mesajınızdan itibaren geçerli olur.',
+  'Agent settings…': 'Agent ayarları…',
+  'Use as default': 'Varsayılan yap',
+  'New sessions start with this model, effort and profile. Sessions open now keep theirs.':
+    'Yeni oturumlar bu model, Effort ve Profile ile başlar. Şu an açık oturumlar kendi ayarlarını korur.',
+  'Default effort': 'Varsayılan Effort',
+  '{value} · change it from the model menu in the message box': '{value} · mesaj kutusundaki model menüsünden değiştirin',
+  '{agent} did not change "{option}": {reason}': '{agent} "{option}" ayarını değiştirmedi: {reason}',
+  'Context: {percent}% full ({used} of {size} tokens)': 'Bağlam: %{percent} dolu ({size} Token’ın {used} kadarı)',
 };

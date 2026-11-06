@@ -18,13 +18,23 @@ describe('third-party agents: compliance rules', () => {
     }
     assert.deepEqual(
       AGENT_CLIS.map((a) => a.id),
-      ['gemini', 'codex', 'copilot', 'cursor'],
+      ['antigravity', 'codex', 'copilot', 'cursor', 'gemini'],
     );
   });
 
   it('leaves out the agents whose terms or licence do not allow it', () => {
     for (const { id } of NOT_IN_CATALOG) assert.ok(!AGENT_CLIS.some((a) => a.id === id || a.bin.includes(id)), `${id} must not be in the catalog`);
-    for (const entry of AGENT_CLIS) assert.doesNotMatch(`${entry.id} ${entry.bin} ${entry.label}`, /antigravity|claude/i);
+    for (const entry of AGENT_CLIS) assert.doesNotMatch(`${entry.id} ${entry.bin} ${entry.label}`, /claude/i);
+  });
+
+  it("runs Antigravity only through its documented ACP mode and links Google's FAQ next to its terms", () => {
+    const agy = AGENT_CLIS.find((a) => a.id === 'antigravity')!;
+    assert.deepEqual([agy.bin, agy.acpArgs, agy.versionArgs, agy.login?.args], ['agy', ['acp'], ['--version'], []], 'no -p (print mode), no adapter, sign-in in interactive agy');
+    assert.equal(agy.docsUrl, 'https://antigravity.google/docs/ide/extensions/acp/');
+    const policy = agentPolicy(agy.policy)!;
+    assert.deepEqual([policy.termsUrl, policy.faqUrl], ['https://antigravity.google/terms', 'https://antigravity.google/docs/faq']);
+    assert.match(policy.note, /unsupported on consumer plans/);
+    assert.equal(AGENT_CLIS.find((a) => a.id === 'gemini')?.label, 'Gemini CLI (legacy)', 'Gemini CLI keeps its id, labelled legacy');
   });
 
   it('never turns on an agent\'s "approve everything" mode, and starts only what the user installed', () => {

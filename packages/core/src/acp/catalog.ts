@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { childEnv, findExecutable, resolveCommand } from '../host/commands';
 import { killTree } from '../host/processes';
 import { t } from '../i18n';
+import { isNewerVersion } from '../updates/UpdateCheck';
 import type { AcpLaunchSpec } from './AcpClient';
 
 /**
@@ -26,14 +27,28 @@ export interface AgentCliEntry {
   /** Prints the version; empty when the program has no such flag (the check then only finds it). */
   versionArgs: readonly string[];
   /**
+   * The first version with the ACP mode Orka runs, and the vendor's update command to show when
+   * the installed one is older (the check reports an error; Orka never runs the update).
+   */
+  minVersion?: { version: string; updateHint: string };
+  /**
    * The vendor's own sign-in, which the user runs in a terminal: these arguments for the agent's
    * own program, or for `bin`, another program of the vendor's (with how to install it).
    */
   login?: { args: readonly string[]; bin?: string; installHint?: string };
-  /** How to install it, shown to the user (Orka never runs it). */
+  /**
+   * How to install it, shown to the user. Orka runs an installer only from the app's install
+   * recipes, after the user's click in a dialog that shows it, in a visible terminal.
+   */
   installHint: string;
   /** The install hint for Windows, when it differs. */
   installHintWindows?: string;
+  /**
+   * The folder the vendor's installer puts the program in, looked in when PATH does not find it
+   * (a running app keeps the PATH it started with): on Windows an environment variable and the
+   * folders under it, elsewhere folders under the home folder.
+   */
+  installDir?: { win32?: readonly [string, ...string[]]; posix?: readonly string[] };
   docsUrl: string;
   /** Its row in AGENT_POLICIES. */
   policy: string;
@@ -42,18 +57,23 @@ export interface AgentCliEntry {
 
 export const AGENT_CLIS: readonly AgentCliEntry[] = [
   {
-    id: 'gemini',
-    label: 'Gemini CLI',
+    id: 'antigravity',
+    label: 'Antigravity CLI',
     vendor: 'Google',
-    bin: 'gemini',
-    // Builds before "--acp" used "--experimental-acp" (now deprecated); those can be added as a custom agent.
-    acpArgs: ['--acp'],
+    bin: 'agy',
+    // "agy acp" is documented at antigravity.google/docs/ide/extensions/acp/ for any ACP client;
+    // it came with agy 1.5.0 (agy's own changelog). Older builds reject the "acp" argument.
+    acpArgs: ['acp'],
     versionArgs: ['--version'],
-    // Sign-in is a choice inside the interactive CLI (Google account, API key or Vertex AI).
+    minVersion: { version: '1.5.0', updateHint: 'agy update' },
+    // "agy acp" uses the sign-in cached by an interactive agy session, where the user picks the method.
     login: { args: [] },
-    installHint: 'npm install -g @google/gemini-cli',
-    docsUrl: 'https://geminicli.com/docs/cli/acp-mode/',
-    policy: 'google',
+    installHint: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+    installHintWindows: 'irm https://antigravity.google/cli/install.ps1 | iex',
+    // The default binary location on antigravity.google/docs/getting-started.
+    installDir: { win32: ['LOCALAPPDATA', 'agy', 'bin'], posix: ['.local', 'bin'] },
+    docsUrl: 'https://antigravity.google/docs/ide/extensions/acp/',
+    policy: 'antigravity',
     kind: 'builtin',
   },
   {
@@ -100,6 +120,22 @@ export const AGENT_CLIS: readonly AgentCliEntry[] = [
     policy: 'cursor',
     kind: 'builtin',
   },
+  {
+    // Legacy: Google moved personal accounts to Antigravity CLI; the id stays so "agent:gemini" keeps working.
+    id: 'gemini',
+    label: 'Gemini CLI (legacy)',
+    vendor: 'Google',
+    bin: 'gemini',
+    // Builds before "--acp" used "--experimental-acp" (now deprecated); those can be added as a custom agent.
+    acpArgs: ['--acp'],
+    versionArgs: ['--version'],
+    // Sign-in is a choice inside the interactive CLI (API key, Vertex AI or a Code Assist licence).
+    login: { args: [] },
+    installHint: 'npm install -g @google/gemini-cli',
+    docsUrl: 'https://geminicli.com/docs/cli/acp-mode/',
+    policy: 'google',
+    kind: 'builtin',
+  },
 ];
 
 export function agentCli(id: string): AgentCliEntry | undefined {
@@ -137,16 +173,37 @@ export function customAgentEntry(definition: CustomAgentDefinition): AgentCliEnt
   };
 }
 
-/** The agent's executable: the user's path when set, else the first of its names on PATH. */
+/**
+ * The agent's executable: the user's path when set, else the first of its names on PATH, else in
+ * the vendor's install folder (a program installed after the app started is not on its PATH yet).
+ */
 export function resolveAgentExecutable(entry: AgentCliEntry, overridePath?: string, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | undefined {
   const find = (name: string) => (/[\\/]/.test(name) ? (existsSync(name) ? path.resolve(name) : undefined) : findExecutable(name, env, platform));
   const explicit = overridePath?.trim();
   if (explicit) return find(explicit);
-  for (const name of [entry.bin, ...(entry.altBins ?? [])]) {
-    const found = name && find(name);
+  const names = [entry.bin, ...(entry.altBins ?? [])].filter(Boolean);
+  for (const name of names) {
+    const found = find(name);
+    if (found) return found;
+  }
+  const dir = installFolder(entry, env, platform);
+  if (!dir) return undefined;
+  for (const name of names) {
+    const found = findExecutable(name, { PATH: dir, PATHEXT: env.PATHEXT }, platform);
     if (found) return found;
   }
   return undefined;
+}
+
+/** The vendor's install folder for the agent on this machine, when the catalog names one. */
+export function installFolder(entry: AgentCliEntry, env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string | undefined {
+  if (platform === 'win32') {
+    const [variable, ...parts] = entry.installDir?.win32 ?? [];
+    const base = variable ? env[variable] : undefined;
+    return base && path.win32.isAbsolute(base) ? path.win32.join(base, ...parts) : undefined;
+  }
+  const parts = entry.installDir?.posix;
+  return parts ? path.posix.join(homedir(), ...parts) : undefined;
 }
 
 /**
@@ -237,8 +294,22 @@ export async function checkAgentCli(entry: AgentCliEntry, overridePath?: string,
     child.on('error', (error) => done({ state: 'error', executable, detail: error.message }));
     child.on('close', (code) => {
       const line = output.trim().split(/\r?\n/).find((l) => l.trim()) ?? '';
-      if (code === 0) done({ state: 'ready', executable, version: /\d+\.\d+[\w.+-]*/.exec(line)?.[0] ?? (line.slice(0, 60) || undefined) });
-      else done({ state: 'error', executable, detail: output.trim().split(/\r?\n/).slice(-3).join(' ') || `exit code ${code}` });
+      if (code !== 0) return done({ state: 'error', executable, detail: output.trim().split(/\r?\n/).slice(-3).join(' ') || `exit code ${code}` });
+      const version = /\d+\.\d+[\w.+-]*/.exec(line)?.[0] ?? (line.slice(0, 60) || undefined);
+      const tooOld = tooOldForAcp(entry, version);
+      done(tooOld ? { state: 'error', executable, version, detail: tooOld } : { state: 'ready', executable, version });
     });
+  });
+}
+
+/** Why the installed version cannot run the ACP mode (it predates `minVersion`); undefined when it can or is unknown. */
+export function tooOldForAcp(entry: AgentCliEntry, version: string | undefined): string | undefined {
+  const min = entry.minVersion;
+  if (!min || !version || !isNewerVersion(min.version, version)) return undefined;
+  return t('{agent} {version} has no ACP mode yet; version {min} or newer is needed. Update it with "{command}".', {
+    agent: entry.label,
+    version,
+    min: min.version,
+    command: min.updateHint,
   });
 }

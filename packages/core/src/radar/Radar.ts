@@ -2,7 +2,7 @@ import { t } from '../i18n';
 import type { AIProvider } from '../providers/AIProvider';
 import { HostPacer } from './fetch';
 import { BUILTIN_INVENTORY, type FeatureInventory } from './inventory';
-import { analyzeEntries, pollSources, RADAR_REFUSED_PROVIDERS, type RadarAnalyzeOptions, type RadarPollResult } from './pipeline';
+import { analyzeEntries, pollSources, type RadarAnalyzeOptions, type RadarPollResult } from './pipeline';
 import { defaultSources, validateSources } from './sources';
 import { loadRadarState, pruneSources, QUARANTINE_CAP, queue, RADAR_ENTRY_FAILURES, type RadarPollStatus, saveRadarState } from './state';
 import type { RadarReport, RadarSource } from './types';
@@ -94,14 +94,13 @@ export class Radar {
   }
 
   /**
-   * Analyze queued entries with `provider` (the user's own API provider; never the Claude Code
-   * provider). Returns undefined without any model call when nothing is queued. An entry leaves
+   * Analyze queued entries with `provider` (the user's own API provider, or Claude Code as a plain
+   * model; every call has no tools). Returns undefined without any model call when nothing is queued. An entry leaves
    * the queue once its relevant items reached a decision; the rest stay queued (with what was
    * already summarized of them, so the next run goes on from there), and entries the model failed
    * on twice are quarantined.
    */
   async analyze(provider: AIProvider, opts: RadarRunOptions = {}): Promise<RadarReport | undefined> {
-    if (RADAR_REFUSED_PROVIDERS.includes(provider.id)) throw new Error(t('The radar needs an API provider; the Claude Code provider cannot run it.'));
     if (this.analyzing) throw new Error(t('The radar is already analyzing new entries.'));
     this.analyzing = true;
     try {

@@ -28,8 +28,10 @@ import { forShownSession, post, saveUiState, setSessionId, shownSessionId, uiSta
 import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
 import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
+import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAccountHtml, type AddAccountState } from './features/accounts';
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
 import { hunksHtml } from './features/hunks';
+import { contextRing, effortLabel, modelButtonHtml, modelMenuHtml } from './features/modelMenu';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
 import {
   changePath,
@@ -59,6 +61,8 @@ const ui: {
   planCollapsed: boolean;
   agentsOpen: boolean;
   usageOpen: boolean;
+  /** The message box's model menu (this session's model, effort and profile) is open. */
+  modelMenuOpen: boolean;
   /** "editor": the desktop app's open file in place of the conversation. */
   view: 'chat' | 'editor' | 'settings' | 'history';
   tab: SettingsTab;
@@ -83,6 +87,7 @@ const ui: {
   planCollapsed: false,
   agentsOpen: false,
   usageOpen: false,
+  modelMenuOpen: false,
   view: 'chat',
   tab: 'agents',
   hunks: new Map(),
@@ -152,6 +157,8 @@ const el = {
   composerMode: document.getElementById('composer-mode'),
   composerAgent: document.getElementById('composer-agent'),
   composerMenu: document.getElementById('composer-menu'),
+  modelMenu: document.getElementById('model-menu')!,
+  contextRing: document.getElementById('context-ring'),
   starters: document.getElementById('starters'),
   imageInput: document.getElementById('image-input') as HTMLInputElement | null,
   asideTabs: document.getElementById('aside-tabs'),
@@ -269,6 +276,7 @@ function renderSidebar(): void {
   if (themes) themes.innerHTML = config?.ui ? themeSwitchHtml(config.ui.theme) : '';
   renderRadarEntries();
   renderFilesEntries();
+  renderAccountsEntries();
 }
 
 /**
@@ -336,6 +344,84 @@ function renderRadarEntries(): void {
       slot.innerHTML = html;
     }
   }
+}
+
+/** Accounts in the session list's footer (folds open to one row per account) and in the rail. */
+function renderAccountsEntries(): void {
+  for (const [id, where] of [
+    ['side-accounts', 'list'],
+    ['rail-accounts', 'rail'],
+  ] as const) {
+    const slot = document.getElementById(id);
+    const html = config ? accountsEntryHtml(where, config.accounts ?? [], !!uiState().accountsOpen) : '';
+    if (slot && slot.dataset.html !== html) {
+      slot.dataset.html = html;
+      slot.innerHTML = html;
+    }
+  }
+}
+
+/**
+ * The CLIs' own status commands run when the user first looks at the accounts (the sidebar's
+ * list, the Add account popup, Settings > Accounts), then on Check; never on a timer.
+ */
+let accountsChecked = false;
+
+function checkAccountsOnce(): void {
+  if (accountsChecked) return;
+  accountsChecked = true;
+  post({ type: 'checkAccounts' });
+}
+
+function toggleAccounts(): void {
+  const open = !uiState().accountsOpen;
+  saveUiState({ accountsOpen: open });
+  if (open) checkAccountsOnce();
+  renderAccountsEntries();
+}
+
+/** The Add account popup (both layouts): which CLI, then its sign-in command. */
+let addAccount: AddAccountState | undefined;
+const accountsLayer = document.createElement('div');
+accountsLayer.className = 'accounts-layer';
+document.body.appendChild(accountsLayer);
+
+function openAddAccount(state: AddAccountState = {}): void {
+  closeSessionMenu();
+  addAccount = state;
+  checkAccountsOnce();
+  renderAddAccount();
+}
+
+function closeAddAccount(): void {
+  if (!addAccount) return;
+  addAccount = undefined;
+  renderAddAccount();
+}
+
+/** Rebuilt only when it changed (a status answering), so the focused button keeps its focus. */
+function renderAddAccount(): void {
+  const html = addAccount && config ? `<div class="modal-backdrop" data-action="add-account-close">${addAccountHtml(config.accounts ?? [], addAccount)}</div>` : '';
+  if (accountsLayer.dataset.html === html) return;
+  const stepChanged = accountsLayer.dataset.step !== (addAccount?.cli ?? '');
+  accountsLayer.dataset.html = html;
+  accountsLayer.dataset.step = addAccount?.cli ?? '';
+  accountsLayer.innerHTML = html;
+  if (stepChanged || !accountsLayer.contains(document.activeElement)) (accountsLayer.querySelector<HTMLElement>('.btn.primary') ?? accountsLayer.querySelector<HTMLElement>('.pick-item, .btn'))?.focus();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && addAccount && !modalOpen()) {
+    e.preventDefault();
+    closeAddAccount();
+  }
+});
+
+/** The … menu of an account row in the sidebar, under its button. */
+function openAccountMenu(button: HTMLElement): void {
+  closeSessionMenu();
+  const account = config?.accounts?.find((a) => accountKey(a) === button.dataset.key);
+  if (account) showMenuAt(button, accountMenuHtml(account));
 }
 
 /** The plan and the changes have their own panel on the right; it shows while there is either. */
@@ -508,12 +594,17 @@ function openSessionMenu(button: HTMLElement): void {
   closeSessionMenu();
   const { id, folder, session: open, state, draft } = button.dataset;
   if (!id || !folder) return;
+  // An open session that is not shown: Stop while it runs, else Close.
+  const live = open ? { id: open, running: state === 'running' || state === 'approval', draft: draft === 'true' } : undefined;
+  showMenuAt(button, sessionMenuHtml(id, folder, ui.organizer, live));
+}
+
+/** A menu of the session list (a session's or an account's …) under its button. */
+function showMenuAt(button: HTMLElement, html: string): void {
   sessionMenu = document.createElement('div');
   sessionMenu.className = 'composer-menu session-menu';
   sessionMenu.setAttribute('role', 'menu');
-  // An open session that is not shown: Stop while it runs, else Close.
-  const live = open ? { id: open, running: state === 'running' || state === 'approval', draft: draft === 'true' } : undefined;
-  sessionMenu.innerHTML = sessionMenuHtml(id, folder, ui.organizer, live);
+  sessionMenu.innerHTML = html;
   document.body.appendChild(sessionMenu);
   const at = button.getBoundingClientRect();
   const menu = sessionMenu.getBoundingClientRect();
@@ -582,16 +673,63 @@ function asideTabOf(value: string | undefined): AsideTab {
   return value === 'radar' || value === 'files' ? value : 'task';
 }
 
-/** IDE layout: the permission mode and the main agent's model sit in the message box. */
+/**
+ * The message box's own controls: the session's model menu (both layouts) and, in the IDE
+ * layout, the permission mode.
+ */
 function renderComposerTools(): void {
-  if (!el.composerMode || !el.composerAgent) return;
+  if (el.composerMode) el.composerMode.innerHTML = modeSelect();
+  if (!el.composerAgent) return;
   const main = config?.main.effective;
-  const warn = main && !providerView(main.provider)?.ready;
-  el.composerMode.innerHTML = modeSelect();
-  el.composerAgent.innerHTML = main
-    ? `<button class="agent-btn${ui.agentsOpen ? ' open' : ''}${warn ? ' warn' : ''}" data-action="toggle-agents" aria-expanded="${ui.agentsOpen}" title="${attr(t('Agents: providers and models'))}">${icon('agent')}<span>${escapeHtml(shortModel(main.provider, main.model))}</span>${icon('chevron', 'chev')}</button>`
-    : '';
+  const warn = !!main && !providerView(main.provider)?.ready;
+  el.composerAgent.innerHTML = main && config?.sessionModel ? modelButtonHtml(shortModel(main.provider, main.model), config.sessionModel, ui.modelMenuOpen, warn) : '';
+  renderModelMenu();
 }
+
+/** The model menu over the message box, for the session shown. */
+function renderModelMenu(): void {
+  const view = config?.sessionModel;
+  const open = ui.modelMenuOpen && !!view && workView();
+  el.modelMenu.hidden = !open;
+  if (!open || !view) return;
+  const provider = providerView(view.provider);
+  // A choice made from the keyboard re-renders the menu: focus stays in the same group, on its checked item.
+  const focused = el.modelMenu.contains(document.activeElement) ? (document.activeElement as HTMLElement).getAttribute('data-action') : undefined;
+  el.modelMenu.innerHTML = modelMenuHtml({ view, models: provider?.agent ? [] : (provider?.models ?? []), agent: !!provider?.agent, running: session.running });
+  if (focused === undefined) return;
+  const items = [...el.modelMenu.querySelectorAll<HTMLElement>('button:not(:disabled)')];
+  const group = items.filter((b) => b.getAttribute('data-action') === focused);
+  (group.find((b) => b.getAttribute('aria-checked') === 'true') ?? group[0] ?? items[0])?.focus();
+}
+
+function openModelMenu(open: boolean): void {
+  ui.modelMenuOpen = open;
+  renderComposerTools();
+  if (open) el.modelMenu.querySelector<HTMLElement>('[aria-checked="true"], button:not(:disabled)')?.focus();
+}
+
+// The model menu: arrow keys move between its choices, Escape closes it (focus back on its button).
+el.modelMenu.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    openModelMenu(false);
+    el.composerAgent?.querySelector<HTMLElement>('.model-btn')?.focus();
+    return;
+  }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  const items = [...el.modelMenu.querySelectorAll<HTMLElement>('button:not(:disabled)')];
+  if (!items.length) return;
+  e.preventDefault();
+  const at = items.indexOf(document.activeElement as HTMLElement);
+  items[(at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+});
+// Escape anywhere closes the open model menu too (focus may be outside it), in every layout.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.defaultPrevented || !ui.modelMenuOpen || modalOpen()) return;
+  e.preventDefault();
+  openModelMenu(false);
+  el.composerAgent?.querySelector<HTMLElement>('.model-btn')?.focus();
+});
 
 /** The + menu of the message box: attach a file, add an image, use a skill. */
 function renderComposerMenu(open: boolean): void {
@@ -1676,6 +1814,7 @@ document.addEventListener('click', (e) => {
   // IDE layout: the + menu and the agents panel open over the message box and close on a click elsewhere.
   const clicked = e.target as HTMLElement;
   if (el.composerMenu && !el.composerMenu.hidden && !clicked.closest('#composer-menu, .composer-add')) renderComposerMenu(false);
+  if (ui.modelMenuOpen && clicked.isConnected && !clicked.closest('#model-menu, .model-btn')) openModelMenu(false);
   if (sessionMenu && !clicked.closest('.session-menu, .side-more')) closeSessionMenu();
   if (layout === 'ide' && ui.agentsOpen && clicked.isConnected && !clicked.closest('#agents-panel, .agent-btn, .modal-backdrop, .dialogs')) {
     ui.agentsOpen = false;
@@ -1742,8 +1881,67 @@ document.addEventListener('click', (e) => {
     case 'check-agent':
       post({ type: 'checkAgentCli', id: id! });
       break;
-    case 'login-agent':
-      post({ type: 'loginAgentCli', id: id! });
+    case 'install-cli':
+      closeAddAccount();
+      post({ type: 'installCli', id: id! });
+      break;
+    case 'toggle-accounts':
+      toggleAccounts();
+      break;
+    case 'account-menu':
+      if (target.getAttribute('aria-expanded') === 'true') closeSessionMenu();
+      else openAccountMenu(target);
+      break;
+    case 'add-account':
+      openAddAccount();
+      break;
+    case 'add-account-pick':
+      openAddAccount({ cli: target.dataset.cli, profile: target.dataset.profile });
+      break;
+    case 'add-account-back':
+      openAddAccount();
+      break;
+    case 'add-account-close':
+      // The backdrop closes the popup only when clicked itself, not through the popup.
+      if (target === clicked || target.tagName === 'BUTTON') closeAddAccount();
+      break;
+    case 'check-accounts':
+      accountsChecked = true;
+      post({ type: 'checkAccounts' });
+      break;
+    case 'account-check':
+      closeSessionMenu();
+      post({ type: 'checkAccount', cli: target.dataset.cli!, profile: target.dataset.profile });
+      break;
+    case 'account-login':
+      closeSessionMenu();
+      closeAddAccount();
+      post({ type: 'loginAccount', cli: target.dataset.cli!, profile: target.dataset.profile });
+      break;
+    case 'account-logout':
+      closeSessionMenu();
+      post({ type: 'logoutAccount', cli: target.dataset.cli!, profile: target.dataset.profile });
+      break;
+    case 'account-use-profile':
+      closeSessionMenu();
+      post({ type: 'setClaudeProfile', id: target.dataset.profile ?? '' });
+      break;
+    case 'add-claude-profile':
+      closeAddAccount();
+      post({ type: 'addClaudeProfile' });
+      break;
+    case 'remove-claude-profile':
+      if (target.dataset.profile) post({ type: 'removeClaudeProfile', id: target.dataset.profile });
+      break;
+    case 'open-accounts':
+      closeSessionMenu();
+      ui.view = 'settings';
+      ui.tab = 'accounts';
+      checkAccountsOnce();
+      renderView();
+      break;
+    case 'check-install':
+      post({ type: 'checkInstall', id: id! });
       break;
     case 'pick-agent-exe':
       post({ type: 'pickAgentExecutable', id: id! });
@@ -1758,7 +1956,7 @@ document.addEventListener('click', (e) => {
       post({ type: 'removeCustomAgent', id: id! });
       break;
     case 'agent-link':
-      post({ type: 'openAgentLink', id: id!, link: target.dataset.link === 'terms' ? 'terms' : 'docs' });
+      post({ type: 'openAgentLink', id: id!, link: target.dataset.link === 'terms' ? 'terms' : target.dataset.link === 'faq' ? 'faq' : 'docs' });
       break;
     case 'update-claude-code':
       target.setAttribute('disabled', '');
@@ -1834,6 +2032,30 @@ document.addEventListener('click', (e) => {
     case 'composer-menu':
       renderComposerMenu(!!el.composerMenu?.hidden);
       break;
+    case 'model-menu':
+      openModelMenu(!ui.modelMenuOpen);
+      break;
+    case 'session-model':
+      post({ type: 'setSessionModel', model: target.dataset.model ?? '' });
+      break;
+    case 'session-effort':
+      post({ type: 'setSessionModel', effort: target.dataset.effort ?? '' });
+      break;
+    case 'session-option':
+      // The app checks that the session's agent advertised this option and value.
+      post({ type: 'setSessionModel', option: { id: target.dataset.option ?? '', value: target.dataset.value ?? '' } });
+      break;
+    case 'session-profile':
+      post({ type: 'setSessionModel', profile: target.dataset.profile ?? '' });
+      break;
+    case 'session-model-default':
+      post({ type: 'useModelAsDefault' });
+      break;
+    case 'model-menu-agents':
+      openModelMenu(false);
+      ui.agentsOpen = true;
+      renderAgentsPanel();
+      break;
     case 'attach-file':
       renderComposerMenu(false);
       insertAtCursor('@');
@@ -1855,6 +2077,7 @@ document.addEventListener('click', (e) => {
       ui.agentsOpen = false;
       if (target.dataset.tab) ui.tab = target.dataset.tab as SettingsTab;
       if (ui.tab === 'skills') post({ type: 'reloadSkills' });
+      if (ui.tab === 'accounts') checkAccountsOnce();
       renderView();
       break;
     case 'close-settings':
@@ -1864,6 +2087,7 @@ document.addEventListener('click', (e) => {
     case 'tab':
       ui.tab = target.dataset.tab as SettingsTab;
       if (ui.tab === 'skills') post({ type: 'reloadSkills' });
+      if (ui.tab === 'accounts') checkAccountsOnce();
       renderSettings();
       break;
     case 'toggle-sidebar':
@@ -2393,13 +2617,28 @@ function renderMeta(): void {
   el.send.disabled = !config?.workspaceOpen;
   const u = session.usage;
   const tokens = u
-    ? ` · ${t('{n} in', { n: fmt(u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens) })} · ${t('{n} out', { n: fmt(u.outputTokens) })}${
-        u.cacheReadTokens ? ` · ${t('{n}% cached', { n: Math.round((100 * u.cacheReadTokens) / (u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens)) })}` : ''
-      }`
-    : '';
+    ? [
+        t('{n} in', { n: fmt(u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens) }),
+        t('{n} out', { n: fmt(u.outputTokens) }),
+        ...(u.cacheReadTokens ? [t('{n}% cached', { n: Math.round((100 * u.cacheReadTokens) / (u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens)) })] : []),
+      ]
+    : [];
+  // The model menu's button names the model; without it (no folder open) the line does.
   const main = config?.main.effective;
-  const model = session.model || (main ? modelLabel(main.provider, main.model) : '');
-  el.meta.textContent = `${model}${tokens}`;
+  const model = config?.sessionModel ? '' : session.model || (main ? modelLabel(main.provider, main.model) : '');
+  el.meta.textContent = [model, ...tokens].filter(Boolean).join(' · ');
+  renderContextRing();
+}
+
+/** The context gauge next to the model menu (hidden while the provider has not reported its window). */
+function renderContextRing(): void {
+  if (!el.contextRing) return;
+  const ring = config?.workspaceOpen ? contextRing(session.context, fmt) : undefined;
+  el.contextRing.hidden = !ring;
+  if (!ring) return;
+  el.contextRing.innerHTML = ring.html;
+  el.contextRing.title = ring.title;
+  el.contextRing.setAttribute('aria-label', ring.title);
 }
 
 function renderChrome(): void {
@@ -2485,18 +2724,33 @@ function renderUsage(): void {
 
 // ------------------------------------------------------------------ agents (panel + settings tab)
 
-/** Provider choices; agent CLIs only for the main agent, in a group of their own. */
+/**
+ * Provider choices, CLI-first: local providers (Claude Code, local endpoints) first, then the
+ * model APIs the user set up with a key (one without a key only while it is the one chosen; keys
+ * are added in Settings > Providers). For the main agent, every agent CLI in a group of its own,
+ * also those that are off or not installed: picking one turns it on.
+ */
 function providerOptions(selected: string, allowInherit: boolean, inheritLabel = t('Same as main'), withAgents = false): string {
   const option = (p: ProviderView) =>
     `<option value="${attr(p.kind)}"${p.kind === selected ? ' selected' : ''}>${escapeHtml(p.label)}${
       p.ready ? '' : ` – ${escapeHtml(p.agent ? t('not ready') : t('no key'))}`
     }</option>`;
-  const all = config?.providers ?? [];
-  const options = all.filter((p) => !p.agent).map(option);
-  const agents = withAgents ? all.filter((p) => p.agent) : [];
-  if (agents.length) options.push(`<optgroup label="${attr(t('Agent CLIs'))}">${agents.map(option).join('')}</optgroup>`);
+  const all = (config?.providers ?? []).filter((p) => !p.agent && (p.local || p.ready || p.kind === selected));
+  const options = [...all.filter((p) => p.local), ...all.filter((p) => !p.local)].map(option);
+  if (withAgents) {
+    const agents = (config?.agentClis ?? []).map((a) => agentOption(a, selected)).join('');
+    if (agents) options.push(`<optgroup label="${attr(t('Agent CLIs'))}">${agents}</optgroup>`);
+  }
   if (allowInherit) options.unshift(`<option value="inherit"${selected === 'inherit' ? ' selected' : ''}>${escapeHtml(inheritLabel)}</option>`);
   return options.join('');
+}
+
+/** An agent CLI in the main agent picker, with what keeps it from running now. */
+function agentOption(a: AgentCliView, selected: string): string {
+  const kind = `agent:${a.id}`;
+  const problem =
+    a.status.state === 'not_found' ? t('not installed') : !a.enabled ? t('off') : a.status.state === 'error' || providerView(kind)?.ready === false ? t('not ready') : '';
+  return `<option value="${attr(kind)}"${kind === selected ? ' selected' : ''}>${escapeHtml(a.label)}${problem ? ` (${escapeHtml(problem)})` : ''}</option>`;
 }
 
 /** Model picker grouped by family ("Claude Opus": Opus 5.5, Opus 5, ...), with the selected model always present. */
@@ -2558,9 +2812,16 @@ function mainCard(): string {
       : p?.ready
         ? `<div class="hint ok">${icon('check')}<span>${escapeHtml(p.key?.source === 'env' ? t('Key from {name}', { name: p.key.hint }) : t('API key stored'))}</span></div>`
         : '';
+  // Not one catalog agent CLI was found: say so once, where the main agent is picked.
+  const catalog = (config.agentClis ?? []).filter((a) => !a.custom);
+  const noCli =
+    catalog.length && catalog.every((a) => a.status.state === 'not_found')
+      ? `<div class="hint">${icon('info')}<span>${escapeHtml(t('No agent CLI installed yet.'))}</span><button class="link" data-action="add-account">${escapeHtml(t('Install…'))}</button><button class="link" data-action="open-accounts">${escapeHtml(t('Accounts…'))}</button></div>`
+      : '';
   return `<div class="card">
     <div class="card-head"><strong>${escapeHtml(t('Main agent'))}</strong><span class="muted">${escapeHtml(t('plans, edits, runs'))}</span></div>
     ${pickers(main, false)}
+    ${noCli}
     <div class="field fallback-field"><span class="field-label">${escapeHtml(t('Answer simple questions with'))}</span>${pickers(config.light, true, t('Off'))}</div>
     <div class="field fallback-field"><span class="field-label">${escapeHtml(t('If its limit is reached, continue with'))}</span>${pickers(config.fallback, true, t('Off'))}</div>
     ${status}
@@ -2831,13 +3092,14 @@ function claudeCodeCard(s: SettingsView, cc: ProviderView | undefined): string {
       </div>
       <div class="grid2">
         <label class="field"><span class="field-label">${escapeHtml(t('Default model'))}</span>${providerModelSelect(cc)}</label>
-        <label class="field"><span class="field-label">Effort</span>${select('claudeCode.effort', claudeEfforts(), s.claudeCode.effort, 'Claude Code effort')}</label>
+        ${defaultEffortField('claude-code', s.claudeCode.effort)}
       </div>
       <label class="check"><input type="checkbox" data-setting="claudeCode.autoUpdate"${s.claudeCode.autoUpdate ? ' checked' : ''}><span>${escapeHtml(
         t('Update Claude Code automatically'),
       )}<br><span class="muted">${escapeHtml(t('Runs "claude update" once a day, and right away when a model needs a newer version.'))}</span></span></label>
       <div class="key-row">
         <button class="btn" data-action="check-claude-code">${escapeHtml(t('Test connection'))}</button>
+        <button class="btn" data-action="open-accounts" title="${attr(t('Sign in and out in Settings > Accounts.'))}">${icon('user')}${escapeHtml(t('Accounts…'))}</button>
         <button class="btn" data-action="update-claude-code"${s.claudeCode.updating || st.state === 'not_found' ? ' disabled' : ''}>${escapeHtml(s.claudeCode.updating ? t('Updating…') : t('Update'))}</button>
       </div>
       ${notice}
@@ -2879,13 +3141,14 @@ function agentClisSection(): string {
         }
         <div class="key-row">
           <button class="btn" data-action="check-agent" ${id}>${escapeHtml(t('Check'))}</button>
-          ${a.loginCommand ? `<button class="btn" data-action="login-agent" ${id} title="${attr(t('Opens {command} in a terminal; you sign in there, Orka never sees it.', { command: a.loginCommand }))}">${escapeHtml(t('Sign in…'))}</button>` : ''}
+          ${a.custom ? '' : `<button class="btn" data-action="open-accounts" title="${attr(t('Sign in and out in Settings > Accounts.'))}">${icon('user')}${escapeHtml(t('Accounts…'))}</button>`}
           ${a.custom ? `<button class="btn danger-outline" data-action="remove-custom-agent" ${id}>${escapeHtml(t('Remove'))}</button>` : ''}
         </div>`
       : '';
     const links = [
       a.docsUrl ? `<button class="link" data-action="agent-link" data-link="docs" ${id}>${escapeHtml(t('Docs'))}</button>` : '',
       a.termsUrl ? `<button class="link" data-action="agent-link" data-link="terms" ${id}>${escapeHtml(t('Terms'))}</button>` : '',
+      a.faqUrl ? `<button class="link" data-action="agent-link" data-link="faq" ${id}>${escapeHtml(t('FAQ'))}</button>` : '',
     ].join('');
     return `<div class="card">
       <div class="card-head"><strong>${escapeHtml(a.label)}</strong>${a.preview ? `<span class="tag">${escapeHtml(t('preview'))}</span>` : ''}${a.custom ? `<span class="tag sub">${escapeHtml(t('yours'))}</span>` : ''}<span class="spacer"></span>${state(a)}</div>
@@ -2908,11 +3171,18 @@ function agentClisSection(): string {
     </div>`;
 }
 
-const claudeEfforts = (): Array<[string, string]> => [['', t('CLI default')], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']];
+/**
+ * A provider's default effort, for sessions started later: each session picks its own in the
+ * message box's model menu, whose "Use as default" changes this.
+ */
+function defaultEffortField(provider: string, value: string): string {
+  return `<div class="field"><span class="field-label">${escapeHtml(t('Default effort'))}</span><span class="muted small">${escapeHtml(
+    t('{value} · change it from the model menu in the message box', { value: effortLabel(provider, value) }),
+  )}</span></div>`;
+}
 
 function providersTab(s: SettingsView): string {
   const byKind = (k: string) => config!.providers.find((p) => p.kind === k)!;
-  const levels: Array<[string, string]> = [['', t('model default')], ['low', 'low'], ['medium', 'medium'], ['high', 'high']];
   const claude = byKind('claude');
   const gemini = byKind('gemini');
   const openai = byKind('openai');
@@ -2935,7 +3205,7 @@ function providersTab(s: SettingsView): string {
       ${keyRow(claude)}
       <div class="grid2">
         ${modelField(claude)}
-        <label class="field"><span class="field-label">Effort</span>${select('claude.effort', claudeEfforts().slice(1), s.claude.effort, 'Claude effort')}</label>
+        ${defaultEffortField('claude', s.claude.effort)}
       </div>
       <label class="check"><input type="checkbox" data-setting="claude.refusalFallback"${s.claude.refusalFallback ? ' checked' : ''}><span>${escapeHtml(
         t('Retry declined requests on a fallback model'),
@@ -2948,7 +3218,7 @@ function providersTab(s: SettingsView): string {
       ${keyRow(gemini)}
       <div class="grid2">
         ${modelField(gemini)}
-        <label class="field"><span class="field-label">${escapeHtml(t('Thinking'))}</span>${select('gemini.thinkingLevel', levels, s.gemini.thinkingLevel, t('Thinking'))}</label>
+        ${defaultEffortField('gemini', s.gemini.thinkingLevel)}
       </div>
     </div>
     <div class="card">
@@ -2957,7 +3227,7 @@ function providersTab(s: SettingsView): string {
       <label class="field"><span class="field-label">${escapeHtml(t('Base URL (OpenAI-compatible)'))}</span><input class="mono" type="text" data-setting="openai.baseUrl" value="${attr(s.openai.baseUrl)}" spellcheck="false"></label>
       <div class="grid2">
         ${modelField(openai)}
-        <label class="field"><span class="field-label">Reasoning</span>${select('openai.reasoningEffort', levels, s.openai.reasoningEffort, 'OpenAI reasoning effort')}</label>
+        ${defaultEffortField('openai', s.openai.reasoningEffort)}
       </div>
     </div>
     ${customProvidersSection(s)}
@@ -3237,13 +3507,24 @@ function renderSettings(): void {
   const scroll = el.settings.scrollTop;
   const tabs: Array<[SettingsTab, string]> = [
     ['agents', 'Agents'],
+    ['accounts', t('Accounts')],
     ['providers', 'Providers'],
     ['skills', 'Skills'],
     ['mcp', 'MCP'],
     ['control', t('Control')],
   ];
   const body =
-    ui.tab === 'agents' ? agentsHtml() : ui.tab === 'providers' ? providersTab(config.settings) : ui.tab === 'skills' ? skillsTab() : ui.tab === 'mcp' ? mcpTab() : controlTab(config.settings);
+    ui.tab === 'agents'
+      ? agentsHtml()
+      : ui.tab === 'accounts'
+        ? accountsTabHtml(config.accounts ?? [])
+        : ui.tab === 'providers'
+          ? providersTab(config.settings)
+          : ui.tab === 'skills'
+            ? skillsTab()
+            : ui.tab === 'mcp'
+              ? mcpTab()
+              : controlTab(config.settings);
   el.settings.innerHTML = `
     <nav class="tabs" role="tablist">${tabs
       .map(([id, label]) => `<button role="tab" aria-selected="${ui.tab === id}" class="${ui.tab === id ? 'on' : ''}" data-action="tab" data-tab="${id}">${escapeHtml(label)}</button>`)
@@ -3511,6 +3792,13 @@ function noticeAction(action?: string): string {
     return agent
       ? `<button class="btn primary small" data-action="handoff" data-agent="${attr(agent.id)}">${icon('handoff')}${escapeHtml(t('Continue in {agent}', { agent: agent.label }))}</button>`
       : '';
+  }
+  // Install a CLI (Orka asks first, with the command), or look again whether it is there now.
+  if (action?.startsWith('install:')) {
+    return `<button class="btn primary small" data-action="install-cli" data-id="${attr(action.slice('install:'.length))}">${escapeHtml(t('Install…'))}</button>`;
+  }
+  if (action?.startsWith('checkInstall:')) {
+    return `<button class="btn small" data-action="check-install" data-id="${attr(action.slice('checkInstall:'.length))}">${escapeHtml(t('Check again'))}</button>`;
   }
   if (action === 'claudeUpdate') {
     const updating = config?.settings.claudeCode.updating;
@@ -3867,6 +4155,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       renderChrome();
       renderAgentsPanel();
       renderSidebar();
+      renderAddAccount();
       if (!(typing && el.settings.contains(active))) renderSettings();
       if (!session.items.length) renderTranscript();
       // Radar's model pickers list the providers.
@@ -3939,6 +4228,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       ui.view = 'settings';
       if (message.tab) ui.tab = message.tab;
       if (ui.tab === 'skills') post({ type: 'reloadSkills' });
+      if (ui.tab === 'accounts') checkAccountsOnce();
       renderView();
       break;
     case 'event':

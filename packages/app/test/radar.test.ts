@@ -248,9 +248,10 @@ describe('Radar (desktop)', () => {
     assert.deepEqual(readSettings(folderScoped).radar, { enabled: false, provider: '', model: '', autoAnalyze: false }, "a folder's settings cannot turn it on or pick its provider");
     const userScoped = Object.assign(new MemorySettings({ ...values }), { scopeOf: () => 'user' as const });
     assert.deepEqual(readSettings(userScoped).radar, { enabled: true, provider: 'openai', model: 'gpt-6-sol', autoAnalyze: true });
-    // Only a real true turns it on; an agent CLI or Claude Code is never its provider.
+    // Only a real true turns it on; an agent CLI is never its provider, Claude Code only once it is turned on.
     const odd = readSettings(new MemorySettings({ 'radar.enabled': 'true', 'radar.autoAnalyze': 1, 'radar.provider': 'claude-code', 'claudeCode.enabled': true }));
-    assert.deepEqual([odd.radar.enabled, odd.radar.autoAnalyze, odd.radar.provider], [false, false, '']);
+    assert.deepEqual([odd.radar.enabled, odd.radar.autoAnalyze, odd.radar.provider], [false, false, 'claude-code']);
+    assert.equal(readSettings(new MemorySettings({ 'radar.provider': 'claude-code' })).radar.provider, '');
     assert.equal(readSettings(new MemorySettings({ 'radar.provider': 'agent:gemini', 'agentClis.enabled': ['gemini'] })).radar.provider, '');
     for (const key of RADAR_SETTINGS) assert.ok(USER_LEVEL_SETTINGS.has(key) && DESKTOP_SETTINGS.has(key) && WEBVIEW_SETTINGS[key], key);
   });
@@ -372,38 +373,53 @@ describe('Radar (desktop)', () => {
     assert.deepEqual(shell.opened, [url]);
   });
 
-  it('never runs on an agent CLI or Claude Code', async () => {
+  it('never runs on an agent CLI, nor on Claude Code before its check passed', async () => {
     const fakeAgent = path.resolve(__dirname, '..', '..', '..', 'core', 'test', 'fixtures', 'fake-acp.mjs');
     const { shell, controller, view } = await polled({
-      provider: 'claude-code',
+      provider: 'agent:custom:fake',
       'claudeCode.enabled': true,
       // No real Claude Code is looked for: the check fails at once.
       'claudeCode.path': path.join(home, 'no-claude.exe'),
       'agentClis.enabled': ['custom:fake'],
       'agentClis.custom': [{ name: 'Fake', command: process.execPath, args: [fakeAgent] }],
     });
-    for (const value of ['claude-code', 'agent:custom:fake', 'custom:nope'])
-      await controller.handleMessage({ type: 'setSetting', key: 'radar.provider', value });
+    for (const value of ['agent:custom:fake', 'custom:nope']) await controller.handleMessage({ type: 'setSetting', key: 'radar.provider', value });
     assert.equal(shell.settings.isSet('radar.provider'), false, 'the picker values are refused');
-    // The main agent runs on Claude Code: Radar does not follow it there.
-    assert.deepEqual([view().model, view().modelProblem], [undefined, 'Pick a provider and model for Radar.']);
-    // A hand-edited settings file is not trusted either (and the local endpoint shows it would work).
+    // The main agent is an agent CLI and Claude Code is not found: the model API with no key needed.
+    assert.deepEqual([view().model?.provider, view().model?.inherited], ['custom:local', true]);
+    // A hand-edited settings file is not trusted either.
     const settled = async (change: () => Promise<void>) => {
       const seen = shell.posted.length;
       await change();
       await until(() => shell.posted.slice(seen).some((m) => m.type === 'radar'), 'the next state');
     };
-    await settled(() => shell.settings.update('radar.provider', 'custom:local'));
-    assert.equal(view().model?.provider, 'custom:local');
-    for (const value of ['claude-code', 'agent:custom:fake']) {
-      await settled(() => shell.settings.update('radar.provider', value));
-      assert.equal(view().model, undefined, value);
-    }
-    await settled(() => shell.settings.update('provider', 'agent:custom:fake'));
-    assert.equal(view().model, undefined, 'nor an agent CLI as the main agent');
+    await settled(() => shell.settings.update('radar.provider', 'agent:custom:fake'));
+    assert.equal(view().model?.provider, 'custom:local', 'an agent CLI is no choice: back to automatic');
+    // Claude Code chosen, but its check did not pass: Radar says so and does not run.
+    await settled(() => shell.settings.update('radar.provider', 'claude-code'));
+    assert.deepEqual([view().model, view().modelProblem], [undefined, 'Claude Code (local) is not ready.']);
     await controller.handleMessage({ type: 'radar', action: 'analyze' });
     assert.equal(model.requests.length, 0);
-    assert.deepEqual([view().pending, view().error], [1, 'Pick a provider and model for Radar.']);
+    assert.deepEqual([view().pending, view().error], [1, 'Claude Code (local) is not ready.']);
+  });
+
+  it('runs on a ready Claude Code by default (CLI-first), only when asked, never on its own after a check', async () => {
+    // Node stands in for a logged-in claude: "--version" answers and there is no "auth status" to say otherwise.
+    const { shell, controller, timers, view } = await start({
+      'radar.enabled': true,
+      ...localProvider(),
+      'claudeCode.enabled': true,
+      'claudeCode.path': process.execPath,
+      'radar.autoAnalyze': true,
+    });
+    await until(() => shell.last('config')?.config.settings.claudeCode.status.state === 'ready', 'the Claude Code check');
+    timers.fire();
+    await until(() => view().pending === 1 && !view().polling, 'the poll');
+    await tick();
+    assert.deepEqual([view().model?.provider, view().model?.inherited], ['claude-code', true], 'before the model API that needs no key');
+    assert.deepEqual([view().pending, view().analysis, model.requests.length], [1, undefined, 0], 'automatic analysis waits for a click with Claude Code');
+    await controller.handleMessage({ type: 'setSetting', key: 'radar.provider', value: 'claude-code' });
+    assert.equal(shell.settings.data['radar.provider'], 'claude-code', 'it can be picked');
   });
 
   it('turned off, it stops the timer and the poll that runs', async () => {
@@ -448,7 +464,8 @@ describe('Radar (desktop)', () => {
     await main.controller.handleMessage({ type: 'customModel', agent: 'radar' });
     assert.deepEqual([main.shell.settings.data['radar.provider'], main.shell.settings.data['radar.model']], ['custom:local', 'fake-2']);
     // Never for a provider Radar cannot run on.
-    const cli = await start({ 'radar.enabled': true, provider: 'claude-code', 'claudeCode.enabled': true, 'claudeCode.path': path.join(home, 'no-claude.exe') });
+    const fakeAgent = { name: 'Fake', command: process.execPath };
+    const cli = await start({ 'radar.enabled': true, provider: 'agent:custom:fake', 'agentClis.enabled': ['custom:fake'], 'agentClis.custom': [fakeAgent] });
     cli.shell.inputAnswer = 'opus';
     await cli.controller.handleMessage({ type: 'customModel', agent: 'radar' });
     assert.deepEqual([cli.shell.inputs.length, cli.shell.settings.isSet('radar.model')], [0, false]);
@@ -618,7 +635,7 @@ describe('Radar panel', () => {
     ...patch,
   });
 
-  it('lists the hosts while off, and offers only model providers', () => {
+  it('lists the hosts while off, and offers Claude Code first, then model providers', () => {
     const off = radarPanelHtml(view({ enabled: false }), undefined, deps);
     assert.match(off, /data-action="radar-switch" data-on="true"/);
     assert.match(off, /<code>github\.com<\/code>/);
@@ -627,8 +644,13 @@ describe('Radar panel', () => {
 
     const on = radarPanelHtml(view({ model: { provider: 'claude', model: 'claude-opus-5-5', label: 'Claude API', inherited: true } }), undefined, deps);
     const options = [...on.matchAll(/<option value="([^"]*)"/g)].map((m) => m[1]);
-    assert.deepEqual(options.filter((o) => o !== 'x'), ['', 'claude', 'custom:local'], 'no agent CLI, no Claude Code');
+    assert.deepEqual(options.filter((o) => o !== 'x'), ['', 'claude-code', 'claude', 'custom:local'], 'no agent CLI');
     assert.match(on, /data-action="radar-analyze">/, 'Analyze is offered');
+    // A model API without a key is offered only while it is the one chosen.
+    const keyless = { ...deps, providers: [...providers, { kind: 'openai', label: 'OpenAI', local: false, ready: false, models: [], model: 'gpt-6-sol' }] };
+    const values = (radar: RadarView) => [...radarPanelHtml(radar, undefined, keyless).matchAll(/<option value="([^"]*)"/g)].map((m) => m[1]).filter((o) => o !== 'x');
+    assert.ok(!values(view()).includes('openai'));
+    assert.ok(values(view({ choice: { provider: 'openai', model: '' } })).includes('openai'));
   });
 
   it('escapes everything the report holds and links only https pages', () => {
@@ -694,6 +716,23 @@ describe('Radar panel', () => {
     assert.match(auto, /<input type="checkbox" data-setting="radar\.autoAnalyze" checked>/, 'and it can be turned off before Radar is turned on');
     assert.match(radarSettingsCard(view({ enabled: false, autoAnalyze: true }), true), /data-setting="radar\.autoAnalyze" checked>/, 'in Settings too');
     assert.match(radarSettingsCard(view({ enabled: false }), true), /data-setting="radar\.autoAnalyze" disabled>/);
+  });
+
+  it('names no API key when Claude Code runs the analysis, and says it waits for a click', () => {
+    const claude = { provider: 'claude-code', model: '', label: 'Claude Code', inherited: false };
+    for (const autoAnalyze of [false, true]) {
+      const html = radarPanelHtml(view({ enabled: false, autoAnalyze, model: claude }), undefined, deps);
+      assert.doesNotMatch(html, /API key/, `autoAnalyze ${autoAnalyze}`);
+      assert.match(html, /An analysis runs only when you click Analyze, on Claude Code with your own sign-in, as a plain model with no tools\./);
+    }
+    const api = radarPanelHtml(view({ enabled: false, model: { provider: 'anthropic', model: '', label: 'Claude API', inherited: true } }), undefined, deps);
+    assert.match(api, /on your own provider and API key\./);
+    // Once on, the Auto analyze check says it is paused on Claude Code, in the panel and in Settings.
+    const paused = /Paused while Radar runs on Claude Code: it analyzes only when you click Analyze\./;
+    assert.match(radarPanelHtml(view({ autoAnalyze: true, model: claude }), undefined, deps), paused);
+    assert.match(radarSettingsCard(view({ autoAnalyze: true, model: claude }), true), paused);
+    assert.doesNotMatch(radarSettingsCard(view({ autoAnalyze: false, model: claude }), true), paused);
+    assert.doesNotMatch(radarPanelHtml(view({ autoAnalyze: true, model: { ...claude, provider: 'anthropic' } }), undefined, deps), paused);
   });
 
   it('keeps its settings card the same while a check or an analysis runs (Settings > Control is not rebuilt for it)', () => {

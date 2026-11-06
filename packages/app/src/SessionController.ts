@@ -1,5 +1,6 @@
 import {
   type AgentEvent,
+  type AgentOption,
   type AIProvider,
   type ApprovalRequest,
   type ApprovalResponse,
@@ -43,6 +44,7 @@ import { promises as fs, realpathSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import type { ConfigView, EditorSelection, HunkView, ImageAttachment, SessionMessage, SessionPost, ToWebview } from './protocol';
 import type { RunGate } from './runGate';
+import { readChoice, type SessionChoice } from './sessionModel';
 import { type AppSettings, readMcpServers } from './settings';
 import type { AppShell, StateStore, TerminalHandle } from './shell';
 import { WorkspaceFiles } from './workspaceFiles';
@@ -77,7 +79,8 @@ export interface SessionContext {
   isActive(session: SessionController): boolean;
   /** Show this session (the user chose "Show" on its approval notice). */
   show(session: SessionController): void;
-  providerFor(name: string): AIProvider;
+  /** The provider of a role ("main", "supervisor", a sub-agent, "light", "fallback") for this session's runs. */
+  providerFor(name: string, session: SessionController): AIProvider;
   /** The agent CLI that runs the main agent's turns in this folder, when the main agent is one. */
   externalAgent(root: string): ExternalAgentRuntime | undefined;
   /** Tools of the MCP servers this session may use (started on demand). */
@@ -103,8 +106,22 @@ export interface SessionContext {
   userSaved(session: SessionController, real: string, before: string, after: string): void;
   /** A run of this session ended (providers waiting for an idle moment are rebuilt). */
   runFinished(session: SessionController): void;
-  /** Which sessions may run at once (the process budget and the folder lock). */
+  /** Which sessions may run at once (the process budget, the folder lock and one profile per CLI). */
   readonly gate: RunGate;
+  /** The CLI account profiles a run of this session would use now ("claude-code:<profile>"), for the gate. */
+  runAccounts(session: SessionController): string[];
+  /** The model menu's choice for a new session: a copy of the settings. */
+  defaultChoice(): SessionChoice;
+  /** This session's model menu choice, checked against the main agent's provider and the profiles there are now. */
+  sessionChoice(session: SessionController): SessionChoice;
+  /** The model menu changed this session's model, effort, profile or an agent option. */
+  setSessionModel(session: SessionController, change: Extract<SessionMessage, { type: 'setSessionModel' }>): Promise<void>;
+  /** The agent CLI of this session advertised new choices (the model menu shows them). */
+  agentOptionsChanged(session: SessionController): void;
+  /** "Use as default": this session's choice becomes the settings' default for new sessions. */
+  useModelAsDefault(session: SessionController): Promise<void>;
+  /** "Claude Code (Work)" for "claude-code:work", for notices. */
+  accountLabel(account: string): string;
 }
 
 /**
@@ -157,6 +174,15 @@ export class SessionController {
   private readonly saving = new Map<string, Promise<void>>();
   /** When the page last showed this session (the least recently used idle one is closed first). */
   lastActive = Date.now();
+  /**
+   * The model menu's choice: copied from the settings when the session starts and changed by the
+   * menu only, so "Use as default" in another session never changes it.
+   */
+  choice: SessionChoice;
+  /** The choice the running (or last) request started with: a change made meanwhile applies from the next one. */
+  runChoice?: SessionChoice;
+  /** The model and thought-level choices the main agent's agent CLI (`agent`: its id) last advertised. */
+  agentOptions?: { agent: string; options: AgentOption[] };
 
   constructor(
     private readonly ctx: SessionContext,
@@ -164,6 +190,7 @@ export class SessionController {
   ) {
     const shell = ctx.shell;
     const settings = ctx.settings();
+    this.choice = ctx.defaultChoice();
     this.host = shell.createHost({
       root: folder,
       shell: settings.shell,
@@ -181,22 +208,24 @@ export class SessionController {
     const session = this;
     this.orchestrator = new Orchestrator({
       host: this.host,
-      getProvider: () => ctx.providerFor('main'),
+      getProvider: () => ctx.providerFor('main', this),
       getExternalAgent: () => ctx.externalAgent(this.root),
+      // Read per prompt: the choice the request started with.
+      getAgentChoices: () => this.runChoice?.options,
       getExtraTools: () => ctx.mcpTools(this),
-      getLightProvider: () => (ctx.settings().light.provider === 'inherit' ? undefined : ctx.providerFor('light')),
+      getLightProvider: () => (ctx.settings().light.provider === 'inherit' ? undefined : ctx.providerFor('light', this)),
       get commandSnapshots() {
         return ctx.settings().trackCommandChanges ? session.snapshots : undefined;
       },
-      getFallbackProvider: () => (ctx.settings().fallback.provider === 'inherit' ? undefined : ctx.providerFor('fallback')),
+      getFallbackProvider: () => (ctx.settings().fallback.provider === 'inherit' ? undefined : ctx.providerFor('fallback', this)),
       permissions: this.permissions,
       getSettings: () => this.orchestratorSettings(),
       subagents: {
         getProfiles: () => (ctx.settings().subagents.enabled ? DEFAULT_SUBAGENTS : []),
-        getProvider: (name) => ctx.providerFor(name),
+        getProvider: (name) => ctx.providerFor(name, this),
       },
       supervisor: {
-        getProvider: () => ctx.providerFor('supervisor'),
+        getProvider: () => ctx.providerFor('supervisor', this),
         // Next to an agent CLI the Supervisor needs a model; without one it sits out (send() says so).
         getSettings: () => ({ ...ctx.settings().supervisor, enabled: ctx.settings().supervisor.enabled && !ctx.inheritsNoModel('supervisor') }),
       },
@@ -333,6 +362,12 @@ export class SessionController {
         break;
       case 'initMemory':
         await this.initMemory();
+        break;
+      case 'setSessionModel':
+        await this.ctx.setSessionModel(this, message);
+        break;
+      case 'useModelAsDefault':
+        await this.ctx.useModelAsDefault(this);
         break;
     }
   }
@@ -527,20 +562,26 @@ export class SessionController {
    * sessions run or another one works in an overlapping folder (the session says so).
    */
   private startRun(): (() => void) | undefined {
-    const gate = this.ctx.gate.acquire(this.id, this.root);
+    // The request runs on the menu's choice as it is now; a change made while it runs waits for the next one.
+    if (!this.isRunning) this.runChoice = this.ctx.sessionChoice(this);
+    const gate = this.ctx.gate.acquire(this.id, this.root, this.ctx.runAccounts(this));
     if (gate.ok) return gate.release;
     this.publishNotice(
       'warning',
-      gate.reason === 'budget'
-        ? tn(
-            '{n} session is already running (the limit is {max}, in Settings > Control). Wait for it to finish or stop it.',
-            '{n} sessions are already running (the limit is {max}, in Settings > Control). Wait for one to finish or stop one.',
-            gate.running,
-            { max: gate.max },
-          )
-        : t('Another session is working in {folder}, which overlaps this folder. Orka runs one session at a time there.', {
-            folder: path.basename(gate.holder) || gate.holder,
-          }),
+      gate.reason === 'account'
+        ? t('Another session runs {account}. Orka runs one profile of a CLI at a time: wait for it to finish or stop it, or switch back to that profile.', {
+            account: this.ctx.accountLabel(gate.account),
+          })
+        : gate.reason === 'budget'
+          ? tn(
+              '{n} session is already running (the limit is {max}, in Settings > Control). Wait for it to finish or stop it.',
+              '{n} sessions are already running (the limit is {max}, in Settings > Control). Wait for one to finish or stop one.',
+              gate.running,
+              { max: gate.max },
+            )
+          : t('Another session is working in {folder}, which overlaps this folder. Orka runs one session at a time there.', {
+              folder: path.basename(gate.holder) || gate.holder,
+            }),
     );
     return undefined;
   }
@@ -922,6 +963,7 @@ export class SessionController {
       createdAt: this.task.createdAt,
       updatedAt: new Date().toISOString(),
       ...state,
+      modelChoice: this.choice,
       // The model history keeps full tool results; the replayed chat only needs a readable copy.
       view: slimSession(this.session),
     };
@@ -950,6 +992,9 @@ export class SessionController {
     }
     orchestrator.restore(snapshot);
     this.task = { id: snapshot.id, createdAt: snapshot.createdAt };
+    // The task goes on with the model and effort it ran on (checked against the settings when used).
+    const choice = readChoice(snapshot.modelChoice);
+    if (choice) this.choice = choice;
     this.session = isSessionView(snapshot.view) ? { ...snapshot.view, running: false } : emptySession();
     this.session.usageByAgent = snapshot.usageByAgent;
     this.postInit();
@@ -1134,6 +1179,12 @@ export class SessionController {
 
   private onEvent(event: AgentEvent): void {
     if (event.type === 'reset') this.session = emptySession();
+    // The agent CLI's choices outlive a new task: the menu offers them before its first prompt.
+    if (event.type === 'agent_options') {
+      this.agentOptions = { agent: event.agent, options: event.options };
+      this.ctx.agentOptionsChanged(this);
+      return;
+    }
     applyEvent(this.session, event);
     this.post({ type: 'event', event });
     this.ctx.agentEvent(event);

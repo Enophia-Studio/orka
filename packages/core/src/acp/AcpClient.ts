@@ -1,5 +1,7 @@
 import { JsonRpcError, JsonRpcStdio, RPC_INVALID_PARAMS, RPC_METHOD_NOT_FOUND } from '../rpc/JsonRpcStdio';
+import type { AgentOption } from '../orchestrator/events';
 import { VERSION } from '../version';
+import { readConfigOptions } from './configOptions';
 import {
   ACP_PROTOCOL_VERSION,
   ACP_RESOURCE_NOT_FOUND,
@@ -142,14 +144,28 @@ export class AcpClient {
   }
 
   /** Open a session in `cwd`; its requests go to `handlers` until forgetSession. Aborting `signal` stops waiting at once. */
-  async newSession(cwd: string, handlers: AcpSessionHandlers, signal?: AbortSignal): Promise<string> {
+  async newSession(cwd: string, handlers: AcpSessionHandlers, signal?: AbortSignal): Promise<{ sessionId: string; options: AgentOption[] }> {
     await this.start(signal);
     // No MCP servers are passed on: the agent uses the ones its own configuration names.
-    const result = await this.rpc.request<{ sessionId?: unknown }>('session/new', { cwd, mcpServers: [] }, { timeoutMs: this.options.startTimeoutMs ?? START_TIMEOUT_MS, signal });
+    const result = await this.rpc.request<{ sessionId?: unknown; configOptions?: unknown }>('session/new', { cwd, mcpServers: [] }, { timeoutMs: this.options.startTimeoutMs ?? START_TIMEOUT_MS, signal });
     const sessionId = result?.sessionId;
     if (typeof sessionId !== 'string' || !sessionId) throw new Error(`${this.spec.label} did not return a session id.`);
     this.sessions.set(sessionId, handlers);
-    return sessionId;
+    // The model and thought-level choices the agent advertised (none: the menu says "Set in the agent").
+    return { sessionId, options: readConfigOptions(result?.configOptions) };
+  }
+
+  /**
+   * Set one of the session's config options; the caller checked that the agent advertised the
+   * option and lists the value. Returns the options as the agent's answer lists them.
+   */
+  async setConfigOption(sessionId: string, configId: string, value: string): Promise<AgentOption[]> {
+    const result = await this.rpc.request<{ configOptions?: unknown }>(
+      'session/set_config_option',
+      { sessionId, configId, value },
+      { timeoutMs: this.options.startTimeoutMs ?? START_TIMEOUT_MS },
+    );
+    return readConfigOptions(result?.configOptions);
   }
 
   forgetSession(sessionId: string): void {

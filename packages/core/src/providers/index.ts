@@ -94,7 +94,7 @@ export type ProviderConfig =
   | { kind: 'claude'; apiKey: string; model?: string; effort?: ClaudeEffort; refusalFallback?: boolean }
   | { kind: 'openai'; apiKey: string; model?: string; baseURL?: string; reasoningEffort?: 'low' | 'medium' | 'high' }
   | { kind: 'gemini'; apiKey: string; model?: string; thinkingLevel?: 'low' | 'medium' | 'high'; baseURL?: string }
-  | { kind: 'claude-code'; model?: string; effort?: ClaudeEffort; executable?: string }
+  | { kind: 'claude-code'; model?: string; effort?: ClaudeEffort; executable?: string; configDir?: string }
   /** Any OpenAI-compatible endpoint the user adds (OpenRouter, DeepSeek, Ollama, ...). */
   | { kind: 'custom'; id: string; label: string; baseURL: string; apiKey?: string; model?: string };
 

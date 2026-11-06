@@ -3,7 +3,8 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { AcpClient, type AcpLaunchSpec, type AcpSessionHandlers, safeEnv } from '../src/acp/AcpClient';
-import { checkAgentCli, customAgentEntry, resolveAgentExecutable } from '../src/acp/catalog';
+import { agentCli, checkAgentCli, customAgentEntry, resolveAgentExecutable, tooOldForAcp } from '../src/acp/catalog';
+import { pendingChoices, readConfigOptions, readContextFill } from '../src/acp/configOptions';
 import { actionFor, commandOf } from '../src/acp/mapping';
 import { AcpAgentPool } from '../src/acp/pool';
 import { commandLine } from '../src/acp/terminals';
@@ -125,7 +126,7 @@ describe('ACP client (fake agent)', () => {
       readTextFile: async (p) => ({ content: readFileSync(p.path, 'utf8').split('\n').slice((p.line ?? 1) - 1, (p.line ?? 1) - 1 + (p.limit ?? 99)).join('\n') }),
       requestPermission: async (p) => ({ outcome: 'selected', optionId: p.options.find((o) => o.kind === 'allow_once')!.optionId }),
     });
-    const sessionId = await c.newSession(ws.root, handlers);
+    const { sessionId } = await c.newSession(ws.root, handlers);
     assert.equal(sessionId, 'sess-1');
     assert.equal(logged().find((e) => e.event === 'session/new').params.cwd, ws.root);
     assert.deepEqual(logged().find((e) => e.event === 'session/new').params.mcpServers, []);
@@ -139,7 +140,7 @@ describe('ACP client (fake agent)', () => {
 
   it('sends session/cancel when the prompt is aborted', async () => {
     const c = client(spec([[{ chunk: 'working' }, { hang: true }]]));
-    const sessionId = await c.newSession(ws.root, fakeHandlers({}));
+    const { sessionId } = await c.newSession(ws.root, fakeHandlers({}));
     const abort = new AbortController();
     const running = c.prompt(sessionId, [{ type: 'text', text: 'go' }], abort.signal);
     await waitFor(() => logged().some((e) => e.event === 'prompt'));
@@ -326,6 +327,20 @@ describe('ACP helpers', () => {
     const custom = customAgentEntry({ name: 'My Agent!', command: 'my-agent', args: ['--acp'] });
     assert.deepEqual([custom.id, custom.policy, custom.acpArgs], ['custom:my-agent', 'custom', ['--acp']]);
   });
+
+  it('reports an installed agent older than its ACP mode as an error that names the update command', async () => {
+    const node = { ...customAgentEntry({ name: 'Node', command: process.execPath }), versionArgs: ['--version'] };
+    const old = await checkAgentCli({ ...node, minVersion: { version: '999.0.0', updateHint: 'node update' } });
+    assert.equal(old.state, 'error');
+    assert.match(old.version ?? '', /^\d+\.\d+/, 'the version found is still reported');
+    assert.match(old.detail ?? '', /^Node \d+\.\d+\S* has no ACP mode yet; version 999\.0\.0 or newer is needed\. Update it with "node update"\.$/);
+    assert.equal((await checkAgentCli({ ...node, minVersion: { version: '1.0.0', updateHint: 'node update' } })).state, 'ready');
+
+    const agy = agentCli('antigravity')!;
+    assert.match(tooOldForAcp(agy, '1.4.7') ?? '', /Antigravity CLI 1\.4\.7 has no ACP mode yet; version 1\.5\.0 or newer is needed\. Update it with "agy update"\./);
+    for (const version of ['1.5.0', '1.5.1', '2.0.0', undefined]) assert.equal(tooOldForAcp(agy, version), undefined, String(version));
+    assert.equal(tooOldForAcp(agentCli('codex')!, '0.0.1'), undefined, 'no minimum, no check');
+  });
 });
 
 function pick(action: ReturnType<typeof actionFor>): [string, string, boolean] {
@@ -354,3 +369,32 @@ async function waitFor(condition: () => boolean, timeoutMs = 5000): Promise<void
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+
+describe('ACP session config options', () => {
+  it('keeps select options of the model and thought-level kinds, well formed only', () => {
+    const options = readConfigOptions([
+      { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'a', options: [{ value: 'a', name: 'A' }, { value: 'b<script>', name: 'bad' }] },
+      { id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'x', options: [{ value: 'x', name: 'X' }] },
+      { id: 'flag', name: 'Flag', category: 'thought_level', type: 'boolean', currentValue: true },
+      { id: 'think', category: 'thought_level', type: 'select', currentValue: 'gone', options: [{ value: 'low', name: 'Low' }] },
+      'junk',
+    ]);
+    assert.deepEqual(options, [{ id: 'model', name: 'Model', category: 'model', currentValue: 'a', options: [{ value: 'a', name: 'A' }] }]);
+    assert.deepEqual(readConfigOptions(undefined), []);
+  });
+
+  it('sends only advertised options with listed values that differ from the current one', () => {
+    const options = readConfigOptions([{ id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'a', options: [{ value: 'a' }, { value: 'b' }] }]);
+    assert.deepEqual(pendingChoices(options, { model: 'b', other: 'b' }), [{ id: 'model', value: 'b' }]);
+    assert.deepEqual(pendingChoices(options, { model: 'a' }), []);
+    assert.deepEqual(pendingChoices(options, { model: 'c' }), []);
+    assert.deepEqual(pendingChoices(options, undefined), []);
+    assert.deepEqual(pendingChoices(options, Object.create({ model: 'b' })), [], 'inherited keys are not choices');
+  });
+
+  it('reads how full the context is from a usage_update', () => {
+    assert.deepEqual(readContextFill({ sessionUpdate: 'usage_update', used: 10, size: 100 }), { used: 10, size: 100 });
+    assert.equal(readContextFill({ used: 10, size: 0 }), undefined);
+    assert.equal(readContextFill({ used: '10', size: 100 }), undefined);
+  });
+});
