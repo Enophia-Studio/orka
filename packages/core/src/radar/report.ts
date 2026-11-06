@@ -352,7 +352,8 @@ export function radarLinkTarget(url: string | undefined): string | undefined {
   }
 }
 
-function kindLabel(kind: RadarItemKind): string {
+/** An item's kind in the UI language (also used by the Markdown notes). */
+export function kindLabel(kind: RadarItemKind): string {
   switch (kind) {
     case 'feature':
       return t('feature');
@@ -369,7 +370,8 @@ function kindLabel(kind: RadarItemKind): string {
   }
 }
 
-function stoppedText(stats: RadarRunStats): string {
+/** Why a run stopped early, and how many entries are left (also used by the Markdown notes). */
+export function stoppedText(stats: RadarRunStats): string {
   const reason = stats.stopped === 'budget' ? t('the call limit was reached') : stats.stopped === 'aborted' ? t('it was cancelled') : t('the provider failed: {error}', { error: stats.error ?? '' });
   return t('This run stopped early ({reason}); {n} entries are left for the next run.', { reason, n: stats.left });
 }
