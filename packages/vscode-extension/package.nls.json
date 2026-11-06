@@ -108,5 +108,7 @@
   "config.agentClis.custom": "ACP agents you add yourself, on your own responsibility: a name and the exact command line that starts the agent's ACP server on stdio, e.g. `{ \"name\": \"My agent\", \"command\": \"my-agent\", \"args\": [\"--acp\"] }`. Its id is `custom:` and the name in lowercase with dashes (`custom:my-agent`). Orka runs exactly this command and never downloads anything; make sure your use follows that agent's terms. A machine setting: a repository's settings cannot change it.",
   "config.agentClis.custom.name": "Shown in Orka; it also gives the agent's id (custom:<name>).",
   "config.agentClis.custom.command": "The program to start: a name on PATH or a full path.",
-  "config.agentClis.custom.args": "Arguments that start the agent's ACP server on stdio, e.g. [\"--acp\"]."
+  "config.agentClis.custom.args": "Arguments that start the agent's ACP server on stdio, e.g. [\"--acp\"].",
+  "config.accounts.claudeProfiles": "Claude Code profiles for separate accounts, each with its own config folder (`CLAUDE_CONFIG_DIR`). Add and remove them in Orka's **Settings → Accounts**. Orka never reads what Claude Code keeps in these folders. A machine setting: a repository's settings cannot change it.",
+  "config.accounts.claudeProfile": "The Claude Code profile new sessions start with (an id from `#orka.accounts.claudeProfiles#`; empty = the default profile). Each session can pick its own in the message box's model menu. A machine setting: a repository's settings cannot change it."
 }

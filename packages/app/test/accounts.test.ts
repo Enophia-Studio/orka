@@ -274,6 +274,17 @@ describe('Claude Code profiles', () => {
     assert.deepEqual(['Work (ACME)', '  Personal  ', '---', 'a'.repeat(60)].map(profileId), ['work-acme', 'personal', '', 'a'.repeat(40)]);
     assert.ok(MACHINE_SETTINGS.has('accounts.claudeProfiles') && MACHINE_SETTINGS.has('accounts.claudeProfile'));
   });
+
+  it('declares every machine setting in the VS Code extension as a machine setting (VS Code refuses to write an undeclared one)', () => {
+    const manifest = JSON.parse(readFileSync(path.resolve(__dirname, '../../../vscode-extension/package.json'), 'utf8'));
+    const properties: Record<string, { scope?: string }> = Object.assign({}, ...[manifest.contributes.configuration].flat().map((c: { properties: object }) => c.properties));
+    const nls = JSON.parse(readFileSync(path.resolve(__dirname, '../../../vscode-extension/package.nls.tr.json'), 'utf8'));
+    for (const key of ['accounts.claudeProfiles', 'accounts.claudeProfile']) {
+      assert.equal(properties[`orka.${key}`]?.scope, 'machine', key);
+      assert.ok(nls[`config.${key}`], `${key} has a Turkish description`);
+    }
+    for (const key of MACHINE_SETTINGS) assert.ok(properties[`orka.${key}`], `orka.${key} is declared`);
+  });
 });
 
 describe('accounts: compliance', () => {

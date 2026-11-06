@@ -108,5 +108,7 @@
   "config.agentClis.custom": "Sorumluluğu size ait olmak üzere kendi eklediğiniz ACP agent'ları: bir ad ve agent'ın ACP sunucusunu stdio üzerinde başlatan komut satırının tam hâli, ör. `{ \"name\": \"My agent\", \"command\": \"my-agent\", \"args\": [\"--acp\"] }`. Id'si `custom:` ile adın küçük harfli, tireli hâlidir (`custom:my-agent`). Orka tam olarak bu komutu çalıştırır ve hiçbir şey indirmez; kullanımınızın o agent'ın koşullarına uygun olduğundan emin olun. Makine ayarıdır: bir deponun ayarları bunu değiştiremez.",
   "config.agentClis.custom.name": "Orka'da gösterilir; agent'ın id'sini de belirler (custom:<ad>).",
   "config.agentClis.custom.command": "Başlatılacak program: PATH'teki bir ad ya da tam yol.",
-  "config.agentClis.custom.args": "Agent'ın ACP sunucusunu stdio üzerinde başlatan argümanlar, ör. [\"--acp\"]."
+  "config.agentClis.custom.args": "Agent'ın ACP sunucusunu stdio üzerinde başlatan argümanlar, ör. [\"--acp\"].",
+  "config.accounts.claudeProfiles": "Ayrı hesaplar için Claude Code Profile'ları; her birinin kendi config klasörü vardır (`CLAUDE_CONFIG_DIR`). Orka'da **Ayarlar → Hesaplar** bölümünden eklenir ve kaldırılır. Orka, Claude Code'un bu klasörlerde tuttuklarını asla okumaz. Makine ayarıdır: bir deponun ayarları bunu değiştiremez.",
+  "config.accounts.claudeProfile": "Yeni oturumların başladığı Claude Code Profile'ı (`#orka.accounts.claudeProfiles#` içinden bir id; boş = varsayılan Profile). Her oturum kendi Profile'ını mesaj kutusundaki model menüsünden seçebilir. Makine ayarıdır: bir deponun ayarları bunu değiştiremez."
 }

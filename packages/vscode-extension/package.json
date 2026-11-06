@@ -24,7 +24,7 @@
     "mcp",
     "unity"
   ],
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "12darko",
   "private": true,
   "engines": {
@@ -483,6 +483,38 @@
             }
           },
           "markdownDescription": "%config.agentClis.custom%"
+        },
+        "orka.accounts.claudeProfiles": {
+          "type": "array",
+          "scope": "machine",
+          "default": [],
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "dir"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9-]{0,39}$"
+              },
+              "name": {
+                "type": "string"
+              },
+              "dir": {
+                "type": "string"
+              }
+            }
+          },
+          "markdownDescription": "%config.accounts.claudeProfiles%"
+        },
+        "orka.accounts.claudeProfile": {
+          "type": "string",
+          "scope": "machine",
+          "default": "",
+          "markdownDescription": "%config.accounts.claudeProfile%"
         },
         "orka.routing.provider": {
           "type": "string",
