@@ -30,6 +30,7 @@ import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
 import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAccountHtml, type AddAccountState } from './features/accounts';
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
+import { folderPickerCreated, folderPickerListing, openFolderPicker } from './features/folderPicker';
 import { hunksHtml } from './features/hunks';
 import { contextRing, effortLabel, modelButtonHtml, modelMenuHtml } from './features/modelMenu';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
@@ -1121,6 +1122,11 @@ function closeEditorNow(): void {
   saveFilesState();
 }
 
+/** Work in another folder (none: the system's folder dialog); unsaved changes in the editor are asked about before the folder changes under it. */
+function openFolder(folder?: string): void {
+  void beforeFolderChange(folder).then((go) => go && post({ type: 'openFolder', path: folder }));
+}
+
 /** A folder switch the user asked for: with unsaved changes, first ask. */
 async function beforeFolderChange(folder?: string): Promise<boolean> {
   if (!editor?.dirty || (folder && sameFolder(folder, tree.folder))) return true;
@@ -1966,8 +1972,9 @@ document.addEventListener('click', (e) => {
       post({ type: 'handoff', agent: target.dataset.agent ?? '', text: el.input.value });
       break;
     case 'open-folder':
-      // Unsaved changes in the editor are asked about before the folder changes under it.
-      void beforeFolderChange(path || undefined).then((go) => go && post({ type: 'openFolder', path: path || undefined }));
+      // Desktop: without a path, Orka's own folder picker chooses the folder (or hands over to the system's dialog).
+      if (!path && config?.canBrowseFolders) openFolderPicker(openFolder, target);
+      else openFolder(path || undefined);
       break;
     case 'dialog-action':
     case 'dialog-pick':
@@ -4116,6 +4123,12 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       break;
     case 'closeDialog':
       closeDialog(message.id);
+      break;
+    case 'folderListing':
+      folderPickerListing(message);
+      break;
+    case 'folderCreated':
+      folderPickerCreated(message);
       break;
     case 'setInput':
       // Going back puts the message into the box again, to edit and resend. Radar's proposal goes

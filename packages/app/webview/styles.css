@@ -2380,6 +2380,351 @@ input.num.wide {
   border-top: 1px solid var(--border);
 }
 
+/* ---------------------------------------------------------------- Folder picker (desktop "Open folder…") */
+
+/* Under the app's own questions (z-index 50), which may ask something while it is open. */
+.folder-picker-layer .fp-backdrop {
+  z-index: 45;
+  align-items: center;
+  padding: 16px;
+}
+
+.folder-picker {
+  width: min(880px, 100%);
+  height: min(620px, calc(100vh - 32px));
+  max-height: none;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+
+.fp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.fp-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.fp-places {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: none;
+  width: 200px;
+  padding: 10px 8px;
+  overflow: auto;
+  background: color-mix(in srgb, var(--fg) 4%, var(--surface));
+  border-right: 1px solid var(--border);
+}
+
+.fp-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.fp-group-label {
+  padding: 2px 8px 4px;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.fp-place {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 5px 8px;
+  text-align: left;
+  color: var(--fg);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+}
+
+.fp-place span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fp-place .icon {
+  flex: none;
+  color: var(--muted);
+}
+
+.fp-place:hover {
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--fg) 8%, transparent));
+}
+
+.fp-place.current {
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.fp-place.current .icon {
+  color: var(--accent);
+}
+
+.fp-main {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 10px 14px;
+}
+
+.fp-location {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fp-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.fp-crumb {
+  flex: none;
+  max-width: 220px;
+  padding: 3px 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+}
+
+.fp-crumb:hover {
+  color: var(--fg-strong);
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--fg) 8%, transparent));
+}
+
+.fp-crumb[aria-current] {
+  font-weight: 600;
+  color: var(--fg-strong);
+}
+
+.fp-crumbs .fp-sep {
+  flex: none;
+  width: 12px;
+  height: 12px;
+  color: var(--muted);
+  transform: rotate(-90deg);
+}
+
+.fp-path {
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--fs-12);
+}
+
+.fp-path[aria-invalid='true'] {
+  border-color: var(--err);
+}
+
+.fp-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.fp-tools .fp-filter {
+  flex: 1;
+  min-width: 0;
+}
+
+.fp-hidden {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: var(--fs-12);
+  color: var(--muted);
+}
+
+.fp-new {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  border-radius: var(--radius);
+}
+
+.fp-new[hidden] {
+  display: none;
+}
+
+.fp-new > .icon {
+  color: var(--accent);
+}
+
+.fp-new .fp-new-name {
+  flex: 1;
+  min-width: 140px;
+  height: 26px;
+}
+
+.fp-new .fp-new-error {
+  flex-basis: 100%;
+}
+
+.fp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  flex: 1;
+  min-height: 0;
+  padding: 4px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.fp-list:focus-visible {
+  border-color: var(--accent);
+}
+
+.fp-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  cursor: default;
+  user-select: none;
+}
+
+.fp-item[hidden] {
+  display: none;
+}
+
+.fp-item .icon {
+  flex: none;
+  color: var(--accent);
+}
+
+.fp-item:hover {
+  background: var(--vscode-list-hoverBackground, color-mix(in srgb, var(--fg) 8%, transparent));
+}
+
+.fp-item.selected {
+  color: var(--fg-strong);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.fp-list:focus-visible .fp-item.selected {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.fp-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fp-link {
+  flex: none;
+  padding: 0 5px;
+  font-size: var(--fs-10-5);
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+}
+
+.fp-empty {
+  padding: 16px 8px;
+  text-align: center;
+}
+
+.fp-message {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 8px;
+}
+
+.fp-message > .icon {
+  color: var(--warn);
+}
+
+.fp-note {
+  min-height: 1.2em;
+}
+
+.fp-actions {
+  align-items: center;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.fp-target {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* A narrow window: the places go above the folders, in one row. */
+@media (max-width: 640px) {
+  .fp-body {
+    flex-direction: column;
+  }
+
+  .fp-places {
+    flex-direction: row;
+    width: auto;
+    padding: 6px 8px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .fp-group {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .fp-group-label {
+    display: none;
+  }
+
+  .fp-place {
+    flex: none;
+  }
+
+  .fp-target {
+    display: none;
+  }
+}
+
 .diff-view {
   margin: 0;
   padding: 8px 10px;

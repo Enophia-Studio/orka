@@ -57,6 +57,7 @@ const ICON: Record<string, string> = {
   chevron: '<path d="M4.5 6.5L8 10l3.5-3.5"/>',
   history: '<path d="M2.5 8a5.5 5.5 0 1 0 1.6-3.9"/><path d="M2.5 2.5v2.2h2.2"/><path d="M8 5v3.2l2.2 1.4"/>',
   skill: '<path d="M2.5 3.5h4A1.5 1.5 0 018 5v8a1.5 1.5 0 00-1.5-1.5h-4z"/><path d="M13.5 3.5h-4A1.5 1.5 0 008 5v8a1.5 1.5 0 011.5-1.5h4z"/>',
+  drive: '<rect x="2" y="4.5" width="12" height="7" rx="1.5"/><circle cx="11" cy="8" r=".8"/>',
   folder: '<path d="M2 4.5V12a1 1 0 001 1h10a1 1 0 001-1V6a1 1 0 00-1-1H8L6.5 3.5H3a1 1 0 00-1 1z"/>',
   refresh: '<path d="M13 8a5 5 0 11-1.5-3.6"/><path d="M13 2.5v2.5h-2.5"/>',
   plug: '<path d="M6 2.5v3M10 2.5v3M4.5 5.5h7v2.5a3.5 3.5 0 01-7 0z"/><path d="M8 11.5v2"/>',
