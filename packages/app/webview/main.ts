@@ -693,7 +693,13 @@ function renderModelMenu(): void {
   el.modelMenu.hidden = !open;
   if (!open || !view) return;
   const provider = providerView(view.provider);
+  // A choice made from the keyboard re-renders the menu: focus stays in the same group, on its checked item.
+  const focused = el.modelMenu.contains(document.activeElement) ? (document.activeElement as HTMLElement).getAttribute('data-action') : undefined;
   el.modelMenu.innerHTML = modelMenuHtml({ view, models: provider?.agent ? [] : (provider?.models ?? []), agent: !!provider?.agent, running: session.running });
+  if (focused === undefined) return;
+  const items = [...el.modelMenu.querySelectorAll<HTMLElement>('button:not(:disabled)')];
+  const group = items.filter((b) => b.getAttribute('data-action') === focused);
+  (group.find((b) => b.getAttribute('aria-checked') === 'true') ?? group[0] ?? items[0])?.focus();
 }
 
 function openModelMenu(open: boolean): void {
@@ -716,6 +722,13 @@ el.modelMenu.addEventListener('keydown', (e) => {
   e.preventDefault();
   const at = items.indexOf(document.activeElement as HTMLElement);
   items[(at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+});
+// Escape anywhere closes the open model menu too (focus may be outside it), in every layout.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || e.defaultPrevented || !ui.modelMenuOpen || modalOpen()) return;
+  e.preventDefault();
+  openModelMenu(false);
+  el.composerAgent?.querySelector<HTMLElement>('.model-btn')?.focus();
 });
 
 /** The + menu of the message box: attach a file, add an image, use a skill. */

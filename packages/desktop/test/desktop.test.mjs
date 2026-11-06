@@ -737,6 +737,15 @@ globalThis.fetch = (input, init) => {
     assert.doesNotMatch(menu, /Yolo/, "never the agent's own modes");
     await browser.clickSelector('#model-menu [data-action="session-option"][data-value="pro"]');
     await until(() => browser.evaluate('document.querySelector("#model-menu [data-value=pro]")?.getAttribute("aria-checked") === "true"'), 'the pick');
+    // A pick from the keyboard keeps the focus in the menu after it is drawn again.
+    await browser.evaluate(
+      'window.oldItem = document.querySelector("#model-menu button"); const b = document.querySelector("#model-menu [data-action=session-option][data-value=pro]"); b.focus(); b.click(); true',
+    );
+    await until(() => browser.evaluate('!window.oldItem.isConnected'), 'the menu drawn again');
+    assert.equal(await browser.evaluate('!!document.activeElement.closest("#model-menu") && document.activeElement.getAttribute("aria-checked")'), 'true');
+    // Escape closes it even with the focus outside it.
+    await browser.evaluate('document.activeElement.blur(); document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); true');
+    await until(() => browser.evaluate('document.querySelector("#model-menu").hidden'), 'the menu closed by Escape');
 
     // Sent to the agent before the next prompt, never while one runs.
     await browser.clickSelector('#input');
