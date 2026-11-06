@@ -20,6 +20,8 @@ const HAS_GIT = spawnSync('git', ['--version'], { windowsHide: true }).status ==
  */
 const BARE_PATH = mkdtempSync(path.join(tmpdir(), 'orka-agents-path-'));
 after(() => rmSync(BARE_PATH, { recursive: true, force: true }));
+/** No agent CLI found: an empty PATH, and the same empty folder where installers put agy (LOCALAPPDATA, ~/.local/bin). */
+const BARE = { PATH: BARE_PATH, Path: BARE_PATH, LOCALAPPDATA: BARE_PATH, HOME: BARE_PATH, USERPROFILE: BARE_PATH };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => {
@@ -81,7 +83,7 @@ describe('orka CLI agent mode', { skip: !existsSync(ORKA) && 'build the CLI firs
         ],
       },
     });
-    const { code, stdout, stderr } = await orka(['agents'], { env: { PATH: BARE_PATH, Path: BARE_PATH } });
+    const { code, stdout, stderr } = await orka(['agents'], { env: BARE });
     assert.equal(code, 0, stderr);
     assert.match(stdout, /^antigravity +Antigravity CLI · Google {2}· {2}not installed$/m);
     assert.match(stdout, /Google's FAQ calls wrapping agy in third-party apps unsupported on consumer plans/, "Antigravity's note is shown");
@@ -103,7 +105,7 @@ describe('orka CLI agent mode', { skip: !existsSync(ORKA) && 'build the CLI firs
     assert.match(stdout, /^custom:x{40} x{45} · your own ACP agent {2}· {2}not installed$/m);
     assert.equal(stdout.match(/^custom:/gm).length, 2);
 
-    const one = await orka(['--lang', 'tr', 'agents', 'agent:custom:fake-agent'], { env: { PATH: BARE_PATH, Path: BARE_PATH } });
+    const one = await orka(['--lang', 'tr', 'agents', 'agent:custom:fake-agent'], { env: BARE });
     assert.equal(one.code, 0, one.stderr);
     assert.match(one.stdout, /^custom:fake-agent Fake agent · kendi ACP agent'ınız {2}· {2}kurulu {2}· {2}açık$/m, 'one agent, in Turkish');
     assert.doesNotMatch(one.stdout, /^gemini /m);
@@ -127,7 +129,7 @@ describe('orka CLI agent mode', { skip: !existsSync(ORKA) && 'build the CLI firs
     assert.equal(model.code, 2);
     assert.match(model.stderr, /Fake agent uses the model set in its own settings; Orka does not choose one for it\./);
 
-    const missing = await orka(['--provider', 'agent:gemini', '-p', 'hi', '-C', work], { env: { PATH: BARE_PATH, Path: BARE_PATH } });
+    const missing = await orka(['--provider', 'agent:gemini', '-p', 'hi', '-C', work], { env: BARE });
     assert.equal(missing.code, 2);
     assert.match(missing.stderr, /Gemini CLI \(legacy\) is not installed\. Install it with: npm install -g @google\/gemini-cli\nIf it is installed somewhere else, set its path in "agentClis\.paths"/);
 
