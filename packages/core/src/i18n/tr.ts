@@ -1291,4 +1291,15 @@ export const TR: Record<string, string> = {
   close: 'kapat',
   'Go to line': 'Satıra git',
   go: 'git',
+  // The message box's model menu (per session).
+  'Model and effort for this session': 'Bu oturumun modeli ve Effort ayarı',
+  'The provider’s own default': 'Provider’ın kendi varsayılanı',
+  'Applies from your next message.': 'Bir sonraki mesajınızdan itibaren geçerli olur.',
+  'Agent settings…': 'Agent ayarları…',
+  'Use as default': 'Varsayılan yap',
+  'New sessions start with this model, effort and profile. Sessions open now keep theirs.':
+    'Yeni oturumlar bu model, Effort ve Profile ile başlar. Şu an açık oturumlar kendi ayarlarını korur.',
+  'Default effort': 'Varsayılan Effort',
+  '{value} · change it from the model menu in the message box': '{value} · mesaj kutusundaki model menüsünden değiştirin',
+  'Context: {percent}% full ({used} of {size} tokens)': 'Bağlam: %{percent} dolu ({size} Token’ın {used} kadarı)',
 };

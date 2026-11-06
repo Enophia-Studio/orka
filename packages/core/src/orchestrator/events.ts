@@ -41,6 +41,14 @@ export interface AgentUsage {
   unreported?: true;
 }
 
+/** How full the main agent's context window is, as its provider reported it. */
+export interface ContextFill {
+  /** Tokens in the context after the last request. */
+  used: number;
+  /** The context window. */
+  size: number;
+}
+
 export type RunEndReason = 'completed' | 'stopped' | 'error' | 'max_iterations' | 'budget' | 'refusal';
 
 export type NoticeLevel = 'info' | 'warning' | 'error';
@@ -58,8 +66,8 @@ export type AgentEvent =
   | { type: 'plan'; plan: Plan | undefined }
   | { type: 'changes'; changes: FileChange[] }
   | { type: 'phase'; phase: AgentPhase }
-  | { type: 'usage'; total: Usage; model: string; byAgent?: AgentUsage[] }
-  | { type: 'notice'; level: NoticeLevel; message: string; action?: string }
+  /** `context`: how full the main agent's context is, when its provider says (none: unknown). */
+  | { type: 'usage'; total: Usage; model: string; byAgent?: AgentUsage[]; context?: ContextFill }  | { type: 'notice'; level: NoticeLevel; message: string; action?: string }
   | { type: 'reset' }
   /** An event from a sub-agent, nested under the run_subagent tool call that started it. */
   | { type: 'subagent'; parentId: string; agent: string; event: AgentEvent }

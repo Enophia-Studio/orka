@@ -1625,6 +1625,180 @@ pre:hover .copy {
   background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
 }
 
+/* ---------------------------------------------------------------- the message box's model menu */
+
+.composer-row .meta {
+  flex: 1 1 auto;
+}
+
+.composer-agent {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.composer-row .composer-agent .agent-btn {
+  max-width: 100%;
+}
+
+.model-menu {
+  position: absolute;
+  right: 12px;
+  bottom: calc(100% - 4px);
+  z-index: 16;
+  width: min(320px, calc(100% - 24px));
+  max-height: min(55vh, 480px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  box-shadow: var(--shadow-pop, 0 6px 24px rgba(0, 0, 0, 0.25));
+}
+
+.model-menu-label {
+  margin: 0 0 4px;
+  font-size: var(--fs-11);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.model-options {
+  display: flex;
+  flex-direction: column;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.model-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 2px 6px;
+  font-size: var(--fs-12);
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+}
+
+.model-option .tick {
+  width: 12px;
+  height: 12px;
+  flex: none;
+}
+
+.model-option-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-option .menu-hint {
+  margin-left: auto;
+  font-size: var(--fs-11);
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.model-option:hover,
+.model-option:focus-visible,
+.seg-btn:hover,
+.seg-btn:focus-visible {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+  outline: none;
+}
+
+.seg {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.seg-btn {
+  flex: 1 1 auto;
+  min-height: 24px;
+  padding: 0 8px;
+  font-size: var(--fs-12);
+  color: var(--fg);
+  background: none;
+  border: none;
+  border-radius: var(--radius-xs, 3px);
+}
+
+.seg-btn[aria-checked='true'] {
+  color: var(--vscode-button-foreground, #fff);
+  background: var(--accent);
+}
+
+.model-menu-note {
+  margin: 0;
+  font-size: var(--fs-11);
+  color: var(--muted);
+}
+
+.context-ring {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius-xs, 3px);
+}
+
+.context-ring:hover {
+  background: var(--vscode-toolbar-hoverBackground, rgba(128, 128, 128, 0.2));
+}
+
+.context-ring .ring {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.context-ring .ring-track {
+  stroke: var(--border);
+}
+
+.context-ring .ring-fill {
+  stroke: var(--muted);
+}
+
+.context-ring .ring.high .ring-fill {
+  stroke: var(--vscode-editorWarning-foreground, #cca700);
+}
+
+.context-ring .ring.full .ring-fill {
+  stroke: var(--vscode-errorForeground, #f14c4c);
+}
+
+.model-menu-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
 /* ---------------------------------------------------------------- spinner */
 
 .spinner {

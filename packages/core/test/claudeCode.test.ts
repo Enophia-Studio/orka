@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { ProviderError, type ProviderStreamEvent } from '../src/providers/AIProvider';
-import { ClaudeCodeProvider } from '../src/providers/ClaudeCodeProvider';
+import { ClaudeCodeProvider, contextWindowOf } from '../src/providers/ClaudeCodeProvider';
 import { defaultTools, toSpec } from '../src/tools';
 import type { ChatMessage } from '../src/types';
 import { tempWorkspace } from './helpers';
@@ -49,6 +49,8 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
     assert.equal(first.stopReason, 'tool_use');
     assert.equal(first.model, 'claude-fake-1');
     assert.deepEqual(first.usage, { inputTokens: 11, outputTokens: 7, cacheReadTokens: 100, cacheWriteTokens: 5 });
+    // The context window comes from the result's modelUsage.
+    assert.equal(first.contextWindow, 200000);
     const call = first.message.content.find((b) => b.type === 'tool_call');
     assert.deepEqual(call && call.type === 'tool_call' && [call.name, call.input], ['read_file', { path: 'src/a.ts' }]);
     const streamed = events.filter((e) => e.type === 'text_delta').map((e) => (e as { text: string }).text).join('');
@@ -171,5 +173,14 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
     );
     controller.abort();
     await assert.rejects(pending, (e: unknown) => e instanceof Error && e.name === 'AbortedError');
+  });
+});
+
+describe('contextWindowOf', () => {
+  it('reads the largest window the result reports, nothing when there is none', () => {
+    assert.equal(contextWindowOf({ a: { contextWindow: 200000 }, b: { contextWindow: 1000000 } }), 1000000);
+    assert.equal(contextWindowOf({ a: { contextWindow: 'big' } }), undefined);
+    assert.equal(contextWindowOf(undefined), undefined);
+    assert.equal(contextWindowOf({}), undefined);
   });
 });

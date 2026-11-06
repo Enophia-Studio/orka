@@ -61,4 +61,29 @@ describe('usage per agent', () => {
     const delegate = session.items.find((i) => i.kind === 'tool' && i.call.name === 'run_subagent');
     assert.equal(delegate?.kind === 'tool' && delegate.sub?.usage?.outputTokens, 10);
   });
+
+  it('reports how full the context is only when the provider gives the window', async () => {
+    const reply = (contextWindow?: number) => () => ({
+      message: { role: 'assistant' as const, content: [text('ok')] },
+      stopReason: 'end_turn' as const,
+      usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 800, cacheWriteTokens: 80 },
+      model: 'm',
+      ...(contextWindow ? { contextWindow } : {}),
+    });
+    const provider = new ScriptedProvider([reply(10_000), reply()]);
+    const orchestrator = new Orchestrator({
+      host: new NodeHost({ workspaceRoot: ws.root, approve: async () => ({ approved: true }) }),
+      getProvider: () => provider,
+      permissions: new PermissionManager('balanced'),
+      getSettings: () => ({ maxIterations: 10, autoVerify: false, commandTimeoutMs: 30_000 }),
+    });
+    const session = emptySession();
+    orchestrator.on((e) => applyEvent(session, e));
+    await orchestrator.run('one');
+    // Prompt (input + cache) plus the answer.
+    assert.deepEqual(session.context, { used: 1000, size: 10_000 });
+    await orchestrator.run('two');
+    assert.equal(session.context, undefined, 'unknown: the gauge is hidden');
+  });
 });
+

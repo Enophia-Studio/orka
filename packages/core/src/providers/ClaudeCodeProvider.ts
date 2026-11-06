@@ -148,6 +148,7 @@ export class ClaudeCodeProvider implements AIProvider {
         stopReason: parsed.calls.length ? 'tool_use' : stopReason,
         usage,
         model: turn.model || this.model,
+        ...(turn.contextWindow ? { contextWindow: turn.contextWindow } : {}),
       };
     } catch (error) {
       session.kill();
@@ -230,6 +231,8 @@ interface TurnResult {
   usage: Usage;
   model: string;
   stopReason: StopReason;
+  /** The model's context window, from the result's modelUsage (the largest one when several models served the turn). */
+  contextWindow?: number;
 }
 
 /** One `claude -p` process in streaming-input mode: write a user message, read until `result`. */
@@ -387,6 +390,7 @@ class CliSession {
             cacheWriteTokens: u.cache_creation_input_tokens ?? 0,
           },
           model: this.model,
+          contextWindow: contextWindowOf(message.modelUsage),
           stopReason: message.stop_reason === 'max_tokens' ? 'max_tokens' : message.stop_reason === 'refusal' ? 'refusal' : 'end_turn',
         });
         break;
@@ -445,3 +449,14 @@ export function resolveClaudeExecutable(explicit?: string): string {
   return candidates.find((c) => c && existsSync(c)) ?? '';
 }
 
+
+/** The context window Claude Code reports per model in a result's modelUsage (undefined when it does not). */
+export function contextWindowOf(modelUsage: unknown): number | undefined {
+  if (!modelUsage || typeof modelUsage !== 'object') return undefined;
+  let size = 0;
+  for (const entry of Object.values(modelUsage as Record<string, unknown>)) {
+    const value = entry && typeof entry === 'object' ? (entry as { contextWindow?: unknown }).contextWindow : undefined;
+    if (typeof value === 'number' && Number.isFinite(value) && value > size) size = value;
+  }
+  return size || undefined;
+}

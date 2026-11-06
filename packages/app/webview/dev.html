@@ -152,6 +152,7 @@
         if (ide) radarMock(message);
         if (ide) filesMock(message);
         accountsMock(message);
+        modelMock(message);
       },
       getState: () => ({
         ...(params.has('collapsed') ? { sidebarClosed: true } : {}),
@@ -358,6 +359,16 @@
       if (message.type === 'setClaudeProfile') { for (const a of accounts) if (a.profile) a.profile.chosen = a.profile.id === message.id; accountsPost(); }
     }
 
+    // ---- The message box's model menu: this session's model, effort and profile.
+    const sessionModel = { provider: 'claude', model: 'claude-opus-5-5', effort: 'medium', efforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultEffort: 'medium', profiles: [], profile: '', differs: false };
+    function modelMock(message) {
+      if (message.type !== 'setSessionModel' && message.type !== 'useModelAsDefault') return;
+      if (message.type === 'setSessionModel') for (const k of ['model', 'effort', 'profile']) if (message[k] !== undefined) sessionModel[k] = message[k];
+      sessionModel.differs = message.type === 'setSessionModel' && (sessionModel.model !== 'claude-opus-5-5' || sessionModel.effort !== sessionModel.defaultEffort);
+      if (message.type === 'useModelAsDefault') sessionModel.defaultEffort = sessionModel.effort;
+      accountsPost();
+    }
+
     function makeConfig(empty) {
       const providers = [
         { kind: 'claude', label: 'Claude API', local: false, ready: !empty, models: CLAUDE, model: 'claude-opus-5-5', key: empty ? undefined : { source: 'stored', hint: 'sk-ant••••4f2a' } },
@@ -410,7 +421,8 @@
         ] },
         pricing: { 'gemini/gemini-3.8-*': { input: 0.3, output: 2.5 } },
         providers,
-        main,
+        sessionModel: { ...sessionModel, model: sessionModel.model },
+        main: { ...main, effective: { provider: sessionModel.provider, model: sessionModel.model } },
         light: { name: 'light', provider: 'claude', model: 'claude-haiku-4-5', effective: { provider: 'claude', model: 'claude-haiku-4-5' } },
         fallback: { name: 'fallback', provider: 'gemini', model: 'gemini-3.8-flash', effective: { provider: 'gemini', model: 'gemini-3.8-flash' } },
         supervisor: { name: 'supervisor', provider: 'claude', model: 'claude-opus-5-5', effective: { provider: 'claude', model: 'claude-opus-5-5' } },
@@ -513,7 +525,7 @@
         { agent: 'main', provider: 'claude', model: 'claude-opus-5-5', calls: 14, usage: { inputTokens: 4200, outputTokens: 1830, cacheReadTokens: 38100, cacheWriteTokens: 5200 } },
         { agent: 'supervisor', provider: 'claude', model: 'claude-opus-5-5', calls: 4, usage: { inputTokens: 800, outputTokens: 460, cacheReadTokens: 13100, cacheWriteTokens: 900 } },
         { agent: 'explore', provider: 'gemini', model: 'gemini-3.8-flash', calls: 3, usage: { inputTokens: 900, outputTokens: 120, cacheReadTokens: 0, cacheWriteTokens: 0 } },
-      ] });
+      ], context: { used: 142000, size: 200000 } });
       if (params.has('idle')) ev({ type: 'run_finished', reason: 'completed' });
     }
   </script>

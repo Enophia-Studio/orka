@@ -46,5 +46,6 @@ function handle(message) {
     result: reply,
     stop_reason: 'end_turn',
     usage: { input_tokens: 11, output_tokens: 7, cache_read_input_tokens: 100, cache_creation_input_tokens: 5 },
+    modelUsage: { 'claude-test': { inputTokens: 11, contextWindow: 200000 } },
   });
 }

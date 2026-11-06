@@ -31,6 +31,7 @@ import { ago, appendToDraft, applyWidths, fmt } from './core/format';
 import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAccountHtml, type AddAccountState } from './features/accounts';
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
 import { hunksHtml } from './features/hunks';
+import { contextRing, effortLabel, modelButtonHtml, modelMenuHtml } from './features/modelMenu';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
 import {
   changePath,
@@ -60,6 +61,8 @@ const ui: {
   planCollapsed: boolean;
   agentsOpen: boolean;
   usageOpen: boolean;
+  /** The message box's model menu (this session's model, effort and profile) is open. */
+  modelMenuOpen: boolean;
   /** "editor": the desktop app's open file in place of the conversation. */
   view: 'chat' | 'editor' | 'settings' | 'history';
   tab: SettingsTab;
@@ -84,6 +87,7 @@ const ui: {
   planCollapsed: false,
   agentsOpen: false,
   usageOpen: false,
+  modelMenuOpen: false,
   view: 'chat',
   tab: 'agents',
   hunks: new Map(),
@@ -153,6 +157,8 @@ const el = {
   composerMode: document.getElementById('composer-mode'),
   composerAgent: document.getElementById('composer-agent'),
   composerMenu: document.getElementById('composer-menu'),
+  modelMenu: document.getElementById('model-menu')!,
+  contextRing: document.getElementById('context-ring'),
   starters: document.getElementById('starters'),
   imageInput: document.getElementById('image-input') as HTMLInputElement | null,
   asideTabs: document.getElementById('aside-tabs'),
@@ -667,16 +673,50 @@ function asideTabOf(value: string | undefined): AsideTab {
   return value === 'radar' || value === 'files' ? value : 'task';
 }
 
-/** IDE layout: the permission mode and the main agent's model sit in the message box. */
+/**
+ * The message box's own controls: the session's model menu (both layouts) and, in the IDE
+ * layout, the permission mode.
+ */
 function renderComposerTools(): void {
-  if (!el.composerMode || !el.composerAgent) return;
+  if (el.composerMode) el.composerMode.innerHTML = modeSelect();
+  if (!el.composerAgent) return;
   const main = config?.main.effective;
-  const warn = main && !providerView(main.provider)?.ready;
-  el.composerMode.innerHTML = modeSelect();
-  el.composerAgent.innerHTML = main
-    ? `<button class="agent-btn${ui.agentsOpen ? ' open' : ''}${warn ? ' warn' : ''}" data-action="toggle-agents" aria-expanded="${ui.agentsOpen}" title="${attr(t('Agents: providers and models'))}">${icon('agent')}<span>${escapeHtml(shortModel(main.provider, main.model))}</span>${icon('chevron', 'chev')}</button>`
-    : '';
+  const warn = !!main && !providerView(main.provider)?.ready;
+  el.composerAgent.innerHTML = main && config?.sessionModel ? modelButtonHtml(shortModel(main.provider, main.model), config.sessionModel, ui.modelMenuOpen, warn) : '';
+  renderModelMenu();
 }
+
+/** The model menu over the message box, for the session shown. */
+function renderModelMenu(): void {
+  const view = config?.sessionModel;
+  const open = ui.modelMenuOpen && !!view && workView();
+  el.modelMenu.hidden = !open;
+  if (!open || !view) return;
+  const provider = providerView(view.provider);
+  el.modelMenu.innerHTML = modelMenuHtml({ view, models: provider?.agent ? [] : (provider?.models ?? []), agent: !!provider?.agent, running: session.running });
+}
+
+function openModelMenu(open: boolean): void {
+  ui.modelMenuOpen = open;
+  renderComposerTools();
+  if (open) el.modelMenu.querySelector<HTMLElement>('[aria-checked="true"], button:not(:disabled)')?.focus();
+}
+
+// The model menu: arrow keys move between its choices, Escape closes it (focus back on its button).
+el.modelMenu.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    openModelMenu(false);
+    el.composerAgent?.querySelector<HTMLElement>('.model-btn')?.focus();
+    return;
+  }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  const items = [...el.modelMenu.querySelectorAll<HTMLElement>('button:not(:disabled)')];
+  if (!items.length) return;
+  e.preventDefault();
+  const at = items.indexOf(document.activeElement as HTMLElement);
+  items[(at + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length].focus();
+});
 
 /** The + menu of the message box: attach a file, add an image, use a skill. */
 function renderComposerMenu(open: boolean): void {
@@ -1761,6 +1801,7 @@ document.addEventListener('click', (e) => {
   // IDE layout: the + menu and the agents panel open over the message box and close on a click elsewhere.
   const clicked = e.target as HTMLElement;
   if (el.composerMenu && !el.composerMenu.hidden && !clicked.closest('#composer-menu, .composer-add')) renderComposerMenu(false);
+  if (ui.modelMenuOpen && clicked.isConnected && !clicked.closest('#model-menu, .model-btn')) openModelMenu(false);
   if (sessionMenu && !clicked.closest('.session-menu, .side-more')) closeSessionMenu();
   if (layout === 'ide' && ui.agentsOpen && clicked.isConnected && !clicked.closest('#agents-panel, .agent-btn, .modal-backdrop, .dialogs')) {
     ui.agentsOpen = false;
@@ -1977,6 +2018,26 @@ document.addEventListener('click', (e) => {
       break;
     case 'composer-menu':
       renderComposerMenu(!!el.composerMenu?.hidden);
+      break;
+    case 'model-menu':
+      openModelMenu(!ui.modelMenuOpen);
+      break;
+    case 'session-model':
+      post({ type: 'setSessionModel', model: target.dataset.model ?? '' });
+      break;
+    case 'session-effort':
+      post({ type: 'setSessionModel', effort: target.dataset.effort ?? '' });
+      break;
+    case 'session-profile':
+      post({ type: 'setSessionModel', profile: target.dataset.profile ?? '' });
+      break;
+    case 'session-model-default':
+      post({ type: 'useModelAsDefault' });
+      break;
+    case 'model-menu-agents':
+      openModelMenu(false);
+      ui.agentsOpen = true;
+      renderAgentsPanel();
       break;
     case 'attach-file':
       renderComposerMenu(false);
@@ -2539,13 +2600,28 @@ function renderMeta(): void {
   el.send.disabled = !config?.workspaceOpen;
   const u = session.usage;
   const tokens = u
-    ? ` · ${t('{n} in', { n: fmt(u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens) })} · ${t('{n} out', { n: fmt(u.outputTokens) })}${
-        u.cacheReadTokens ? ` · ${t('{n}% cached', { n: Math.round((100 * u.cacheReadTokens) / (u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens)) })}` : ''
-      }`
-    : '';
+    ? [
+        t('{n} in', { n: fmt(u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens) }),
+        t('{n} out', { n: fmt(u.outputTokens) }),
+        ...(u.cacheReadTokens ? [t('{n}% cached', { n: Math.round((100 * u.cacheReadTokens) / (u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens)) })] : []),
+      ]
+    : [];
+  // The model menu's button names the model; without it (no folder open) the line does.
   const main = config?.main.effective;
-  const model = session.model || (main ? modelLabel(main.provider, main.model) : '');
-  el.meta.textContent = `${model}${tokens}`;
+  const model = config?.sessionModel ? '' : session.model || (main ? modelLabel(main.provider, main.model) : '');
+  el.meta.textContent = [model, ...tokens].filter(Boolean).join(' · ');
+  renderContextRing();
+}
+
+/** The context gauge next to the model menu (hidden while the provider has not reported its window). */
+function renderContextRing(): void {
+  if (!el.contextRing) return;
+  const ring = config?.workspaceOpen ? contextRing(session.context, fmt) : undefined;
+  el.contextRing.hidden = !ring;
+  if (!ring) return;
+  el.contextRing.innerHTML = ring.html;
+  el.contextRing.title = ring.title;
+  el.contextRing.setAttribute('aria-label', ring.title);
 }
 
 function renderChrome(): void {
@@ -2999,7 +3075,7 @@ function claudeCodeCard(s: SettingsView, cc: ProviderView | undefined): string {
       </div>
       <div class="grid2">
         <label class="field"><span class="field-label">${escapeHtml(t('Default model'))}</span>${providerModelSelect(cc)}</label>
-        <label class="field"><span class="field-label">Effort</span>${select('claudeCode.effort', claudeEfforts(), s.claudeCode.effort, 'Claude Code effort')}</label>
+        ${defaultEffortField('claude-code', s.claudeCode.effort)}
       </div>
       <label class="check"><input type="checkbox" data-setting="claudeCode.autoUpdate"${s.claudeCode.autoUpdate ? ' checked' : ''}><span>${escapeHtml(
         t('Update Claude Code automatically'),
@@ -3078,11 +3154,18 @@ function agentClisSection(): string {
     </div>`;
 }
 
-const claudeEfforts = (): Array<[string, string]> => [['', t('CLI default')], ['low', 'low'], ['medium', 'medium'], ['high', 'high'], ['xhigh', 'xhigh'], ['max', 'max']];
+/**
+ * A provider's default effort, for sessions started later: each session picks its own in the
+ * message box's model menu, whose "Use as default" changes this.
+ */
+function defaultEffortField(provider: string, value: string): string {
+  return `<div class="field"><span class="field-label">${escapeHtml(t('Default effort'))}</span><span class="muted small">${escapeHtml(
+    t('{value} · change it from the model menu in the message box', { value: effortLabel(provider, value) }),
+  )}</span></div>`;
+}
 
 function providersTab(s: SettingsView): string {
   const byKind = (k: string) => config!.providers.find((p) => p.kind === k)!;
-  const levels: Array<[string, string]> = [['', t('model default')], ['low', 'low'], ['medium', 'medium'], ['high', 'high']];
   const claude = byKind('claude');
   const gemini = byKind('gemini');
   const openai = byKind('openai');
@@ -3105,7 +3188,7 @@ function providersTab(s: SettingsView): string {
       ${keyRow(claude)}
       <div class="grid2">
         ${modelField(claude)}
-        <label class="field"><span class="field-label">Effort</span>${select('claude.effort', claudeEfforts().slice(1), s.claude.effort, 'Claude effort')}</label>
+        ${defaultEffortField('claude', s.claude.effort)}
       </div>
       <label class="check"><input type="checkbox" data-setting="claude.refusalFallback"${s.claude.refusalFallback ? ' checked' : ''}><span>${escapeHtml(
         t('Retry declined requests on a fallback model'),
@@ -3118,7 +3201,7 @@ function providersTab(s: SettingsView): string {
       ${keyRow(gemini)}
       <div class="grid2">
         ${modelField(gemini)}
-        <label class="field"><span class="field-label">${escapeHtml(t('Thinking'))}</span>${select('gemini.thinkingLevel', levels, s.gemini.thinkingLevel, t('Thinking'))}</label>
+        ${defaultEffortField('gemini', s.gemini.thinkingLevel)}
       </div>
     </div>
     <div class="card">
@@ -3127,7 +3210,7 @@ function providersTab(s: SettingsView): string {
       <label class="field"><span class="field-label">${escapeHtml(t('Base URL (OpenAI-compatible)'))}</span><input class="mono" type="text" data-setting="openai.baseUrl" value="${attr(s.openai.baseUrl)}" spellcheck="false"></label>
       <div class="grid2">
         ${modelField(openai)}
-        <label class="field"><span class="field-label">Reasoning</span>${select('openai.reasoningEffort', levels, s.openai.reasoningEffort, 'OpenAI reasoning effort')}</label>
+        ${defaultEffortField('openai', s.openai.reasoningEffort)}
       </div>
     </div>
     ${customProvidersSection(s)}

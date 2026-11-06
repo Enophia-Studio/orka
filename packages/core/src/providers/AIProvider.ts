@@ -24,6 +24,8 @@ export interface ChatResponse {
   usage: Usage;
   /** The model that actually served the response (can differ after a fallback). */
   model: string;
+  /** The model's context window in tokens, when the provider reports it with the response. */
+  contextWindow?: number;
 }
 
 /**
