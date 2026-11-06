@@ -13,6 +13,7 @@ import {
   NOT_IN_CATALOG,
   pooledAgent,
   type AgentEvent,
+  type AgentOption,
   type AIProvider,
   applyEvent,
   checkAppUpdate,
@@ -111,7 +112,7 @@ import {
 } from './accounts';
 import { type InstallRecipe, installRecipe, nodeIsRecent, nodeVersion } from './install';
 import { RunGate } from './runGate';
-import { EFFORT_SETTING, effortLevels, type SessionChoice, settingsEffort } from './sessionModel';
+import { EFFORT_SETTING, effortLevels, isOptionText, type SessionChoice, settingsEffort } from './sessionModel';
 import { dropNotices, samePath, type SessionContext, SessionController } from './SessionController';
 import type { AppShell, PickItem } from './shell';
 
@@ -597,6 +598,9 @@ export class AppController implements Disposable {
       sessionChoice: (session) => this.sessionChoice(session),
       setSessionModel: (session, change) => this.setSessionModel(session, change),
       useModelAsDefault: (session) => this.useModelAsDefault(session),
+      agentOptionsChanged: (session) => {
+        if (session.id === this.activeId) this.postConfig();
+      },
       accountLabel: (account) => this.accountLabel(account),
     };
   }
@@ -2309,8 +2313,16 @@ export class AppController implements Disposable {
   }
 
   /** The model menu changed a session's model, effort or profile: from its next request on. */
-  private async setSessionModel(session: SessionController, change: { model?: unknown; effort?: unknown; profile?: unknown }): Promise<void> {
+  private async setSessionModel(session: SessionController, change: { model?: unknown; effort?: unknown; profile?: unknown; option?: unknown }): Promise<void> {
     const c = { ...this.sessionChoice(session) };
+    if (change.option !== undefined) {
+      // Only an option the session's agent CLI advertised, with a value it listed.
+      const { id, value } = (change.option ?? {}) as { id?: unknown; value?: unknown };
+      if (!isOptionText(id) || !isOptionText(value)) return;
+      const option = this.advertisedOptions(session, c).find((o) => o.id === id);
+      if (!option?.options.some((v) => v.value === value)) return;
+      c.options = { ...c.options, [option.id]: value };
+    }
     if (change.model !== undefined) {
       if (isAgentRef(c.provider) || typeof change.model !== 'string' || (change.model && !isModelId(change.model))) return;
       c.model = change.model || this.defaultModel(c.provider);
@@ -2337,6 +2349,12 @@ export class AppController implements Disposable {
     this.postConfig();
   }
 
+  /** The choices the session's agent CLI advertised, when the main agent is that agent (none otherwise). */
+  private advertisedOptions(session: SessionController, choice: SessionChoice): AgentOption[] {
+    const advertised = session.agentOptions;
+    return advertised && isAgentRef(choice.provider) && choice.provider === `agent:${advertised.agent}` ? advertised.options : [];
+  }
+
   /** The model menu of the session shown. */
   private sessionModelView(session: SessionController): SessionModelView {
     const c = this.sessionChoice(session);
@@ -2353,6 +2371,11 @@ export class AppController implements Disposable {
       profiles: onClaudeCode && profiles.length ? [{ id: '', name: t('Default profile') }, ...profiles.map((p) => ({ id: p.id, name: p.name }))] : [],
       profile: c.profile,
       differs: defaults.provider === provider && (defaults.model !== c.model || defaults.effort !== c.effort || defaults.profile !== c.profile),
+      // What the agent's next prompt runs on: the session's pick where the agent lists it, else the agent's own value.
+      agentOptions: this.advertisedOptions(session, c).map((o) => {
+        const picked = c.options && Object.prototype.hasOwnProperty.call(c.options, o.id) ? c.options[o.id] : undefined;
+        return picked !== undefined && o.options.some((v) => v.value === picked) ? { ...o, currentValue: picked } : o;
+      }),
     };
   }
 

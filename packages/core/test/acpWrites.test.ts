@@ -40,7 +40,7 @@ describe("an agent's writes through fs/write_text_file", () => {
     const client = {
       newSession: async (_cwd: string, h: AcpSessionHandlers) => {
         handlers = h;
-        return 's1';
+        return { sessionId: 's1', options: [] };
       },
       prompt: async () => {
         answer = await handlers.writeTextFile({ sessionId: 's1', path: path.join(ws.root, 'docs', 'n.md'), content: 'payload\n' }).then(

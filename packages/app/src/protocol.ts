@@ -4,6 +4,7 @@
  */
 import type {
   AgentEvent,
+  AgentOption,
   Locale,
   ModelInfo,
   PermissionMode,
@@ -112,6 +113,11 @@ export interface SessionModelView {
   profile: string;
   /** The choice differs from the settings' defaults ("Use as default" would change them). */
   differs: boolean;
+  /**
+   * An agent CLI: the model and thought-level choices it advertised (current value = what its next
+   * prompt runs on); none while it advertised nothing ("Set in the agent").
+   */
+  agentOptions?: AgentOption[];
 }
 
 export interface ClaudeCodeStatus {
@@ -593,7 +599,7 @@ export type FromWebview =
    * The composer's model menu: this session's model ('' = the provider's default), effort ('' =
    * the provider's own) or Claude Code profile ('' = the default one), from its next request on.
    */
-  | Scoped<{ type: 'setSessionModel'; model?: string; effort?: string; profile?: string }>
+  | Scoped<{ type: 'setSessionModel'; model?: string; effort?: string; profile?: string; option?: { id: string; value: string } }>
   /** Save this session's model, effort and profile as the settings' defaults for new sessions. */
   | Scoped<{ type: 'useModelAsDefault' }>
   | { type: 'openSettings' }

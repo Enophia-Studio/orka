@@ -14,6 +14,13 @@ import * as path from 'node:path';
 
 const script = JSON.parse(process.env.FAKE_ACP_SCRIPT || '[]');
 const logFile = process.env.FAKE_ACP_LOG;
+// FAKE_ACP_OPTIONS=1 advertises session config options: a model, a thought level and a mode.
+const advertise = process.env.FAKE_ACP_OPTIONS === '1';
+const configOptions = [
+  { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'fast', options: [{ value: 'fast', name: 'Fast' }, { group: 'pro', name: 'Pro', options: [{ value: 'pro', name: 'Pro model' }] }] },
+  { id: 'thinking', name: 'Thinking', category: 'thought_level', type: 'select', currentValue: 'low', options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }] },
+  { id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'ask', options: [{ value: 'ask', name: 'Ask' }, { value: 'yolo', name: 'Yolo' }] },
+];
 const log = (entry) => logFile && appendFileSync(logFile, `${JSON.stringify({ pid: process.pid, ...entry })}\n`);
 const send = (message, eol = '\n') => process.stdout.write(`${JSON.stringify(message)}${eol}`);
 
@@ -82,7 +89,7 @@ async function handle(message) {
       }
       const sessionId = `sess-${++sessions}`;
       cwds.set(sessionId, message.params.cwd);
-      send({ jsonrpc: '2.0', id: message.id, result: { sessionId } });
+      send({ jsonrpc: '2.0', id: message.id, result: { sessionId, ...(advertise ? { configOptions } : {}) } });
       // Updates outside a prompt (commands) must not confuse the client.
       update(sessionId, { sessionUpdate: 'available_commands_update', availableCommands: [] });
       return;
@@ -90,6 +97,18 @@ async function handle(message) {
     case 'authenticate':
       send({ jsonrpc: '2.0', id: message.id, result: {} });
       return;
+    case 'session/set_config_option': {
+      const { configId, value } = message.params;
+      log({ event: 'set_config_option', configId, value });
+      const option = advertise && configOptions.find((o) => o.id === configId);
+      if (!option) {
+        send({ jsonrpc: '2.0', id: message.id, error: { code: -32602, message: `unknown option ${configId}` } });
+        return;
+      }
+      option.currentValue = value;
+      send({ jsonrpc: '2.0', id: message.id, result: { configOptions } });
+      return;
+    }
     case 'session/cancel':
       running.get(message.params.sessionId)?.();
       return;
@@ -119,6 +138,7 @@ async function runTurn(sessionId, steps) {
       if (cancelled) return 'cancelled';
       if (step.chunk !== undefined) update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: step.chunk } });
       else if (step.thought !== undefined) update(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: step.thought } });
+      else if (step.usage) update(sessionId, { sessionUpdate: 'usage_update', ...step.usage });
       else if (step.plan) update(sessionId, { sessionUpdate: 'plan', entries: step.plan.map((e) => ({ priority: 'medium', status: 'pending', ...e })) });
       else if (step.toolCall) {
         const { id, ...rest } = step.toolCall;

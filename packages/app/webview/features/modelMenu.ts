@@ -1,7 +1,7 @@
 // The message box's model menu: the session's model, effort and Claude Code profile, from its next
 // request on. The settings hold the defaults a new session starts with ("Use as default" writes
 // them); the provider itself is picked in the Agents panel.
-import type { ContextFill, ModelInfo } from '@orka/core';
+import type { AgentOption, ContextFill, ModelInfo } from '@orka/core';
 import { t } from '@orka/core/src/i18n';
 import type { SessionModelView } from '../../src/protocol';
 import { attr, escapeHtml, icon } from '../core/dom';
@@ -24,7 +24,14 @@ export function effortLabel(provider: string, effort: string): string {
 
 /** The button in the message box: "Claude Code · Opus (latest) · max". */
 export function modelButtonHtml(label: string, view: SessionModelView | undefined, open: boolean, warn: boolean): string {
-  const effort = view?.effort ? ` · ${view.effort}` : '';
+  // An agent CLI that advertised its model and thought level shows the ones its next prompt uses.
+  const picked = (category: AgentOption['category']) => {
+    const option = view?.agentOptions?.find((o) => o.category === category);
+    return option?.options.find((v) => v.value === option.currentValue)?.name;
+  };
+  const agentModel = picked('model');
+  const level = view?.effort || picked('thought_level');
+  const effort = `${agentModel ? ` · ${agentModel}` : ''}${level ? ` · ${level}` : ''}`;
   return `<button class="agent-btn model-btn${open ? ' open' : ''}${warn ? ' warn' : ''}" data-action="model-menu" aria-haspopup="dialog" aria-expanded="${open}" title="${attr(
     t('Model and effort for this session'),
   )}">${icon('agent')}<span>${escapeHtml(label + effort)}</span>${icon('chevron', 'chev')}</button>`;
@@ -36,12 +43,29 @@ function radio(action: string, attrs: string, checked: boolean, label: string, h
   )}</span>${hint ? `<span class="menu-hint">${escapeHtml(hint)}</span>` : ''}</button>`;
 }
 
+/** One choice an agent CLI advertised: a radio list for its model, segmented buttons for its thought level. */
+function agentOptionHtml(option: AgentOption): string {
+  const data = (value: string) => `data-action="session-option" data-option="${attr(option.id)}" data-value="${attr(value)}"`;
+  if (option.category === 'thought_level') {
+    const buttons = option.options
+      .map((v) => `<button class="seg-btn" role="radio" aria-checked="${v.value === option.currentValue}" ${data(v.value)}>${escapeHtml(v.name)}</button>`)
+      .join('');
+    return `<div class="seg" role="radiogroup" aria-label="${attr(option.name)}">${buttons}</div>`;
+  }
+  return `<div class="model-options" role="radiogroup" aria-label="${attr(option.name)}">${option.options
+    .map((v) => radio('session-option', `data-option="${attr(option.id)}" data-value="${attr(v.value)}"`, v.value === option.currentValue, v.name))
+    .join('')}</div>`;
+}
+
 export function modelMenuHtml({ view, models, agent, running }: ModelMenuInput): string {
   const sections: string[] = [];
   // The model: the provider's list (the model of the session first when it is not on it).
   let modelRows: string;
+  const advertised = agent ? (view.agentOptions ?? []) : [];
+  const agentModels = advertised.filter((o) => o.category === 'model');
   if (agent) {
-    modelRows = `<p class="model-menu-note">${escapeHtml(t('Set in the agent'))}</p>`;
+    // What the agent advertised for its session; without that, its own settings decide.
+    modelRows = agentModels.length ? agentModels.map(agentOptionHtml).join('') : `<p class="model-menu-note">${escapeHtml(t('Set in the agent'))}</p>`;
   } else {
     const list = view.model && !models.some((m) => m.id === view.model) ? [{ id: view.model, label: view.model, family: '' } as ModelInfo, ...models] : models;
     modelRows = `<div class="model-options" role="radiogroup" aria-label="${attr(t('Model'))}">${list
@@ -61,6 +85,9 @@ export function modelMenuHtml({ view, models, agent, running }: ModelMenuInput):
     sections.push(
       `<div class="model-menu-section"><div class="model-menu-label">Effort</div><div class="seg" role="radiogroup" aria-label="Effort">${buttons}</div></div>`,
     );
+  }
+  for (const option of advertised.filter((o) => o.category === 'thought_level')) {
+    sections.push(`<div class="model-menu-section"><div class="model-menu-label">Effort</div>${agentOptionHtml(option)}</div>`);
   }
   if (view.profiles.length) {
     sections.push(

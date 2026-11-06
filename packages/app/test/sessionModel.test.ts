@@ -184,3 +184,35 @@ describe('readChoice', () => {
     });
   });
 });
+
+describe('the model menu for an agent CLI', () => {
+  const agentSettings = {
+    provider: 'agent:custom:fake',
+    'agentClis.enabled': ['custom:fake'],
+    'agentClis.custom': [{ name: 'Fake', command: process.execPath, args: [path.join(home ?? tmpdir(), 'never-started.mjs')] }],
+    'supervisor.enabled': false,
+  };
+  const advertised = [
+    { id: 'model', name: 'Model', category: 'model' as const, currentValue: 'fast', options: [{ value: 'fast', name: 'Fast' }, { value: 'pro', name: 'Pro' }] },
+  ];
+  type ViewOf = { sessionModelView(session: SessionController): { agentOptions?: typeof advertised } };
+
+  it('takes only an option the session’s agent advertised, with a value it lists, from the next prompt on', async () => {
+    const { controller, a, b } = await twoSessions(agentSettings);
+    a.agentOptions = { agent: 'custom:fake', options: advertised };
+    await controller.handleMessage({ type: 'setSessionModel', sessionId: a.id, option: { id: 'model', value: 'nope' } });
+    await controller.handleMessage({ type: 'setSessionModel', sessionId: a.id, option: { id: 'mode', value: 'yolo' } });
+    assert.equal(a.choice.options, undefined, 'unlisted values and unadvertised options are dropped');
+    await controller.handleMessage({ type: 'setSessionModel', sessionId: a.id, option: { id: 'model', value: 'pro' } });
+    assert.deepEqual(a.choice.options, { model: 'pro' });
+    // The menu shows the pick; the other session's agent advertised nothing, so it takes none.
+    const view = (controller as unknown as ViewOf).sessionModelView(a);
+    assert.equal(view.agentOptions?.[0].currentValue, 'pro');
+    await controller.handleMessage({ type: 'setSessionModel', sessionId: b.id, option: { id: 'model', value: 'pro' } });
+    assert.equal(b.choice.options, undefined);
+    // Options another agent advertised do not count for this one.
+    b.agentOptions = { agent: 'codex', options: advertised };
+    await controller.handleMessage({ type: 'setSessionModel', sessionId: b.id, option: { id: 'model', value: 'pro' } });
+    assert.equal(b.choice.options, undefined);
+  });
+});

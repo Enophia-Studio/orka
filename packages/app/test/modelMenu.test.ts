@@ -101,3 +101,26 @@ describe('the context gauge', () => {
     assert.match(over.title, /100% full/);
   });
 });
+
+describe('the model menu for an agent CLI', () => {
+  const advertised = [
+    { id: 'model', name: 'Model', category: 'model' as const, currentValue: 'pro', options: [{ value: 'fast', name: 'Fast' }, { value: 'pro', name: 'Pro <1>' }] },
+    { id: 'think', name: 'Thinking', category: 'thought_level' as const, currentValue: 'low', options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }] },
+  ];
+  const agentView = (agentOptions?: typeof advertised) => view({ provider: 'agent:antigravity', model: '', effort: '', efforts: [], agentOptions });
+
+  it('lists the model and thought level the agent advertised, the current ones checked', () => {
+    const html = modelMenuHtml({ view: agentView(advertised), models: [], agent: true, running: false });
+    assert.match(html, /aria-checked="true" data-action="session-option" data-option="model" data-value="pro"/);
+    assert.match(html, /aria-checked="false" data-action="session-option" data-option="think" data-value="high"/);
+    assert.match(html, /Pro &lt;1&gt;/);
+    assert.doesNotMatch(html, /Set in the agent/);
+    assert.match(modelButtonHtml('Antigravity CLI', agentView(advertised), false, false), /Antigravity CLI · Pro &lt;1&gt; · Low/);
+  });
+
+  it('says "Set in the agent" while the agent advertised nothing', () => {
+    const html = modelMenuHtml({ view: agentView([]), models: [], agent: true, running: false });
+    assert.match(html, /Set in the agent/);
+    assert.doesNotMatch(html, /session-option/);
+  });
+});

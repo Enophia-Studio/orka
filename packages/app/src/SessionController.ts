@@ -1,5 +1,6 @@
 import {
   type AgentEvent,
+  type AgentOption,
   type AIProvider,
   type ApprovalRequest,
   type ApprovalResponse,
@@ -115,6 +116,8 @@ export interface SessionContext {
   sessionChoice(session: SessionController): SessionChoice;
   /** The model menu changed this session's model, effort, profile or an agent option. */
   setSessionModel(session: SessionController, change: Extract<SessionMessage, { type: 'setSessionModel' }>): Promise<void>;
+  /** The agent CLI of this session advertised new choices (the model menu shows them). */
+  agentOptionsChanged(session: SessionController): void;
   /** "Use as default": this session's choice becomes the settings' default for new sessions. */
   useModelAsDefault(session: SessionController): Promise<void>;
   /** "Claude Code (Work)" for "claude-code:work", for notices. */
@@ -178,6 +181,8 @@ export class SessionController {
   choice: SessionChoice;
   /** The choice the running (or last) request started with: a change made meanwhile applies from the next one. */
   runChoice?: SessionChoice;
+  /** The model and thought-level choices the main agent's agent CLI (`agent`: its id) last advertised. */
+  agentOptions?: { agent: string; options: AgentOption[] };
 
   constructor(
     private readonly ctx: SessionContext,
@@ -205,6 +210,8 @@ export class SessionController {
       host: this.host,
       getProvider: () => ctx.providerFor('main', this),
       getExternalAgent: () => ctx.externalAgent(this.root),
+      // Read per prompt: the choice the request started with.
+      getAgentChoices: () => this.runChoice?.options,
       getExtraTools: () => ctx.mcpTools(this),
       getLightProvider: () => (ctx.settings().light.provider === 'inherit' ? undefined : ctx.providerFor('light', this)),
       get commandSnapshots() {
@@ -1172,6 +1179,12 @@ export class SessionController {
 
   private onEvent(event: AgentEvent): void {
     if (event.type === 'reset') this.session = emptySession();
+    // The agent CLI's choices outlive a new task: the menu offers them before its first prompt.
+    if (event.type === 'agent_options') {
+      this.agentOptions = { agent: event.agent, options: event.options };
+      this.ctx.agentOptionsChanged(this);
+      return;
+    }
     applyEvent(this.session, event);
     this.post({ type: 'event', event });
     this.ctx.agentEvent(event);

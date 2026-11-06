@@ -63,6 +63,8 @@ describe('a third-party agent over ACP as the main agent', () => {
       /** In place of the default snapshots and change tracker (e.g. ones that hold a step until the test lets it go on). */
       shadow?: ShadowGit;
       changes?: (host: NodeHost) => ChangeTracker;
+      /** The user's choices for the options the agent advertised. */
+      choices?: () => Record<string, string> | undefined;
     } = {},
   ) {
     const approvals: ApprovalRequest[] = [];
@@ -94,6 +96,7 @@ describe('a third-party agent over ACP as the main agent', () => {
       changes: options.changes?.(host),
       commandSnapshots: options.snapshots === false ? undefined : (options.shadow ?? new ShadowGit(ws.root, shadowDir())),
       getExternalAgent: () => ((options.useAgent?.() ?? true) ? pooledAgent(pool, spec) : undefined),
+      getAgentChoices: options.choices,
       supervisor: options.supervisor && {
         getProvider: () => options.supervisor!.provider,
         getSettings: () => ({ enabled: true, frequency: 'final_only', maxInterventions: 3, ...options.supervisor!.settings }),
@@ -704,6 +707,42 @@ describe('a third-party agent over ACP as the main agent', () => {
       ['acp:edit', 'Edit a.txt'],
     ], 'a request that showed no diff covers its file with any content');
     assert.match(approvals[0].detail ?? '', /Files: README\.md, \.github\/workflows\/release\.yml/);
+  });
+
+  gitIt('surfaces the model and thought level the agent advertises and sets a choice only where it lists it', async () => {
+    let choices: Record<string, string> | undefined;
+    const { orchestrator, events, session } = setup([[{ chunk: 'one' }], [{ usage: { used: 3000, size: 12000 } }, { chunk: 'two' }]], {
+      env: { FAKE_ACP_OPTIONS: '1' },
+      choices: () => choices,
+    });
+    assert.equal(await orchestrator.run('first'), 'completed');
+    const advertised = events.filter((e) => e.type === 'agent_options');
+    assert.ok(advertised.length >= 1);
+    const first = advertised[0].type === 'agent_options' ? advertised[0] : undefined;
+    assert.equal(first?.agent, 'fake');
+    // The agent's own mode is not offered (it would get around Orka's permission mode); groups are flattened.
+    assert.deepEqual(first?.options.map((o) => [o.id, o.category, o.currentValue, o.options.map((v) => v.value).join('|')]), [
+      ['model', 'model', 'fast', 'fast|pro'],
+      ['thinking', 'thought_level', 'low', 'low|high'],
+    ]);
+    assert.equal(logged().filter((l) => l.event === 'set_config_option').length, 0, 'no choice made: nothing is set');
+    assert.equal(session.context, undefined, 'the agent has not said how full its context is');
+
+    // Unadvertised options, values it does not list and the current value are not sent.
+    choices = { model: 'pro', thinking: 'medium', mode: 'yolo', other: 'x' };
+    assert.equal(await orchestrator.run('second'), 'completed');
+    assert.deepEqual(logged().filter((l) => l.event === 'set_config_option').map((l) => [l.configId, l.value]), [['model', 'pro']]);
+    const last = events.filter((e) => e.type === 'agent_options').at(-1);
+    assert.equal(last?.type === 'agent_options' && last.options.find((o) => o.id === 'model')?.currentValue, 'pro');
+    assert.deepEqual(session.context, { used: 3000, size: 12000 });
+  });
+
+  gitIt('sends no option request to an agent that advertises none', async () => {
+    const { orchestrator, events } = setup([[{ chunk: 'one' }]], { choices: () => ({ model: 'pro' }) });
+    assert.equal(await orchestrator.run('first'), 'completed');
+    assert.equal(logged().filter((l) => l.event === 'set_config_option').length, 0);
+    const advertised = events.find((e) => e.type === 'agent_options');
+    assert.deepEqual(advertised?.type === 'agent_options' && advertised.options, []);
   });
 });
 

@@ -133,6 +133,11 @@ export interface OrchestratorOptions {
    * Needs commandSnapshots: without them the agent does not start.
    */
   getExternalAgent?: () => ExternalAgentRuntime | undefined;
+  /**
+   * The user's choices for the agent CLI's advertised options (option id -> value), set before
+   * each of its prompts where the agent lists them; read per prompt, so a change applies from the next one.
+   */
+  getAgentChoices?: () => Readonly<Record<string, string>> | undefined;
 }
 
 const MAX_TOOL_RESULT_CHARS = 40_000;
@@ -967,6 +972,8 @@ export class Orchestrator {
         let result: AcpTurnResult | undefined;
         let failure: unknown;
         try {
+          await session.applyChoices(this.options.getAgentChoices?.());
+          if (signal.aborted || left()) return 'stopped';
           // A file the agent writes through Orka keeps its content from the turn's snapshot as its
           // original; a write still under way after a new task records nothing into that one.
           result = await session.prompt(blocks, signal, { recordBefore: (absPath) => net.recordBefore(absPath, () => !left()) });
@@ -1037,6 +1044,11 @@ export class Orchestrator {
       },
       label: agent.label,
       commandTimeoutMs: this.options.getSettings().commandTimeoutMs,
+      onOptions: (options) => this.emit({ type: 'agent_options', agent: agent.id, options }),
+      onContext: (fill) => {
+        this.contextFill = fill;
+        this.emitUsage();
+      },
     };
     const session = new AcpAgentSession(client, context);
     try {

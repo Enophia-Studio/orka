@@ -49,6 +49,19 @@ export interface ContextFill {
   size: number;
 }
 
+/**
+ * A choice an agent CLI advertised for its session (an ACP session config option of the "select"
+ * type): its model or its thought level. Orka sets it only to one of the values listed here.
+ */
+export interface AgentOption {
+  id: string;
+  name: string;
+  /** Orka offers only these two kinds (an agent's own modes would bypass Orka's permission mode). */
+  category: 'model' | 'thought_level';
+  currentValue: string;
+  options: Array<{ value: string; name: string }>;
+}
+
 export type RunEndReason = 'completed' | 'stopped' | 'error' | 'max_iterations' | 'budget' | 'refusal';
 
 export type NoticeLevel = 'info' | 'warning' | 'error';
@@ -67,7 +80,9 @@ export type AgentEvent =
   | { type: 'changes'; changes: FileChange[] }
   | { type: 'phase'; phase: AgentPhase }
   /** `context`: how full the main agent's context is, when its provider says (none: unknown). */
-  | { type: 'usage'; total: Usage; model: string; byAgent?: AgentUsage[]; context?: ContextFill }  | { type: 'notice'; level: NoticeLevel; message: string; action?: string }
+  | { type: 'usage'; total: Usage; model: string; byAgent?: AgentUsage[]; context?: ContextFill }
+  /** The main agent's agent CLI (`agent`: its id) advertised these choices for its session. */
+  | { type: 'agent_options'; agent: string; options: AgentOption[] }  | { type: 'notice'; level: NoticeLevel; message: string; action?: string }
   | { type: 'reset' }
   /** An event from a sub-agent, nested under the run_subagent tool call that started it. */
   | { type: 'subagent'; parentId: string; agent: string; event: AgentEvent }

@@ -228,7 +228,7 @@ export class AcpTurnMapper {
         return;
       }
       default:
-        // Commands, modes and context usage are not shown in this version.
+        // Commands and modes are not shown; the session itself reads options and context usage.
         return;
     }
   }

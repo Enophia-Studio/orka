@@ -1301,5 +1301,6 @@ export const TR: Record<string, string> = {
     'Yeni oturumlar bu model, Effort ve Profile ile başlar. Şu an açık oturumlar kendi ayarlarını korur.',
   'Default effort': 'Varsayılan Effort',
   '{value} · change it from the model menu in the message box': '{value} · mesaj kutusundaki model menüsünden değiştirin',
+  '{agent} did not change "{option}": {reason}': '{agent} "{option}" ayarını değiştirmedi: {reason}',
   'Context: {percent}% full ({used} of {size} tokens)': 'Bağlam: %{percent} dolu ({size} Token’ın {used} kadarı)',
 };

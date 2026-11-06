@@ -2028,6 +2028,10 @@ document.addEventListener('click', (e) => {
     case 'session-effort':
       post({ type: 'setSessionModel', effort: target.dataset.effort ?? '' });
       break;
+    case 'session-option':
+      // The app checks that the session's agent advertised this option and value.
+      post({ type: 'setSessionModel', option: { id: target.dataset.option ?? '', value: target.dataset.value ?? '' } });
+      break;
     case 'session-profile':
       post({ type: 'setSessionModel', profile: target.dataset.profile ?? '' });
       break;

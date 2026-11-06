@@ -87,7 +87,7 @@ export type SessionUpdate =
   | ({ sessionUpdate: 'tool_call' } & ToolCallFields)
   | ({ sessionUpdate: 'tool_call_update' } & ToolCallFields)
   | { sessionUpdate: 'plan'; entries: PlanEntry[] }
-  | { sessionUpdate: 'user_message_chunk' | 'available_commands_update' | 'current_mode_update' | 'usage_update'; [field: string]: unknown };
+  | { sessionUpdate: 'user_message_chunk' | 'available_commands_update' | 'current_mode_update' | 'usage_update' | 'config_option_update'; [field: string]: unknown };
 
 export type PermissionOptionKind = 'allow_once' | 'allow_always' | 'reject_once' | 'reject_always';
 
