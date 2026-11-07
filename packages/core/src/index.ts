@@ -66,6 +66,21 @@ export { type AcpAction, actionFor, commandOf } from './acp/mapping';
 export { McpClient, type McpServerConfig, type McpState, type McpToolInfo } from './mcp/McpClient';
 export { McpManager, type McpServerStatus, mcpToolName } from './mcp/McpManager';
 export {
+  buildCatalogServer,
+  type CatalogBuild,
+  catalogAvailable,
+  catalogCommandLine,
+  catalogEntry,
+  catalogLaunch,
+  catalogRunKind,
+  catalogServerName,
+  catalogTarget,
+  findCatalogEntry,
+  MCP_CATALOG,
+  type McpCatalogEntry,
+  type McpCatalogField,
+} from './mcp/catalog';
+export {
   createSkillTool,
   invokedSkillBlock,
   loadSkills,
