@@ -74,6 +74,10 @@ export interface OrkaConfig {
     custom?: Array<{ name: string; command: string; args?: string[] }>;
   };
   mcpServers?: Record<string, McpServerConfig>;
+  /** MCP limits for every server: maxResultChars, callTimeoutSeconds, startTimeoutSeconds, maxTools (all servers together). */
+  mcpLimits?: Record<string, unknown>;
+  /** One server's own limits (same keys; maxTools counts that server alone) and allowedTools, the tool names the model may get. */
+  mcpServerLimits?: Record<string, unknown>;
   skills?: { enabled?: boolean; disabled?: string[] };
   /** Snapshot the files terminal commands change, so /undo covers them too (needs git). */
   trackCommandChanges?: boolean;

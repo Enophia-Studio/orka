@@ -32,6 +32,9 @@ import {
   getLocale,
   loadSkills,
   McpManager,
+  capMcpTools,
+  readMcpLimits,
+  readMcpServerLimits,
   MODEL_CATALOG,
   newTaskId,
   NodeHost,
@@ -53,6 +56,7 @@ import {
   type Skill,
   type SupervisorSettings,
   type TaskSnapshot,
+  type Tool,
 } from '@orka/core';
 import { HELP, HELP_TR, parseArgs, type CliArgs } from './args';
 import {
@@ -118,7 +122,7 @@ class Session {
     this.store = new FileTaskStore(path.join(ORKA_HOME, 'tasks', key));
     if (config.mcpServers && Object.keys(config.mcpServers).length) {
       this.mcp = new McpManager();
-      this.mcp.sync(config.mcpServers);
+      this.mcp.sync(config.mcpServers, { global: readMcpLimits(config.mcpLimits), servers: readMcpServerLimits(config.mcpServerLimits) });
     }
     this.snapshots = new ShadowGit(root, path.join(ORKA_HOME, 'snapshots', `${key}.git`));
     this.orchestrator = new Orchestrator({
@@ -137,9 +141,15 @@ class Session {
       getLightProvider: () => (config.light ? this.provider('light', config.light) : undefined),
       getFallbackProvider: () => (config.fallback ? this.provider('fallback', config.fallback) : undefined),
       commandSnapshots: config.trackCommandChanges === false ? undefined : this.snapshots,
-      getExtraTools: this.mcp ? () => this.mcp!.tools() : undefined,
+      getExtraTools: this.mcp ? () => this.mcpTools() : undefined,
       getExternalAgent: () => this.externalAgent(),
     });
+  }
+
+  /** The MCP servers' tools, at most the global tool limit of them. */
+  private async mcpTools(): Promise<{ tools: Tool[]; notices: string[] }> {
+    const capped = capMcpTools(await this.mcp!.tools(), readMcpLimits(this.config.mcpLimits).maxTools);
+    return { tools: capped.tools, notices: capped.notice ? [capped.notice] : [] };
   }
 
   /** Switch the main agent: a model, or (with its selection) an agent CLI. */
