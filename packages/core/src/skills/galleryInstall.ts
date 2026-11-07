@@ -224,7 +224,10 @@ export async function installBundledSkill(id: string, galleryDir: string, skills
     skillsDir,
     id,
     async (dir) => {
-      await fs.cp(from, dir, { recursive: true, errorOnExist: true, force: false });
+      // Newer Node versions refuse to copy onto an existing folder, even an empty one: copy each entry in.
+      for (const name of await fs.readdir(from)) {
+        await fs.cp(path.join(from, name), path.join(dir, name), { recursive: true, errorOnExist: true, force: false });
+      }
       return (await listFiles(dir)).sort();
     },
     { id, kind: 'bundled', license: entry.license, source: entry.source },

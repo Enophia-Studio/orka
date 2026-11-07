@@ -58,7 +58,7 @@ describe('skills gallery page', () => {
     assert.doesNotMatch(head, /<img/);
     assert.match(head, /value="&quot;&gt;&lt;img/);
     const preview = galleryPreviewHtml(galleryEntry('godot')!, '# Godot\n<script>alert(1)</script>');
-    assert.doesNotMatch(preview, /<script>/);
+    assert.ok(!preview.toLowerCase().includes("<script"), preview);
     assert.match(preview, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
     assert.match(galleryPreviewHtml(galleryEntry('godot')!, undefined), /Loading/);
     assert.equal(originLabel({ id: 'semgrep', kind: 'source', license: 'CC-BY-SA-4.0', repo: 'trailofbits/skills', ref: 'e4dd0bb' }), 'trailofbits/skills@e4dd0bb · CC-BY-SA-4.0');
@@ -146,8 +146,9 @@ describe('adding skills from the gallery', () => {
     assert.equal(consent.modal, true);
     assert.deepEqual(consent.actions, ['Download and install']);
     assert.match(consent.text, /Install the skill Unity uGUI\?/);
-    assert.match(consent.detail!, /https:\/\/raw\.githubusercontent\.com\/Unity-Technologies\/skills\/60f95e6d4beaeacf4dfdff7829ec9b35008a0be0\/skills\/ui-ugui\/SKILL\.md/);
-    assert.match(consent.detail!, /https:\/\/raw\.githubusercontent\.com\/Unity-Technologies\/skills\/60f95e6d4beaeacf4dfdff7829ec9b35008a0be0\/LICENSE\.md/);
+    const base = 'https://raw.githubusercontent.com/Unity-Technologies/skills/60f95e6d4beaeacf4dfdff7829ec9b35008a0be0/';
+    assert.ok(consent.detail!.includes(`${base}skills/ui-ugui/SKILL.md`), consent.detail);
+    assert.ok(consent.detail!.includes(`${base}LICENSE.md`), consent.detail);
     assert.match(consent.detail!, /Unity Companion License: use it only together/);
     assert.match(consent.detail!, /Orka never runs its scripts/);
     assert.deepEqual(urls, [], 'declined: nothing fetched');
