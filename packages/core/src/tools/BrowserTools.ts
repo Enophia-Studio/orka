@@ -20,9 +20,12 @@ interface BrowserInput {
 }
 
 const VISUAL: Action[] = ['open', 'screenshot', 'click', 'type', 'press', 'scroll'];
+/** What the agent may still do while the user has taken the page over: look, never change it. */
+const PASSIVE: Action[] = ['screenshot', 'read', 'console'];
 const MAX_TEXT = 20_000;
 
-function isLocal(url: string): boolean {
+/** A page on this machine (local file, localhost): opening or using it needs no approval. */
+export function isLocalUrl(url: string): boolean {
   try {
     const u = new URL(url);
     if (u.protocol === 'file:' || u.protocol === 'about:') return true;
@@ -70,7 +73,7 @@ export const browserTool: Tool<BrowserInput> = {
     const url = input.action === 'open' ? target(input, ctx) : browser.url;
     const acts = input.action === 'open' || input.action === 'click' || input.action === 'type' || input.action === 'press';
     // Opening or using an external site is a network action; local pages and reading are not.
-    const external = acts && !isLocal(url);
+    const external = acts && !isLocalUrl(url);
     const shown = url.startsWith('file:') && input.url ? toRelative(ctx.host.workspaceRoot, resolveInWorkspace(ctx.host.workspaceRoot, input.url)) : url;
     const what =
       input.action === 'open'
@@ -90,7 +93,17 @@ export const browserTool: Tool<BrowserInput> = {
   },
   async execute(input, ctx): Promise<ToolResult> {
     const browser = browserFor(ctx.host);
-    const onAbort = () => browser.close();
+    // The user has the page in Orka's Browser panel: looking is fine, changing it is not.
+    if (browser.userControl && !PASSIVE.includes(input.action)) {
+      throw new ToolError(
+        `The user has taken over the browser in Orka's Browser panel, so "${String(input.action)}" was not done. ` +
+          'You can still use screenshot, read and console. Wait until the user gives control back (or ask them to) before using the page.',
+      );
+    }
+    const onAbort = () => {
+      // A stopped run does not close the page the user is using.
+      if (!browser.userControl) browser.close();
+    };
     ctx.signal.addEventListener('abort', onAbort, { once: true });
     try {
       switch (input.action) {
