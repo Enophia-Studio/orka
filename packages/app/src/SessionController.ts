@@ -97,6 +97,7 @@ export interface SessionContext {
   isInstalled(id: string, fresh?: boolean): boolean;
   /** The app's part of an agent event (a Claude Code update a model needs). */
   agentEvent(event: AgentEvent): void;
+  /** The config for the page's init (the page has it from then on). */
   configView(): ConfigView;
   postConfig(): void;
   postHistory(): Promise<void>;
@@ -294,6 +295,8 @@ export class SessionController {
 
   /** The page shows this session's task from scratch. */
   postInit(): void {
+    // The config is read for a page that gets it.
+    if (!this.ctx.isActive(this)) return;
     this.post({ type: 'init', session: this.session, config: this.ctx.configView(), taskId: this.task.id });
   }
 

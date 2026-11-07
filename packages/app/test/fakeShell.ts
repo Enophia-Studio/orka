@@ -3,7 +3,7 @@
 import { type ApprovalRequest, type ApprovalResponse, type EditorContext, NodeHost } from '@orka/core';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
-import type { ToWebview } from '../src/protocol';
+import type { ConfigView, ToWebview } from '../src/protocol';
 import type { Disposable, SettingsStore } from '../src/settings';
 import type { AppShell, Folder, FolderBrowser, InputOptions, SecretStore, StateStore, TerminalHandle } from '../src/shell';
 import type { TerminalProgram } from '../src/terminal';
@@ -114,6 +114,12 @@ export class FakeShell implements AppShell {
   /** The newest message of this type sent to the UI. */
   last<T extends ToWebview['type']>(type: T): Extract<ToWebview, { type: T }> | undefined {
     return this.posted.filter((m): m is Extract<ToWebview, { type: T }> => m.type === type).at(-1);
+  }
+
+  /** The config the page has now: from the newest init or config (an unchanged config is not sent again). */
+  pageConfig(): ConfigView | undefined {
+    const message = this.posted.filter((m): m is Extract<ToWebview, { type: 'init' | 'config' }> => m.type === 'init' || m.type === 'config').at(-1);
+    return message?.config;
   }
 
   storage(root: string): { tasks: string; snapshots: string } {

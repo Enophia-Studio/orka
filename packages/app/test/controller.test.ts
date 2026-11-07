@@ -502,6 +502,32 @@ describe('desktop appearance settings', () => {
   });
 });
 
+describe('config messages', () => {
+  it('go to the page only when the config changed, or to show it again over a refused choice', async () => {
+    const { shell, controller } = await start('desktop');
+    const internals = controller as unknown as { postConfig(refresh?: boolean): void };
+    const configs = () => shell.posted.filter((m) => m.type === 'config').length;
+    await controller.handleMessage({ type: 'ready' });
+    await tick();
+    const before = configs();
+    // A check or setting that changed nothing: the page has this config from its init.
+    internals.postConfig();
+    internals.postConfig();
+    assert.equal(configs(), before, 'the same config is not sent again');
+    await controller.handleMessage({ type: 'setSetting', key: 'desktop.theme', value: 'dark' });
+    await tick();
+    assert.equal(configs(), before + 1, 'a changed config is sent');
+    assert.equal(shell.last('config')?.config.ui?.theme, 'dark');
+    internals.postConfig(true);
+    assert.equal(configs(), before + 2, 'sent again to undo what the user changed in the page');
+    // A page that loads again gets the config with its init; the next unchanged one is not sent.
+    await controller.handleMessage({ type: 'ready' });
+    internals.postConfig();
+    assert.equal(configs(), before + 2);
+    assert.equal(shell.pageConfig()?.ui?.theme, 'dark');
+  });
+});
+
 describe('Orka update check', () => {
   const realFetch = globalThis.fetch;
   let requests = 0;

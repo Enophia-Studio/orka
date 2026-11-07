@@ -179,6 +179,8 @@ export class AppController implements Disposable {
   /** Provider instances by configuration, shared by all agent roles. */
   private readonly providers = new Map<string, AIProvider>();
   private providersStale = false;
+  /** The config the page was last sent (with an init or alone), as JSON: the same one is not sent again. */
+  private sentConfig?: string;
   /** Open sessions by id (at most one per folder), and the one the chat UI shows: the current folder's. */
   private readonly sessions = new Map<string, SessionController>();
   private activeId?: string;
@@ -585,7 +587,7 @@ export class AppController implements Disposable {
   private postInit(): void {
     const session = this.activeSession;
     if (session) session.postInit();
-    else this.shell.post({ type: 'init', session: this.idleView, config: this.configView(), taskId: this.idleTaskId });
+    else this.shell.post({ type: 'init', session: this.idleView, config: this.configForPage(), taskId: this.idleTaskId });
   }
 
   private createSessionContext(): SessionContext {
@@ -605,7 +607,7 @@ export class AppController implements Disposable {
       mainReady: () => this.isReady(this.mainProvider()),
       isInstalled: (id, fresh) => this.isInstalled(id, fresh),
       agentEvent: (event) => this.onAgentEvent(event),
-      configView: () => this.configView(),
+      configView: () => this.configForPage(),
       postConfig: () => this.postConfig(),
       postHistory: () => this.postHistory(),
       changed: () => {
@@ -768,7 +770,7 @@ export class AppController implements Disposable {
     const session = this.sessions.get(id);
     if (!session || session.id === this.activeId) return;
     // The shell works in the session's folder; its change shows the session (onFolderChanged).
-    if (!(await this.shell.selectFolder(session.root))) this.postConfig();
+    if (!(await this.shell.selectFolder(session.root))) this.postConfig(true);
   }
 
   /**
@@ -1187,16 +1189,16 @@ export class AppController implements Disposable {
     // With parallel sessions the session shown goes on in the background; otherwise it ends.
     if (!this.parallel() && this.activeSession?.isRunning) {
       void this.shell.message('info', t('Stop the agent before switching folders.'));
-      this.postConfig();
+      this.postConfig(true);
       return;
     }
     if (this.parallel() && fsPath && !this.liveFor(fsPath) && !this.hasRoom()) {
       void this.shell.message('info', t('Too many open sessions. Close one first.'));
-      this.postConfig();
+      this.postConfig(true);
       return;
     }
     // The shell reports a change through onDidChangeFolder, which shows the folder's session.
-    if (!(await this.shell.selectFolder(fsPath))) this.postConfig();
+    if (!(await this.shell.selectFolder(fsPath))) this.postConfig(true);
   }
 
   /**
@@ -2213,7 +2215,7 @@ export class AppController implements Disposable {
         turnOff,
       );
       if (choice !== turnOff) {
-        this.postConfig(); // the checkbox shows it on again
+        this.postConfig(true); // the checkbox shows it on again
         return;
       }
       this.droppedMainNoted.add(id); // the user just chose this; no notice about it
@@ -3139,10 +3141,27 @@ export class AppController implements Disposable {
     };
   }
 
-  private postConfig(): void {
+  /** The config for a page's init: what the page has from then on. */
+  private configForPage(): ConfigView {
+    const config = this.configView();
+    this.sentConfig = JSON.stringify(config);
+    return config;
+  }
+
+  /**
+   * The page gets the config when it changed (every check and setting posts it, mostly with
+   * nothing new). `refresh`: sent even so, for the page to show it again over what the user just
+   * changed in it (a choice that was refused or cancelled).
+   */
+  private postConfig(refresh = false): void {
     this.pruneKeyNotices();
     this.updateStatus();
-    this.shell.post({ type: 'config', config: this.configView() });
+    const config = this.configView();
+    const json = JSON.stringify(config);
+    if (refresh || json !== this.sentConfig) {
+      this.sentConfig = json;
+      this.shell.post({ type: 'config', config });
+    }
     // Radar's model may have changed with the providers (a key added, a model list loaded).
     this.radar?.postState();
   }

@@ -396,11 +396,11 @@ describe('parallel sessions (desktop IDE layout)', () => {
     assert.equal(shell.stateFor!(folderB).get('orka.mcpTrust'), undefined);
     assert.equal(shell.workspaceState.get('orka.mcpTrust'), undefined);
     await controller.handleMessage({ type: 'selectFolder', path: folderB });
-    await until(() => shell.last('config')?.config.folder === path.resolve(folderB), "beta's settings view");
-    assert.deepEqual(shell.last('config')!.config.mcp.servers, []);
+    await until(() => shell.pageConfig()?.folder === path.resolve(folderB), "beta's settings view");
+    assert.deepEqual(shell.pageConfig()!.mcp.servers, []);
     await controller.handleMessage({ type: 'switchSession', sessionId: alpha.id });
-    await until(() => shell.last('config')?.config.mcp.servers.length === 1, "alpha's settings view");
-    assert.equal(shell.last('config')!.config.mcp.servers[0].enabled, true);
+    await until(() => shell.pageConfig()?.mcp.servers.length === 1, "alpha's settings view");
+    assert.equal(shell.pageConfig()!.mcp.servers[0].enabled, true);
   });
 
   it(".mcp.json servers run in their folder's session; the settings' servers are shared", async () => {
