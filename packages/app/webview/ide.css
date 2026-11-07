@@ -488,6 +488,28 @@
   flex: none;
 }
 
+/* New session's folder choice: long folder names are cut, the current folder is ticked. */
+.new-session-menu {
+  max-width: min(360px, calc(100vw - 16px));
+}
+
+.new-session-menu .menu-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-session-menu .menu-hint + .menu-check {
+  margin-left: 0;
+}
+
+.new-session-menu .menu-check {
+  flex: none;
+  margin-left: auto;
+  color: var(--accent);
+}
+
 .menu-label {
   padding: 6px 10px 2px;
   font-size: var(--fs-11-5);

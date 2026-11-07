@@ -830,6 +830,9 @@ export const TR: Record<string, string> = {
   // Desktop IDE layout: sessions, side panel, appearance
   'New session': 'Yeni oturum',
   'New session in {folder}': '{folder} içinde yeni oturum',
+  'New session in': 'Yeni oturumun klasörü',
+  'Other folder…': 'Başka klasör…',
+  Running: 'Çalışıyor',
   Sessions: 'Oturumlar',
   'Search sessions': 'Oturumlarda ara',
   'No sessions yet.': 'Henüz oturum yok.',

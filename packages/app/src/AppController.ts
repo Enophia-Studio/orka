@@ -327,7 +327,7 @@ export class AppController implements Disposable {
         this.radar?.postAll();
         break;
       case 'newTask':
-        await this.newTask(message.folder);
+        await (message.other === true ? this.newTaskElsewhere(message.folder) : this.newTask(message.folder));
         break;
       case 'setMode':
         await this.updateSetting('permissionMode', message.mode);
@@ -920,6 +920,27 @@ export class AppController implements Disposable {
       return;
     }
     await shown?.newTask();
+  }
+
+  /**
+   * A new task in a folder that need not be a recent one (desktop "New session" > "Other folder…"):
+   * a path chosen in the app's folder picker, or none: the system's dialog chooses. The folder's
+   * session is shown with a new empty task, unless it runs.
+   */
+  private async newTaskElsewhere(folder?: string): Promise<void> {
+    const target = folder === undefined ? undefined : checkFolderPath(folder);
+    if (folder !== undefined && !target) return;
+    if (target && this.isCurrentFolder(target)) return this.newTask(target);
+    const before = this.activeSession;
+    await this.selectFolder(target);
+    const shown = this.activeSession;
+    // Nothing chosen, or the switch was refused (a notice says why).
+    if (!shown || shown === before || shown.isEmpty) return;
+    if (shown.isRunning) {
+      this.noteRunningInFolder(shown);
+      return;
+    }
+    await shown.newTask();
   }
 
   private noteRunningInFolder(session: SessionController): void {

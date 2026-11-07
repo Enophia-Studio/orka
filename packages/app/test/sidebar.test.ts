@@ -2,7 +2,7 @@ import type { TaskSummary } from '@orka/core';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { LiveSessionView } from '../src/protocol';
-import { approvalsBadgeHtml, sessionListHtml, sessionMenuHtml, type SidebarView } from '../webview/ide/sidebar';
+import { approvalsBadgeHtml, newSessionMenuHtml, sessionListHtml, sessionMenuHtml, type SidebarView } from '../webview/ide/sidebar';
 
 const task = (id: string, title: string): TaskSummary => ({ id, title, createdAt: '2026-10-30T10:00:00Z', updatedAt: new Date().toISOString(), requests: 1 });
 
@@ -156,5 +156,32 @@ describe('open sessions in the list', () => {
     assert.ok(draft.includes('close-session') && !draft.includes('delete-session'), 'an unsaved task offers nothing else');
     const closed = sessionMenuHtml('a2', 'D:/work/alpha', organizer);
     assert.ok(!closed.includes('stop-session') && !closed.includes('close-session'), 'a task that is not open has neither');
+  });
+});
+
+describe('New session folder choice', () => {
+  const recent = [
+    { name: 'alpha', path: 'D:/work/alpha' },
+    { name: 'beta <b>', path: 'D:/work/beta' },
+  ];
+  const items = (html: string) => [...html.matchAll(/data-action="(new-session-[a-z]+)"(?: data-folder="([^"]*)")?/g)].map((m) => m[2] ?? m[1]);
+
+  it('lists the recent folders with the current one ticked, then Other folder…', () => {
+    const html = newSessionMenuHtml(recent, 'D:/work/beta/', []);
+    assert.deepEqual(items(html), ['D:/work/alpha', 'D:/work/beta', 'new-session-other']);
+    assert.match(html, /aria-checked="true" data-action="new-session-in" data-folder="D:\/work\/beta"/);
+    assert.equal((html.match(/aria-checked="true"/g) ?? []).length, 1);
+    assert.ok(html.includes('beta &lt;b&gt;') && !html.includes('<b>'), 'names are escaped');
+  });
+
+  it('adds a current folder that is not a recent one, and says which folder runs a session', () => {
+    const html = newSessionMenuHtml(recent, 'E:/game', [live('s-a', 'D:/work/alpha', 'a1', 'running')]);
+    assert.deepEqual(items(html), ['E:/game', 'D:/work/alpha', 'D:/work/beta', 'new-session-other']);
+    assert.match(html, /data-folder="D:\/work\/alpha"[^>]*>.*?<span class="menu-hint">Running<\/span>/);
+    assert.equal((html.match(/menu-hint/g) ?? []).length, 1);
+  });
+
+  it('offers only Other folder… without any folder', () => {
+    assert.deepEqual(items(newSessionMenuHtml([], undefined, [])), ['new-session-other']);
   });
 });

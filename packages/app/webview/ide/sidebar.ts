@@ -224,6 +224,31 @@ export interface MenuSession {
 }
 
 /**
+ * "New session" asks for the folder first: the recent folders (the current one marked, and listed
+ * when it is not a recent one), then Other folder…. A folder whose session runs says so: choosing
+ * it shows that session, since a folder runs one session at a time.
+ */
+export function newSessionMenuHtml(folders: ReadonlyArray<{ name: string; path: string }>, current: string | undefined, live: readonly LiveSessionView[]): string {
+  const list = current && !folders.some((f) => samePath(f.path, current)) ? [{ name: folderName(current), path: current }, ...folders] : folders;
+  const items = list
+    .map((f) => {
+      const checked = !!current && samePath(f.path, current);
+      const running = live.some((s) => s.state !== 'idle' && samePath(s.folder, f.path));
+      return `<button class="menu-item" role="menuitemradio" aria-checked="${checked}" data-action="new-session-in" data-folder="${attr(f.path)}" title="${attr(f.path)}">${icon(
+        'folder',
+      )}<span class="menu-text">${escapeHtml(f.name)}</span>${running ? `<span class="menu-hint">${escapeHtml(t('Running'))}</span>` : ''}${checked ? icon('check', 'menu-check') : ''}</button>`;
+    })
+    .join('');
+  return `<div class="menu-label">${escapeHtml(t('New session in'))}</div>${items}${items ? '<hr>' : ''}<button class="menu-item" role="menuitem" data-action="new-session-other">${icon(
+    'folderPlus',
+  )}<span class="menu-text">${escapeHtml(t('Other folder…'))}</span></button>`;
+}
+
+function folderName(p: string): string {
+  return p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
+}
+
+/**
  * The … menu of a session: stop or close it while it is open in the background, move it to a
  * group, out of it, hide or show it, delete it.
  */

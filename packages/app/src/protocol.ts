@@ -593,8 +593,11 @@ export type FromWebview =
   | Scoped<{ type: 'stop' }>
   /** Go back to just before this user message (conversation and files). */
   | Scoped<{ type: 'rewind'; id: string }>
-  /** A new task; with a folder (desktop), in that recent folder. */
-  | { type: 'newTask'; folder?: string }
+  /**
+   * A new task; with a folder (desktop), in that recent folder. other: the folder was chosen in the
+   * app's folder picker (any absolute path), or, without a folder, is chosen in the system's dialog.
+   */
+  | { type: 'newTask'; folder?: string; other?: boolean }
   | Scoped<{ type: 'compact' }>
   | Scoped<{ type: 'approve'; id: string; approved: boolean; feedback?: string; always?: boolean }>
   | Scoped<{ type: 'previewApproval'; id: string }>

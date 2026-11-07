@@ -276,7 +276,10 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
     assert.match(await browser.evaluate('document.querySelector("#side-list").textContent'), /Tidy up the readme/);
     assert.equal(await browser.evaluate(`document.querySelector('.side-open[data-id="${id}"]').closest('.side-item').classList.contains('current')`), true);
 
+    // New session asks for the folder; Enter takes the open one.
     await browser.clickSelector('.side-new');
+    await until(() => browser.evaluate('!!document.querySelector(".new-session-menu")'), 'the folder choice');
+    await browser.press('Enter');
     await until(async () => !(await text()).includes('All set.'), 'a new session');
     await browser.clickSelector(`.side-open[data-id="${id}"]`);
     await until(async () => (await text()).includes('All set.'), 'the session reopened');
@@ -735,6 +738,79 @@ globalThis.fetch = (input, init) => {
     }
   });
 
+  it('starts a new empty session in the folder chosen first: a recent one, the current one preselected, or another one', async () => {
+    const other = twoFolders();
+    const third = mkdtempSync(path.join(tmpdir(), 'orka-desktop-third-'));
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      const run = async (prompt, answer) => {
+        script = [() => reply(answer)];
+        await browser.clickSelector('#input');
+        await browser.type(prompt);
+        await browser.clickSelector('#send');
+        await until(async () => (await text()).includes(answer), 'the reply');
+      };
+      const folderShown = () => browser.evaluate('document.querySelector(".folder-btn span")?.textContent');
+      const chooser = () =>
+        browser.evaluate(`(() => {
+          const menu = document.querySelector(".session-menu.new-session-menu");
+          if (!menu) return undefined;
+          const items = [...menu.querySelectorAll(".menu-item")];
+          return { items: items.map((i) => i.dataset.folder ?? i.dataset.action), checked: items.findIndex((i) => i.getAttribute("aria-checked") === "true"), focused: items.indexOf(document.activeElement) };
+        })()`);
+      const emptyIn = (folder) => until(async () => (await folderShown()) === path.basename(folder) && (await text()).includes('What should we build?'), `an empty session in ${path.basename(folder)}`);
+
+      await run('Alpha one', 'Alpha done.');
+      // New session asks for the folder first: the recent ones, the current one preselected, and Other folder….
+      await browser.clickSelector('.side-new');
+      let menu = await until(chooser, 'the folder choice');
+      assert.deepEqual(menu.items, [path.resolve(work), path.resolve(other), 'new-session-other']);
+      assert.equal(menu.checked, 0, 'the current folder is marked');
+      assert.equal(menu.focused, 0, 'and has the focus');
+      assert.ok((await text()).includes('Alpha done.'), 'nothing changed yet');
+      // With the keyboard: down to the other folder, Enter.
+      await browser.press('ArrowDown');
+      assert.equal((await chooser()).focused, 1);
+      await browser.press('Enter');
+      await emptyIn(other);
+      assert.equal(await chooser(), undefined, 'the choice closed');
+
+      // Ctrl+Alt+N opens the same choice, now with this folder preselected; Enter starts a new empty session here.
+      await run('Beta one', 'Beta done.');
+      await browser.evaluate('document.activeElement.blur(), document.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyN", key: "n", ctrlKey: true, altKey: true, bubbles: true })), true');
+      menu = await until(chooser, 'the folder choice from the keyboard');
+      assert.equal(menu.items[menu.checked], path.resolve(other));
+      assert.equal(menu.focused, menu.checked);
+      await browser.press('Enter');
+      await until(async () => !(await text()).includes('Beta done.'), 'a new session in the same folder');
+      await emptyIn(other);
+      // Escape closes it without a new session.
+      await browser.clickSelector('.side-new');
+      await until(chooser, 'the folder choice');
+      await browser.press('Escape');
+      await until(async () => (await chooser()) === undefined, 'the choice closed by Escape');
+
+      // Other folder…: Orka's folder picker, then a new empty session there.
+      await browser.clickSelector('.side-new');
+      await until(chooser, 'the folder choice');
+      await browser.clickSelector('.new-session-menu [data-action="new-session-other"]');
+      await until(() => browser.evaluate('!!document.querySelector(".folder-picker .fp-path")'), 'the folder picker');
+      await browser.evaluate(`(() => { const f = document.querySelector(".fp-path"); f.focus(); f.value = ${JSON.stringify(third)}; return true; })()`);
+      await browser.press('Enter');
+      await until(async () => (await browser.evaluate('document.querySelector(".fp-path").value')) === third && (await browser.evaluate('!document.querySelector("[data-fp=open]").disabled')), 'the third folder shown');
+      await browser.clickSelector('[data-fp="open"]');
+      await emptyIn(third);
+      const state = JSON.parse(readFileSync(path.join(home, 'desktop', 'state.json'), 'utf8'));
+      assert.equal(state.global.recentFolders[0], path.resolve(third));
+      assert.equal(requests.length, 2, 'no request was sent by any of it');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+      rmSync(third, { recursive: true, force: true });
+    }
+  });
+
   it('refuses a run over the limit of sessions running at once', async () => {
     const other = twoFolders({ 'sessions.maxRunning': 1 });
     try {
@@ -886,7 +962,11 @@ globalThis.fetch = (input, init) => {
     await meanwhile('Settings', () => browser.clickSelector('[data-action="open-settings"]'));
     await meanwhile('a setting changed', () => post({ type: 'setSetting', key: 'claudeCode.effort', value: 'high' }));
     await meanwhile('back to the chat', () => browser.clickSelector('[data-action="close-settings"]'));
-    await meanwhile('New session in its folder', () => browser.clickSelector('.side-new'));
+    await meanwhile('New session in its folder', async () => {
+      await browser.clickSelector('.side-new');
+      await until(() => browser.evaluate('!!document.querySelector(".new-session-menu")'), 'the folder choice');
+      await browser.press('Enter');
+    });
     await until(async () => (await text()).includes('A session is already running in'), 'the notice');
     await meanwhile('the side panel', () => browser.evaluate('document.querySelector("[data-action=toggle-aside]").click(), true'));
     await meanwhile('Accounts', () => browser.evaluate('document.querySelector("[data-action=toggle-accounts]").click(), true'));

@@ -51,7 +51,7 @@ import {
   type EditorBanner,
 } from './ide/files';
 import { appSkeleton, layout } from './ide/layout';
-import { approvalsBadgeHtml, radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml, waitingSessions } from './ide/sidebar';
+import { approvalsBadgeHtml, newSessionMenuHtml, radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml, waitingSessions } from './ide/sidebar';
 
 let session: SessionView = emptySession();
 let config: ConfigView | undefined;
@@ -247,7 +247,8 @@ function renderSidebar(): void {
   const live = liveSessions();
   const list = document.getElementById('side-list');
   if (list) {
-    closeSessionMenu();
+    // A menu of a row goes with the rows; the folder choice of New session stays open.
+    if (!sessionMenu?.classList.contains('new-session-menu')) closeSessionMenu();
     list.innerHTML = sessionListHtml({
       groups: ui.sessions,
       organizer: ui.organizer,
@@ -590,6 +591,8 @@ function toggleSidebar(): void {
 
 /** The … menu of one session, under its button (one at a time, closed by any re-render of the list). */
 let sessionMenu: HTMLElement | undefined;
+/** The button the open menu belongs to. */
+let menuButton: HTMLElement | undefined;
 
 function openSessionMenu(button: HTMLElement): void {
   closeSessionMenu();
@@ -600,10 +603,38 @@ function openSessionMenu(button: HTMLElement): void {
   showMenuAt(button, sessionMenuHtml(id, folder, ui.organizer, live));
 }
 
-/** A menu of the session list (a session's or an account's …) under its button. */
-function showMenuAt(button: HTMLElement, html: string): void {
+/**
+ * New session: the folder of the new session is chosen first, in a menu under the button (the
+ * current folder preselected). Nothing changes until a folder is chosen.
+ */
+function openNewSessionMenu(button: HTMLElement): void {
+  closeSessionMenu();
+  showMenuAt(button, newSessionMenuHtml(config?.folders ?? [], config?.folder, liveSessions()), 'new-session-menu');
+}
+
+/** Ctrl+Alt+N: the folder choice under the New session button that shows (the list's, or the rail's). */
+function newSessionFromKeyboard(): void {
+  const button = [...document.querySelectorAll<HTMLElement>('#sidebar [data-action="new-session"]:not([data-folder])')].find((b) => b.getClientRects().length > 0);
+  if (button) openNewSessionMenu(button);
+  else post({ type: 'newTask' });
+}
+
+/** A new empty session in a folder (a recent one; other: one chosen in a folder picker, none: the system's dialog). */
+function startSessionIn(folder: string | undefined, other = false): void {
+  void beforeFolderChange(folder).then((go) => {
+    if (!go) return;
+    post(other ? { type: 'newTask', folder, other: true } : { type: 'newTask', folder });
+    ui.view = 'chat';
+    saveFilesState();
+    renderView();
+    el.input.focus();
+  });
+}
+
+/** A menu of the session list (a session's or an account's …, the folder choice of New session) under its button. */
+function showMenuAt(button: HTMLElement, html: string, cls = ''): void {
   sessionMenu = document.createElement('div');
-  sessionMenu.className = 'composer-menu session-menu';
+  sessionMenu.className = `composer-menu session-menu${cls ? ` ${cls}` : ''}`;
   sessionMenu.setAttribute('role', 'menu');
   sessionMenu.innerHTML = html;
   document.body.appendChild(sessionMenu);
@@ -616,15 +647,31 @@ function showMenuAt(button: HTMLElement, html: string): void {
   sessionMenu.style.top = `${top}px`;
   sessionMenu.style.left = `${Math.max(8, Math.min(at.left, innerWidth - menu.width - 8))}px`;
   button.setAttribute('aria-expanded', 'true');
-  sessionMenu.querySelector<HTMLElement>('.menu-item')?.focus();
+  menuButton = button;
+  sessionMenu.querySelector<HTMLElement>('.menu-item[aria-checked="true"]:not(:disabled), .menu-item:not(:disabled)')?.focus();
 }
 
-function closeSessionMenu(): void {
+/** Close the open menu; refocus: the focus goes back to its button (Escape). */
+function closeSessionMenu(refocus = false): void {
   if (!sessionMenu) return;
+  const focusInside = sessionMenu.contains(document.activeElement);
   sessionMenu.remove();
   sessionMenu = undefined;
-  document.querySelector('.side-more[aria-expanded="true"]')?.setAttribute('aria-expanded', 'false');
+  menuButton?.setAttribute('aria-expanded', 'false');
+  if (refocus && focusInside && menuButton?.isConnected) menuButton.focus();
+  menuButton = undefined;
 }
+
+// The menus of the session list: arrow keys, Home and End move between their items.
+document.addEventListener('keydown', (e) => {
+  if (!sessionMenu || !sessionMenu.contains(document.activeElement)) return;
+  const items = [...sessionMenu.querySelectorAll<HTMLElement>('.menu-item:not(:disabled)')];
+  const at = items.indexOf(document.activeElement as HTMLElement);
+  const next = e.key === 'ArrowDown' ? at + 1 : e.key === 'ArrowUp' ? at - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : undefined;
+  if (next === undefined || !items.length) return;
+  e.preventDefault();
+  items[(next + items.length) % items.length].focus();
+});
 
 function toggleSection(key: string): void {
   if (ui.collapsed.has(key)) ui.collapsed.delete(key);
@@ -825,7 +872,7 @@ if (layout === 'ide') {
   document.addEventListener('keydown', (e) => {
     // An Escape that closed a dialog is used up.
     if (e.key === 'Escape' && !e.defaultPrevented && !modalOpen()) {
-      if (sessionMenu) closeSessionMenu();
+      if (sessionMenu) closeSessionMenu(true);
       else if (el.composerMenu && !el.composerMenu.hidden) {
         renderComposerMenu(false);
         el.input.focus();
@@ -856,7 +903,7 @@ if (layout === 'ide') {
       searchSessions();
     } else if (e.code === 'KeyN' && e.altKey) {
       e.preventDefault();
-      post({ type: 'newTask' });
+      newSessionFromKeyboard();
     } else if (e.code === 'KeyL' && !e.altKey && editor?.handle) {
       e.preventDefault();
       void sendSelection();
@@ -1845,7 +1892,7 @@ document.addEventListener('click', (e) => {
   const clicked = e.target as HTMLElement;
   if (el.composerMenu && !el.composerMenu.hidden && !clicked.closest('#composer-menu, .composer-add')) renderComposerMenu(false);
   if (ui.modelMenuOpen && clicked.isConnected && !clicked.closest('#model-menu, .model-btn')) openModelMenu(false);
-  if (sessionMenu && !clicked.closest('.session-menu, .side-more')) closeSessionMenu();
+  if (sessionMenu && !clicked.closest('.session-menu, .side-more') && !menuButton?.contains(clicked)) closeSessionMenu();
   if (layout === 'ide' && ui.agentsOpen && clicked.isConnected && !clicked.closest('#agents-panel, .agent-btn, .modal-backdrop, .dialogs')) {
     ui.agentsOpen = false;
     renderAgentsPanel();
@@ -2232,11 +2279,28 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'new-session':
+      // A folder's own + starts there; New session first asks for the folder.
+      if (target.dataset.folder) startSessionIn(target.dataset.folder);
+      else if (target.getAttribute('aria-expanded') === 'true') closeSessionMenu();
+      else openNewSessionMenu(target);
+      break;
+    case 'new-session-in':
+      closeSessionMenu();
+      startSessionIn(target.dataset.folder || undefined);
+      break;
+    case 'new-session-other': {
+      const opener = menuButton;
+      closeSessionMenu();
+      // Orka's own folder picker (its "Use system dialog…" chooses no path: the system's dialog).
+      if (config?.canBrowseFolders) openFolderPicker((folder) => startSessionIn(folder, true), opener ?? null);
+      else startSessionIn(undefined, true);
+      break;
+    }
     case 'open-session': {
       const folder = target.dataset.folder || undefined;
       void beforeFolderChange(folder).then((go) => {
         if (!go) return;
-        post(action === 'new-session' ? { type: 'newTask', folder } : { type: 'openTask', id: id!, folder });
+        post({ type: 'openTask', id: id!, folder });
         ui.view = 'chat';
         saveFilesState();
         renderView();

@@ -119,6 +119,17 @@ describe('desktop session list', () => {
     assert.equal(shell.currentFolder()?.path, folderB);
   });
 
+  it('starts a new session in a folder chosen in the folder picker, never from a relative path', async () => {
+    const { shell, controller } = await start('desktop');
+    const gamma = path.join(home, 'work', 'gamma');
+    mkdirSync(gamma);
+    await controller.handleMessage({ type: 'newTask', folder: 'work/gamma', other: true });
+    assert.equal(shell.currentFolder()?.path, folderA, 'a relative path changes nothing');
+    await controller.handleMessage({ type: 'newTask', folder: gamma, other: true });
+    assert.equal(shell.currentFolder()?.path, gamma);
+    assert.equal(shell.last('init')?.session.items.length, 0, 'an empty session');
+  });
+
   it("deletes a task from another folder's history after asking", async () => {
     const { shell, controller } = await start('desktop');
     await saveTask(shell, folderB, 'task-b1', 'Fix the beta build');
