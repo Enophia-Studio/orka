@@ -41,6 +41,8 @@ import { catalogFormHtml, catalogHtml, catalogListHtml, type CatalogState, missi
 import { galleryHtml, galleryListHtml, galleryPreviewHtml, type GalleryState, originLabel } from './features/skillGallery';
 import { contextRing, effortLabel, modelButtonHtml, modelMenuHtml } from './features/modelMenu';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
+import { cancelToolButton, errorSummary } from './features/toolCard';
+import { scheduleWaitTicks, waitHtml } from './features/wait';
 import {
   changePath,
   editorBannerHtml,
@@ -274,6 +276,7 @@ function renderSidebar(): void {
       draftTitle: sessionTitle(),
       query: ui.sessionQuery,
     });
+    if (live.some((s) => s.wait)) scheduleWaitTicks();
   }
   for (const [id, where] of [
     ['side-approvals', 'head'],
@@ -2227,6 +2230,10 @@ document.addEventListener('click', (e) => {
     case 'preview':
       post({ type: 'previewApproval', id: id! });
       break;
+    case 'cancel-tool':
+      (target as HTMLButtonElement).disabled = true;
+      post({ type: 'cancelTool', id: id! });
+      break;
     case 'diff':
       post({ type: 'openDiff', path: path! });
       break;
@@ -2985,6 +2992,17 @@ function phaseLabel(phase: AgentPhase): string {
   return labels[phase];
 }
 
+/**
+ * What the agent does now: why it waits when that says more than the phase (starting the CLI, a
+ * tool, an approval, a retry's countdown, compacting, a sub-agent), else the phase.
+ */
+function statusHtml(phase: AgentPhase): string {
+  const wait = session.running ? session.wait : undefined;
+  if (!wait || wait.reason === 'thinking') return `<span class="phase-label">${escapeHtml(phaseLabel(phase))}</span>`;
+  scheduleWaitTicks();
+  return waitHtml(wait, 'phase-label');
+}
+
 function modeLabel(mode: ConfigView['mode']): string {
   return { ask: t('Ask'), balanced: t('Balanced'), autonomous: t('Autonomous') }[mode];
 }
@@ -3057,7 +3075,7 @@ function renderTopbar(): void {
   const main = config?.main.effective;
   const warn = main && !providerView(main.provider)?.ready;
   el.topbar.innerHTML = `
-    <div class="phase" data-phase="${attr(phase)}"><span class="dot"></span><span class="phase-label">${escapeHtml(phaseLabel(phase))}</span></div>
+    <div class="phase" data-phase="${attr(phase)}"><span class="dot"></span>${statusHtml(phase)}</div>
     ${folderButton}
     ${
       main
@@ -3110,7 +3128,7 @@ function ideTopbar(phase: AgentPhase, folderButton: string): string {
   // An open file: a switch between it and the conversation.
   const views = editor ? viewSwitchHtml({ editorShown: ui.view === 'editor', path: editor.path, dirty: editor.dirty }) : '';
   return `<div class="phase session-head" data-phase="${attr(phase)}"><span class="dot"></span><span class="session-title" title="${attr(title)}">${escapeHtml(title)}</span>${
-    session.running ? `<span class="phase-label">${escapeHtml(phaseLabel(phase))}</span>` : ''
+    session.running ? statusHtml(phase) : ''
   }</div>${views}${folderButton}${usage}${aside}`;
 }
 
@@ -3916,6 +3934,9 @@ function controlTab(s: SettingsView): string {
           : t('Files changed by terminal commands (npm install, generators, formatters) join the Changes list and can be reverted. Uses a private snapshot, never your own git repository.'),
       )}</span></span></label>
       <div class="row"><span class="grow">${escapeHtml(t('Max steps per request'))}</span><input class="num" type="number" min="1" max="500" data-type="int" data-setting="maxIterations" value="${attr(String(s.maxIterations))}"></div>
+      <div class="row"><span class="grow">${escapeHtml(t('Retries after a connection or server error'))}<br><span class="muted small">${escapeHtml(
+        t('A dropped connection, a server error, an overloaded model or a short rate limit is tried again after a growing wait. 0 = never.'),
+      )}</span></span><input class="num" type="number" min="0" max="10" data-type="int" data-setting="maxRetries" value="${attr(String(s.maxRetries))}"></div>
       <div class="row"><span class="grow">${escapeHtml(t('Token budget per request'))}<br><span class="muted small">${escapeHtml(
         t('Pauses the request when all agents together used this many new tokens (cache reads not counted). 0 = no limit.'),
       )}</span></span><input class="num wide" type="number" min="0" step="50000" data-type="int" data-setting="tokenBudget" value="${attr(String(s.tokenBudget))}"></div>
@@ -4378,11 +4399,11 @@ const STATUS_ICON: Record<ToolCallView['status'], string> = {
 /** One compact line for a sub-agent's step. */
 function timelineRow(item: Extract<TranscriptItem, { kind: 'tool' }>): string {
   const c = item.call;
-  const summary = c.status === 'error' || c.status === 'denied' ? (c.output ?? '').split('\n')[0] : '';
+  const summary = errorSummary(c);
   return `<div class="step status-${attr(c.status)}" data-id="${attr(item.id)}" data-tool-id="${attr(item.id)}">
     <span class="step-dot"></span><span class="step-title mono" title="${attr(c.title)}">${escapeHtml(c.title)}</span>
     ${summary ? `<span class="step-meta err ellipsis" title="${attr(summary)}">${escapeHtml(summary)}</span>` : ''}
-    <span class="tool-status">${STATUS_ICON[c.status] ?? ''}</span></div>`;
+    ${cancelToolButton(c)}<span class="tool-status">${STATUS_ICON[c.status] ?? ''}</span></div>`;
 }
 
 function renderTool(call: ToolCallView, liveOutput: string, sub?: SubagentView): string {
@@ -4390,11 +4411,15 @@ function renderTool(call: ToolCallView, liveOutput: string, sub?: SubagentView):
   if (call.name === 'run_subagent') return renderSubagent(call, sub);
   if (call.name === 'ask_supervisor') return renderSupervisorQuestion(call);
   const canDiff = call.path && (call.category === 'edit' || call.category === 'delete') && call.status === 'done';
+  // A failed call says why in one line; the full text opens below it.
+  const summary = errorSummary(call);
   const headParts = `
       ${icon(toolIcon(call))}
       <span class="tool-title mono" title="${attr(call.title)}">${escapeHtml(call.title)}</span>
+      ${summary ? `<span class="tool-error ellipsis" title="${attr(summary)}">${escapeHtml(summary)}</span>` : ''}
       ${canDiff ? `<button class="link" data-action="diff" data-path="${attr(call.path!)}">diff</button>` : ''}
       ${call.risk === 'dangerous' ? `<span class="risk">${escapeHtml(t('RISKY'))}</span>` : ''}
+      ${cancelToolButton(call)}
       <span class="tool-status" title="${attr(call.status)}">${STATUS_ICON[call.status] ?? ''}</span>`;
   const head = `<div class="tool-head">${headParts}</div>`;
   const shot = call.image?.startsWith('data:image/') ? `<img class="tool-shot" src="${attr(call.image)}" alt="${attr(t('Screenshot'))}">` : '';
@@ -4463,6 +4488,7 @@ function renderSubagent(call: ToolCallView, sub?: SubagentView): string {
       <span class="sub-name">${escapeHtml(agent)}</span>
       <span class="tool-title" title="${attr(task)}">${escapeHtml(task)}</span>
       ${sub?.model ? `<span class="model-tag" title="${attr(sub.model)}">${escapeHtml(sub.model)}${sub.usage ? ` · ${t('{n} tok', { n: fmt(totalTokens(sub.usage)) })}` : ''}</span>` : ''}
+      ${cancelToolButton(call)}
       <span class="tool-status" title="${attr(call.status)}">${STATUS_ICON[call.status] ?? ''}</span>
     </div>${body}${taskBlock}${report}`;
 }
@@ -4694,6 +4720,7 @@ function onEvent(event: AgentEvent): void {
       renderFilesPanel();
       break;
     case 'phase':
+    case 'wait':
     case 'run_started':
       renderTopbar();
       renderMeta();

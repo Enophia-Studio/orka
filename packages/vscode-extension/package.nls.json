@@ -60,6 +60,7 @@
   "config.permissions.delete": "Override for deleting files.",
   "config.autoVerify": "When the agent changed files but never ran a build/test afterwards, ask it to verify before finishing.",
   "config.maxIterations": "Maximum model turns per request before the agent pauses.",
+  "config.maxRetries": "How many times a model request is tried again after a dropped connection, a server error, an overloaded model or a short rate limit (0 = never).",
   "config.commandTimeoutSeconds": "Default timeout for terminal commands run by the agent.",
   "config.shell": "Shell used for agent commands. Empty = PowerShell on Windows, $SHELL or /bin/bash elsewhere.",
   "config.customInstructions": "Extra instructions appended to the agent's system prompt.",

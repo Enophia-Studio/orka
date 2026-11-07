@@ -74,6 +74,11 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
         const body = JSON.parse(raw);
         requests.push({ body, headers: req.headers });
         const next = script.shift();
+        // A step { status, headers, body } answers with that HTTP error (a 529 overloaded, a 429).
+        if (next && typeof next === 'object') {
+          res.writeHead(next.status, { 'content-type': 'application/json', ...next.headers }).end(JSON.stringify(next.body));
+          return;
+        }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         // A step may answer later (a request that is still running meanwhile), or stream its answer itself.
         void Promise.resolve(next ? next(body) : reply('(script ended)')).then((answer) => (typeof answer === 'function' ? answer(res) : res.end(answer)));
@@ -1063,6 +1068,40 @@ globalThis.fetch = (input, init) => {
     return exe;
   }
   const fakeClaudeScript = path.join(here, '..', '..', 'core', 'test', 'fixtures', 'fake-claude.mjs');
+
+  it('tries again after an overloaded API and a stream cut mid-answer, saying why it waits, and stops one command from its card', async () => {
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    const cutOff = sse([
+      start('msg_cut'),
+      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Half an answ' } }],
+      ['error', { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }],
+    ]);
+    let finish;
+    script = [
+      { status: 529, headers: { 'retry-after': '2' }, body: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } },
+      () => cutOff,
+      () => toolUse('toolu_long', 'run_command', { command: 'node -e "setTimeout(() => {}, 60000)"' }),
+      (body) => new Promise((resolve) => (finish = () => resolve(reply(`Seen: ${JSON.stringify(body.messages.at(-1).content).includes('Cancelled by the user') ? 'stopped' : 'not stopped'}`)))),
+    ];
+    await browser.clickSelector('#input');
+    await browser.type('Run the long check');
+    await browser.clickSelector('#send');
+    // The 529 asked for 2 s: the status line counts it down.
+    await until(() => browser.evaluate('document.querySelector(".session-head .phase-label")?.textContent ?? ""').then((t) => /Retrying in \d+s \(attempt 1\/3\)/.test(t)), 'the retry countdown', 10_000);
+    // Then the command runs; its card offers its own Stop, and the status line names it.
+    await until(() => browser.evaluate('!!document.querySelector(".tool-cancel")'), 'the Stop on the command', 20_000);
+    assert.match(await browser.evaluate('document.querySelector(".session-head .phase-label")?.textContent ?? ""'), /Running run_command/);
+    assert.ok(!(await text()).includes('Half an answ'), 'the cut-off text was dropped, not left above the retried answer');
+    await browser.clickSelector('.tool-cancel');
+    await until(() => requests.length === 4, 'the next turn after the stopped command', 15_000);
+    assert.equal(await browser.evaluate('document.body.classList.contains("busy")'), true, 'the request goes on');
+    finish();
+    await until(async () => (await text()).includes('Seen: stopped'), 'the agent heard that the user stopped the command');
+    assert.equal(requests.length, 4, 'one 529, one cut stream, the tool turn, the answer');
+  });
 
   it('shows a Stop button that says so while the agent works, and Escape stops it too', async () => {
     const url = await launch();

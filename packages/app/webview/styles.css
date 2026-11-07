@@ -1152,6 +1152,34 @@ pre:hover .copy {
   flex: none;
 }
 
+/* A failed call's reason in one line next to its title; the full text opens below. */
+.tool-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-11);
+  color: var(--err);
+}
+
+.tool.status-cancelled .tool-error,
+.step.status-cancelled .step-meta.err {
+  color: var(--muted);
+}
+
+/* Stop for one running call; the request goes on. */
+.tool-cancel {
+  flex: none;
+  width: 22px;
+  height: 22px;
+}
+
+.tool-cancel:disabled {
+  opacity: 0.5;
+}
+
 .tool.status-error .tool-title,
 .tool.status-denied .tool-title,
 .tool.status-cancelled .tool-title {

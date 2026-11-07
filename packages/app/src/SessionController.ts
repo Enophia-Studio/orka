@@ -39,6 +39,7 @@ import {
   tn,
   type Tool,
   userRequests,
+  type WaitStatus,
 } from '@orka/core';
 import { createHash } from 'node:crypto';
 import { promises as fs, realpathSync, statSync } from 'node:fs';
@@ -271,6 +272,11 @@ export class SessionController {
     return this.pendingApprovals.size;
   }
 
+  /** Why the running request waits (the session list says it). */
+  get wait(): WaitStatus | undefined {
+    return this.isRunning ? this.session.wait : undefined;
+  }
+
   /** Changes waiting for Keep or Revert, or an open hand-off: closing the session would put them out of sight. */
   get hasPendingWork(): boolean {
     return this.session.changes.length > 0 || !!this.handoff;
@@ -321,6 +327,9 @@ export class SessionController {
         break;
       case 'stop':
         this.stop();
+        break;
+      case 'cancelTool':
+        if (typeof message.id === 'string') this.orchestrator.cancelTool(message.id);
         break;
       case 'rewind':
         await this.rewind(message.id);
@@ -1218,7 +1227,7 @@ export class SessionController {
       this.publishNotice('info', t('The provider hit a usage limit. You can continue this task in {agent} for free.', { agent: agent.label }), `handoff:${agent.id}`);
     }
     // The session list follows its state, its task and title (the first message comes after run_started).
-    if (event.type === 'run_started' || event.type === 'run_finished' || event.type === 'user_message' || event.type === 'reset') this.ctx.changed(this);
+    if (event.type === 'run_started' || event.type === 'run_finished' || event.type === 'user_message' || event.type === 'reset' || event.type === 'wait') this.ctx.changed(this);
     if (event.type === 'run_finished') {
       // Any approval still open belongs to a finished run.
       this.denyApprovals();

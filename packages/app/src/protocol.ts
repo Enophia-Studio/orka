@@ -18,6 +18,7 @@ import type {
   RadarStage,
   SessionView,
   TaskSummary,
+  WaitStatus,
 } from '@orka/core';
 
 export interface ProviderView {
@@ -155,6 +156,8 @@ export interface SettingsView {
   /** Keep / Revert above changes in the editor (VS Code only; undefined elsewhere). */
   inlineReview?: boolean;
   maxIterations: number;
+  /** Retries of a model request that failed in a way that may pass. */
+  maxRetries: number;
   tokenBudget: number;
   commandTimeoutSeconds: number;
   shell: string;
@@ -287,6 +290,8 @@ export interface LiveSessionView {
   state: 'idle' | 'running' | 'approval';
   /** Approvals waiting for the user. */
   approvals: number;
+  /** Why it waits while it runs (the list says it under the title). */
+  wait?: WaitStatus;
 }
 
 /** How the user arranged the session list: their own groups, which task is in which, hidden tasks. */
@@ -598,6 +603,7 @@ export type SessionPost = Extract<
 const SESSION_MESSAGE_TYPES = [
   'send',
   'stop',
+  'cancelTool',
   'rewind',
   'compact',
   'approve',
@@ -640,6 +646,8 @@ export type FromWebview =
   /** editor: the desktop editor's file and selection (ignored elsewhere). */
   | Scoped<{ type: 'send'; text: string; files?: string[]; skills?: string[]; images?: ImageAttachment[]; editor?: EditorSelection }>
   | Scoped<{ type: 'stop' }>
+  /** Stop one running tool call from its card; the request goes on. */
+  | Scoped<{ type: 'cancelTool'; id: string }>
   /** Go back to just before this user message (conversation and files). */
   | Scoped<{ type: 'rewind'; id: string }>
   /**

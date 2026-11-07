@@ -1,7 +1,9 @@
 import {
   type ClaudeEffort,
+  DEFAULT_MAX_RETRIES,
   DEFAULT_SUBAGENTS,
   isPrice,
+  MAX_RETRIES_LIMIT,
   readHooks,
   type McpServerConfig,
   type OrchestratorSettings,
@@ -233,6 +235,7 @@ export function readSettings(c: SettingsStore): AppSettings {
     },
     orchestrator: {
       maxIterations: Math.max(1, c.get<number>('maxIterations', 60)),
+      maxRetries: Math.min(MAX_RETRIES_LIMIT, Math.max(0, Math.floor(c.get<number>('maxRetries', DEFAULT_MAX_RETRIES)))),
       autoVerify: c.get<boolean>('autoVerify', true),
       commandTimeoutMs: Math.max(5, c.get<number>('commandTimeoutSeconds', 180)) * 1000,
       customInstructions: c.get<string>('customInstructions', ''),
@@ -387,6 +390,7 @@ export const WEBVIEW_SETTINGS: Record<string, (value: unknown) => boolean> = {
   trackCommandChanges: (v) => typeof v === 'boolean',
   inlineReview: (v) => typeof v === 'boolean',
   maxIterations: int(1, 500),
+  maxRetries: int(0, MAX_RETRIES_LIMIT),
   commandTimeoutSeconds: int(5, 3600),
   shell: (v) => SHELL_CHOICES.includes(v as string),
   customInstructions: (v) => typeof v === 'string' && (v as string).length < 20_000,

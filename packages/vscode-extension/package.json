@@ -839,6 +839,13 @@
           "minimum": 1,
           "description": "%config.maxIterations%"
         },
+        "orka.maxRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "%config.maxRetries%"
+        },
         "orka.commandTimeoutSeconds": {
           "type": "number",
           "default": 180,

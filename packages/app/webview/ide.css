@@ -368,6 +368,11 @@
   color: var(--muted);
 }
 
+/* What a running session waits for (a retry counts down). */
+.side-wait {
+  max-width: 55%;
+}
+
 /* Section headings fold their section away. */
 .side-fold {
   flex: 1;

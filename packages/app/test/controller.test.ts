@@ -524,6 +524,25 @@ describe('desktop appearance settings', () => {
   });
 });
 
+describe('retries', () => {
+  it('takes max retries from 0 to 10 and hands it to the agents', async () => {
+    const { shell, controller } = await start('desktop');
+    for (const value of [-1, 11, 2.5, '3']) await controller.handleMessage({ type: 'setSetting', key: 'maxRetries', value });
+    assert.equal(shell.settings.isSet('maxRetries'), false, 'invalid values are refused');
+    await tick();
+    assert.equal(shell.last('config')?.config.settings.maxRetries, 3, 'the default');
+    await controller.handleMessage({ type: 'setSetting', key: 'maxRetries', value: 0 });
+    await tick();
+    assert.equal(shell.last('config')?.config.settings.maxRetries, 0);
+    const settings = (controller.activeSession!.orchestrator as unknown as { options: { getSettings(): { maxRetries?: number } } }).options.getSettings();
+    assert.equal(settings.maxRetries, 0);
+    // A value written by hand outside the range is clamped.
+    await shell.settings.update('maxRetries', 50);
+    await tick();
+    assert.equal(shell.last('config')?.config.settings.maxRetries, 10);
+  });
+});
+
 describe('config messages', () => {
   it('go to the page only when the config changed, or to show it again over a refused choice', async () => {
     const { shell, controller } = await start('desktop');

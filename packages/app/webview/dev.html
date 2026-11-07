@@ -177,10 +177,23 @@
     });
 
     const deliver = (message) => window.dispatchEvent(new MessageEvent('message', { data: message }));
+    // ?wait=retrying|rate|approval|tool|starting|compacting|subagent: why the running session waits
+    // (status line, session list with ?live), with a running MCP call that offers its own Stop.
+    const waitMode = params.get('wait');
+    const waitOf = {
+      retrying: { reason: 'retrying', until: Date.now() + 12000, attempt: 1, max: 3 },
+      rate: { reason: 'rate_limited', until: Date.now() + 20 * 60000, attempt: 2, max: 3 },
+      approval: { reason: 'approval' },
+      tool: { reason: 'tool', tool: 'mcp__unity__run_tests', title: 'unity · run_tests' },
+      starting: { reason: 'starting', agent: 'Claude Code' },
+      compacting: { reason: 'compacting' },
+      subagent: { reason: 'subagent', agent: 'explore' },
+    };
+    const shownWait = waitMode ? waitOf[waitMode] ?? waitOf.retrying : undefined;
     // ?live: the open sessions (desktop IDE layout).
     const liveSessions = ide && params.has('live') ? [
-      { id: 'live-lobby', folder: 'D:/game/LobbyDemo', name: 'LobbyDemo', taskId: 't-now', title: '', state: 'running', approvals: 0 },
-      { id: 'live-shared', folder: 'D:/game/SharedLib', name: 'SharedLib', taskId: 's-1', title: 'Write unit tests for the inventory system', state: 'approval', approvals: 1 },
+      { id: 'live-lobby', folder: 'D:/game/LobbyDemo', name: 'LobbyDemo', taskId: 't-now', title: '', state: 'running', approvals: 0, ...(shownWait ? { wait: shownWait } : {}) },
+      { id: 'live-shared', folder: 'D:/game/SharedLib', name: 'SharedLib', taskId: 's-1', title: 'Write unit tests for the inventory system', state: 'approval', approvals: 1, wait: { reason: 'approval' } },
     ] : undefined;
     const ev = (event) => deliver({ type: 'event', event });
     const root = 'D:/game/LobbyDemo';
@@ -568,7 +581,7 @@
         settings: {
           permissionMode: 'balanced',
           permissions: { fileEdit: 'mode', terminal: 'mode', git: 'ask', delete: 'mode' },
-          autoVerify: true, trackCommandChanges: { enabled: true }, inlineReview: true, maxIterations: 60, commandTimeoutSeconds: 180, shell: '', shellChoices: ['', 'powershell.exe', 'pwsh.exe', 'cmd.exe'],
+          autoVerify: true, trackCommandChanges: { enabled: true }, inlineReview: true, maxIterations: 60, maxRetries: 3, commandTimeoutSeconds: 180, shell: '', shellChoices: ['', 'powershell.exe', 'pwsh.exe', 'cmd.exe'],
           customInstructions: '',
           claude: { effort: 'medium', refusalFallback: true },
           openai: { baseUrl: 'https://api.openai.com/v1', reasoningEffort: '' },
@@ -677,6 +690,11 @@
         { agent: 'supervisor', provider: 'claude', model: 'claude-opus-5-5', calls: 4, usage: { inputTokens: 800, outputTokens: 460, cacheReadTokens: 13100, cacheWriteTokens: 900 } },
         { agent: 'explore', provider: 'gemini', model: 'gemini-3.8-flash', calls: 3, usage: { inputTokens: 900, outputTokens: 120, cacheReadTokens: 0, cacheWriteTokens: 0 } },
       ], context: { used: 142000, size: 200000 } });
+      if (shownWait) {
+        ev({ type: 'tool_call', call: { id: 't9', name: 'mcp__unity__run_tests', title: 'unity · run_tests', category: 'command', risk: 'normal', status: 'running', cancellable: true } });
+        ev({ type: 'tool_call', call: { id: 't10', name: 'web_fetch', title: 'Fetch https://docs.example.com/fusion', category: 'network', risk: 'normal', status: 'cancelled', output: 'Cancelled by the user: they stopped this tool call before it finished.' } });
+        ev({ type: 'wait', wait: shownWait });
+      }
       if (params.has('idle')) ev({ type: 'run_finished', reason: 'completed' });
     }
   </script>

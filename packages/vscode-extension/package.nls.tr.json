@@ -63,6 +63,7 @@
   "config.permissions.delete": "Dosya silme için geçersiz kılma.",
   "config.autoVerify": "Agent dosyaları değiştirip ardından hiç build/test çalıştırmadıysa, bitirmeden önce doğrulamasını iste.",
   "config.maxIterations": "Agent duraklamadan önce istek başına en fazla model adımı.",
+  "config.maxRetries": "Bağlantı koptuğunda, sunucu hatasında, model aşırı yüklü olduğunda veya kısa bir rate limit'te bir model isteğinin kaç kez yeniden deneneceği (0 = hiç).",
   "config.commandTimeoutSeconds": "Agent'ın çalıştırdığı terminal komutları için varsayılan zaman aşımı.",
   "config.shell": "Agent komutları için kullanılan kabuk. Boş = Windows'ta PowerShell, diğerlerinde $SHELL veya /bin/bash.",
   "config.customInstructions": "Agent'ın sistem prompt'una eklenen ek talimatlar.",

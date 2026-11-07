@@ -18,6 +18,7 @@ import {
   applyEvent,
   checkAppUpdate,
   createProvider,
+  DEFAULT_MAX_RETRIES,
   DEFAULT_SUBAGENTS,
   describeModel,
   emptySession,
@@ -881,6 +882,7 @@ export class AppController implements Disposable {
       title: s.title(),
       state: s.state,
       approvals: s.approvals,
+      ...(s.wait ? { wait: s.wait } : {}),
     }));
   }
 
@@ -3357,6 +3359,7 @@ export class AppController implements Disposable {
         trackCommandChanges: { enabled: s.trackCommandChanges, unavailable: session?.snapshots.disabledReason },
         inlineReview: this.shell.kind === 'vscode' ? s.inlineReview : undefined,
         maxIterations: s.orchestrator.maxIterations,
+        maxRetries: s.orchestrator.maxRetries ?? DEFAULT_MAX_RETRIES,
         tokenBudget: s.orchestrator.tokenBudget ?? 0,
         language: s.language,
         commandTimeoutSeconds: Math.round(s.orchestrator.commandTimeoutMs / 1000),
