@@ -320,20 +320,53 @@ function page(nonce: string, state: unknown, look: PageLook): string {
   <script nonce="${nonce}">
     (() => {
       let state = JSON.parse(document.getElementById('orka-state').textContent);
+      // A reload asks for the new page before the old one's last save arrives: the tab keeps that
+      // state for its next page, which takes it over and saves it.
+      let carried = null;
+      try {
+        carried = sessionStorage.getItem('orka-state');
+        sessionStorage.removeItem('orka-state');
+      } catch {}
       let saveTimer;
+      let leaving = false;
       let sending = Promise.resolve();
       const events = new EventSource('/events');
       const open = new Promise((resolve) => events.addEventListener('open', resolve, { once: true }));
       events.onmessage = (e) => window.postMessage(JSON.parse(e.data), location.origin);
-      const send = (url, body) =>
-        (sending = sending.then(() => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).catch(() => undefined));
+      const request = (url, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), keepalive: leaving });
+      const send = (url, body) => (sending = sending.then(() => request(url, body)).catch(() => undefined));
+      // The state goes at most every 400 ms, and at once (outliving the page) when it is left or hidden.
+      const saveNow = () => {
+        clearTimeout(saveTimer);
+        saveTimer = undefined;
+        if (leaving) {
+          try {
+            sessionStorage.setItem('orka-state', JSON.stringify(state));
+          } catch {}
+        }
+        if (leaving || document.visibilityState === 'hidden') request('/state', state).catch(() => undefined);
+        else send('/state', state);
+      };
+      window.addEventListener('pagehide', () => {
+        leaving = true;
+        saveNow();
+      });
+      if (carried !== null) {
+        try {
+          state = JSON.parse(carried);
+          saveTimer = setTimeout(saveNow, 0);
+        } catch {}
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden' && saveTimer !== undefined) saveNow();
+      });
       window.acquireVsCodeApi = () => ({
         postMessage: (message) => open.then(() => send('/message', message)),
         getState: () => state,
         setState: (next) => {
           state = next;
-          clearTimeout(saveTimer);
-          saveTimer = setTimeout(() => send('/state', state), 400);
+          if (leaving || document.visibilityState === 'hidden') saveNow();
+          else saveTimer ??= setTimeout(saveNow, 400);
         },
       });
     })();

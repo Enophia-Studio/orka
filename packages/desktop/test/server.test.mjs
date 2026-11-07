@@ -2,7 +2,7 @@
 // headers, the files it serves and what it keeps for a page that is not connected.
 import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import * as http from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -119,6 +119,29 @@ describe('Orka desktop server', () => {
       assert.match((await request(port, '/', { cookie })).body, /<html lang="en" translate="no"/);
     } finally {
       server.close();
+    }
+  });
+});
+
+describe('Orka desktop UI state file', () => {
+  it('writes the newest state off the event loop, never half a file', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'orka-state-test-'));
+    try {
+      const outfile = path.join(dir, 'store.cjs');
+      await esbuild.build({ entryPoints: [path.join(here, '..', 'src', 'store.ts')], outfile, bundle: true, platform: 'node', format: 'cjs', target: 'node22', logLevel: 'warning' });
+      const { LatestJsonFile } = require(outfile);
+      const file = path.join(dir, 'desktop', 'ui-state.json');
+      const writer = new LatestJsonFile(file);
+      for (let i = 1; i <= 50; i++) writer.write({ draft: 'x'.repeat(i) });
+      assert.ok(!existsSync(file), 'nothing is written while the caller runs');
+      await writer.idle();
+      assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { draft: 'x'.repeat(50) });
+      assert.deepEqual(readdirSync(path.dirname(file)), ['ui-state.json'], 'no temporary file left');
+      writer.write({ draft: 'later' });
+      await writer.idle();
+      assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { draft: 'later' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   });
 });

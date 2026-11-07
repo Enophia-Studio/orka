@@ -60,8 +60,29 @@ export function uiState(): Readonly<UiState> {
   return state;
 }
 
-/** Saves the whole state (VS Code replaces it on every call), with these fields changed. */
+/** How long changes gather before they are saved: typing saves a few times a second, not on every key. */
+export const UI_STATE_SAVE_MS = 300;
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Changes these fields. The whole state is saved (VS Code replaces it on every call) a moment
+ * later, with whatever else changed meanwhile; uiState() has the change at once.
+ */
 export function saveUiState(patch: Partial<UiState>): void {
   state = { ...state, ...patch };
+  saveTimer ??= setTimeout(flushUiState, UI_STATE_SAVE_MS);
+}
+
+/** Saves a change still waiting now (the page is going away or out of sight). */
+export function flushUiState(): void {
+  if (saveTimer === undefined) return;
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
   vscode.setState(state);
 }
+
+// A reload or a closed window keeps the last keys typed.
+globalThis.addEventListener?.('pagehide', flushUiState);
+globalThis.document?.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushUiState();
+});

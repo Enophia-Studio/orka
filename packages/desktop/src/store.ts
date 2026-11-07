@@ -1,5 +1,5 @@
 import type { Disposable, SettingsStore, StateStore } from '@orka/app';
-import { type FSWatcher, mkdirSync, readFileSync, renameSync, watch, writeFileSync } from 'node:fs';
+import { type FSWatcher, promises as fs, mkdirSync, readFileSync, renameSync, watch, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { log } from './log';
 
@@ -35,6 +35,57 @@ function renameOver(from: string, to: string): void {
       const code = (error as NodeJS.ErrnoException).code;
       if (attempt >= 12 || (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')) throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 15 * attempt);
+    }
+  }
+}
+
+/**
+ * A small JSON file written off the event loop (the chat UI's state): only the newest value is
+ * written, a write asked for while one runs follows it, and a temporary file keeps a cut write
+ * from leaving half a file behind.
+ */
+export class LatestJsonFile {
+  private next: string | undefined;
+  private writing: Promise<void> | undefined;
+
+  constructor(private readonly file: string) {}
+
+  write(value: unknown): void {
+    this.next = JSON.stringify(value);
+    this.writing ??= this.drain().finally(() => (this.writing = undefined));
+  }
+
+  /** Resolves once everything asked for is written (or failed). */
+  async idle(): Promise<void> {
+    while (this.writing) await this.writing;
+  }
+
+  private async drain(): Promise<void> {
+    while (this.next !== undefined) {
+      const data = this.next;
+      this.next = undefined;
+      try {
+        await fs.mkdir(path.dirname(this.file), { recursive: true });
+        const tmp = `${this.file}.${process.pid}.tmp`;
+        await fs.writeFile(tmp, data, 'utf8');
+        await renameOverAsync(tmp, this.file);
+      } catch (error) {
+        log(`Could not save ${path.basename(this.file)}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+}
+
+/** renameOver without blocking: Windows may refuse to replace a file that is open for a moment. */
+async function renameOverAsync(from: string, to: string): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await fs.rename(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (attempt >= 12 || (code !== 'EPERM' && code !== 'EACCES' && code !== 'EBUSY')) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 15 * attempt));
     }
   }
 }

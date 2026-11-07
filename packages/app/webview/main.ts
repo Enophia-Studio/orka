@@ -1675,6 +1675,8 @@ function mentionAtCursor(): { start: number; query: string } | undefined {
 
 function updateSuggestions(): void {
   const value = el.input.value;
+  // Most keys: no "/" command and no "@" mention, and no list open. Nothing to do.
+  if (!composer.suggest && !value.includes('@') && !value.trimStart().startsWith('/')) return;
   const command = /^\/([\w-]*)$/.exec(value.trimStart());
   if (command) {
     const q = command[1].toLowerCase();
@@ -1886,9 +1888,22 @@ el.input.addEventListener('blur', () =>
   }, 150),
 );
 
+/** The text length and box width the message box last measured its height for. */
+const grown = { length: 0, width: 0 };
+
+/**
+ * The message box grows with its text, up to 240px. Measuring it from scratch (height: auto) lays
+ * out the whole page again, so that happens only when the text got shorter or the box narrower or
+ * wider; a key that adds text only grows the box when the text no longer fits.
+ */
 function autoGrow(): void {
-  el.input.style.height = 'auto';
-  el.input.style.height = `${Math.min(el.input.scrollHeight, 240)}px`;
+  const input = el.input;
+  const { length } = input.value;
+  const width = input.clientWidth;
+  if (length < grown.length || width !== grown.width || !input.style.height) input.style.height = 'auto';
+  grown.length = length;
+  grown.width = width;
+  if (input.style.height === 'auto' || input.scrollHeight > input.clientHeight) input.style.height = `${Math.min(input.scrollHeight, 240)}px`;
 }
 
 // ------------------------------------------------------------------ interaction

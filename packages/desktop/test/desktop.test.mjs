@@ -158,6 +158,27 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
     assert.equal(await browser.evaluate('!!document.querySelector(".modal-backdrop")'), false, 'the dialog closed');
   });
 
+  it('keeps the last keys typed when the window reloads or closes right after them', async () => {
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    const origin = new URL(url).origin;
+    const uiState = () => JSON.parse(readFileSync(path.join(home, 'desktop', 'ui-state.json'), 'utf8'));
+
+    // Typed and reloaded at once: saving waits a moment after the keys, the reload does not lose them.
+    await browser.clickSelector('#input');
+    await browser.page('Input.insertText', { text: 'a draft typed just now' });
+    await browser.navigate(`${origin}/`);
+    await until(() => browser.evaluate('!!document.querySelector("#input")'), 'the chat UI after the reload');
+    assert.equal(await browser.evaluate('document.querySelector("#input").value'), 'a draft typed just now');
+
+    // Typed and closed at once: the draft is on disk for the next start.
+    await browser.clickSelector('#input');
+    await browser.page('Input.insertText', { text: ', and more' });
+    await browser.navigate('about:blank');
+    await until(() => existsSync(path.join(home, 'desktop', 'ui-state.json')) && uiState().draft === 'a draft typed just now, and more', 'the saved draft');
+  });
+
   it('switches folders from the UI and keeps a recent list', async () => {
     const other = mkdtempSync(path.join(tmpdir(), 'orka-desktop-other-'));
     const url = await launch();

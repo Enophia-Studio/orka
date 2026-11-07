@@ -1,6 +1,6 @@
 import { AppController, readSettings } from '@orka/app';
 import { getLocale, hardenProgramLookup, t } from '@orka/core';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { DesktopShell } from './DesktopShell';
@@ -8,6 +8,7 @@ import { log, logFile, startLog } from './log';
 import { openAppWindow, openExternal, showErrorBox } from './native';
 import { appDir, isSingleExecutable } from './sea';
 import { UiServer } from './server';
+import { LatestJsonFile } from './store';
 
 declare const ORKA_VERSION: string;
 const VERSION = typeof ORKA_VERSION === 'string' ? ORKA_VERSION : '0.0.0-dev';
@@ -72,6 +73,7 @@ export async function main(argv: readonly string[]): Promise<number> {
   const files = appDir(home, VERSION);
   const uiStateFile = path.join(home, 'desktop', 'ui-state.json');
   let uiState: unknown = readJson(uiStateFile);
+  const uiStateWriter = new LatestJsonFile(uiStateFile);
 
   let shell: DesktopShell | undefined;
   let controller: AppController | undefined;
@@ -83,6 +85,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     stopping = true;
     log(`Quitting (exit code ${code})`);
     await controller?.dispose().catch(() => undefined);
+    await uiStateWriter.idle();
     shell?.dispose();
     server.close();
     process.exit(code);
@@ -94,12 +97,8 @@ export async function main(argv: readonly string[]): Promise<number> {
     getState: () => uiState,
     setState: (state) => {
       uiState = state;
-      try {
-        mkdirSync(path.dirname(uiStateFile), { recursive: true });
-        writeFileSync(uiStateFile, JSON.stringify(state));
-      } catch {
-        /* only the unsent draft is lost */
-      }
+      // Off the event loop: the window's messages and the agents' output go on meanwhile.
+      uiStateWriter.write(state);
     },
     // The same reading of the settings as the UI's, so the page and the UI agree on the layout, and
     // the language the controller chose (it sets the locale before any page loads).

@@ -4,8 +4,11 @@
 /** Every message the page posted to the app. */
 export const pagePosted: unknown[] = [];
 
+/** Every state the page saved. */
+export const pageStates: unknown[] = [];
+
 (globalThis as { acquireVsCodeApi?: unknown }).acquireVsCodeApi = () => ({
   postMessage: (message: unknown) => void pagePosted.push(message),
   getState: () => undefined,
-  setState: () => undefined,
+  setState: (state: unknown) => void pageStates.push(state),
 });
