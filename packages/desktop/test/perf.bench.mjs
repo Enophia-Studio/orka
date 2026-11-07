@@ -18,7 +18,8 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const APP = path.join(here, '..', 'dist', 'orka-desktop.js');
+// BENCH_APP: another build to measure (a copy of dist/ from another commit), for before/after runs side by side.
+const APP = process.env.BENCH_APP || path.join(here, '..', 'dist', 'orka-desktop.js');
 const require = createRequire(import.meta.url);
 const { HeadlessBrowser, findBrowser } = require(path.join(here, '..', '..', 'core', 'dist', 'src', 'browser', 'HeadlessBrowser.js'));
 if (!existsSync(APP)) throw new Error('build first: npm run build -w orka-desktop');

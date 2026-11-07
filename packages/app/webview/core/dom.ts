@@ -18,6 +18,33 @@ export function renderMarkdown(text: string): string {
   }
 }
 
+/** One top-level block of Markdown text: its source, its kind ('space' for blank lines) and its HTML. */
+export interface MarkdownBlock {
+  raw: string;
+  type: string;
+  html(): string;
+}
+
+/**
+ * The top-level blocks of Markdown text, each rendered on its own: joined, their HTML is
+ * renderMarkdown(text). undefined when the text cannot be split that way.
+ */
+export function markdownBlocks(text: string): MarkdownBlock[] | undefined {
+  try {
+    const tokens = marked.lexer(text);
+    // The parser joins runs of loose top-level text into one paragraph: those do not split.
+    if (tokens.some((token) => token.type === 'text')) return undefined;
+    return tokens.map((token) => ({
+      raw: token.raw,
+      type: token.type,
+      // No options here: they would replace the ones set with marked.use() (raw HTML kept escaped).
+      html: () => marked.parser(Object.assign([token], { links: tokens.links })),
+    }));
+  } catch {
+    return undefined;
+  }
+}
+
 export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }

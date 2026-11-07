@@ -73,8 +73,8 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
         requests.push({ body, headers: req.headers });
         const next = script.shift();
         res.writeHead(200, { 'content-type': 'text/event-stream' });
-        // A step may answer later (a request that is still running meanwhile).
-        void Promise.resolve(next ? next(body) : reply('(script ended)')).then((answer) => res.end(answer));
+        // A step may answer later (a request that is still running meanwhile), or stream its answer itself.
+        void Promise.resolve(next ? next(body) : reply('(script ended)')).then((answer) => (typeof answer === 'function' ? answer(res) : res.end(answer)));
       });
     });
     await new Promise((r) => server.listen(0, '127.0.0.1', r));
@@ -156,6 +156,58 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
     await browser.clickSelector('.modal-backdrop [data-action="dialog-action"]');
     await until(() => !existsSync(path.join(work, 'notes', 'hello.txt')), 'the revert');
     assert.equal(await browser.evaluate('!!document.querySelector(".modal-backdrop")'), false, 'the dialog closed');
+  });
+
+  it('adds a streaming answer to the page block by block, keeping the blocks already shown', async () => {
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    const fence = '```';
+    const block = (n) => `Step **${n}** of the plan:\n\n${fence}js\nconsole.log(${n});\n${fence}\n\n`;
+    const answer = Array.from({ length: 8 }, (_, i) => block(i + 1)).join('') + 'Done.';
+    const chunks = answer.match(/[\s\S]{1,6}/g);
+    let release;
+    const halfway = new Promise((resolve) => (release = resolve));
+    script = [
+      () => async (res) => {
+        res.write(sse([start('msg_stream'), ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }]]));
+        for (const [i, text] of chunks.entries()) {
+          res.write(sse([['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } }]]));
+          // Half the answer, then the test looks before the rest comes.
+          if (i === Math.floor(chunks.length / 2)) await halfway;
+          else await sleep(15);
+        }
+        res.end(
+          sse([
+            ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+            ['message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 5 } }],
+            ['message_stop', { type: 'message_stop' }],
+          ]),
+        );
+      },
+    ];
+    await browser.clickSelector('#input');
+    await browser.type('Stream a plan');
+    await browser.clickSelector('#send');
+    const shown = (selector) => browser.evaluate(`document.querySelectorAll(${JSON.stringify(selector)}).length`);
+    await until(async () => (await shown('.msg.assistant.streaming .markdown pre')) >= 3, 'half the answer');
+    // The code blocks shown so far are marked: a re-render (new nodes) would drop the mark.
+    const seen = await browser.evaluate(`(() => {
+      const pres = [...document.querySelectorAll('.msg.assistant.streaming .markdown pre')].slice(0, -1);
+      pres.forEach((pre) => (pre.dataset.seen = '1'));
+      return pres.length;
+    })()`);
+    release();
+    await until(async () => (await shown('.msg.assistant.streaming .markdown pre')) >= 7, 'more of the answer');
+    assert.equal(await shown('.msg.assistant.streaming .markdown pre[data-seen]'), seen, 'the finished blocks stay as they were shown');
+    const oneCopyEach = 'document.querySelectorAll(".msg.assistant .markdown pre").length === document.querySelectorAll(".msg.assistant .markdown pre > .copy").length';
+    assert.equal(await browser.evaluate(oneCopyEach), true, 'one Copy button per code block');
+    // The finished answer is rendered whole, as before.
+    await until(() => browser.evaluate('!document.body.classList.contains("busy")'), 'the end of the run');
+    assert.equal(await shown('.msg.assistant .markdown pre'), 8);
+    assert.equal(await shown('.msg.assistant .markdown pre[data-seen]'), 0);
+    assert.equal(await browser.evaluate(oneCopyEach), true);
+    assert.match(await text(), /Step 8 of the plan:[\s\S]*console\.log\(8\);[\s\S]*Done\./);
   });
 
   it('keeps the last keys typed when the window reloads or closes right after them', async () => {

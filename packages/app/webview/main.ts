@@ -25,7 +25,7 @@ import type {
   ToWebview,
 } from '../src/protocol';
 import { forShownSession, post, saveUiState, setSessionId, shownSessionId, uiState } from './core/bridge';
-import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
+import { attr, escapeHtml, icon, markdownBlocks, renderMarkdown } from './core/dom';
 import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
 import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAccountHtml, type AddAccountState } from './features/accounts';
@@ -4041,14 +4041,83 @@ function nodeFor(item: TranscriptItem): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.innerHTML = itemHtml(item, false);
   const node = wrapper.firstElementChild as HTMLElement;
-  node.querySelectorAll('.markdown pre').forEach((pre) => {
+  node.querySelectorAll('.markdown').forEach(addCopyButtons);
+  return node;
+}
+
+/** A Copy button in each code block of rendered Markdown that has none yet. */
+function addCopyButtons(markdown: Element): void {
+  markdown.querySelectorAll('pre').forEach((pre) => {
+    if (pre.querySelector(':scope > .copy')) return;
     const button = document.createElement('button');
     button.className = 'copy';
     button.dataset.action = 'copy';
     button.textContent = t('Copy');
     pre.appendChild(button);
   });
-  return node;
+}
+
+/**
+ * A streaming answer's node, as the last frame left it: the reasoning it shows, and the Markdown
+ * blocks before the last one (their sources, and how many nodes of its .markdown they made). Text
+ * only grows at the end, so those blocks no longer change.
+ */
+interface StreamedNode {
+  reasoning: string;
+  raws: string[];
+  nodes: number;
+}
+const streamedNodes = new WeakMap<HTMLElement, StreamedNode>();
+
+/** Blocks before this index are done; the last block that is not blank lines can still change. */
+function settledBlocks(blocks: Array<{ type: string }>): number {
+  let last = blocks.length - 1;
+  while (last > 0 && blocks[last].type === 'space') last--;
+  return Math.max(0, last);
+}
+
+/**
+ * Show a streaming answer's new text in its node: the blocks finished since the last frame are
+ * added and only the last block is rendered again, instead of the whole answer on every frame.
+ * Returns false when the node needs a full render (anything but the text changed, or the text
+ * changed before its end); the finished answer is always rendered whole.
+ */
+function patchStreaming(node: HTMLElement, item: TranscriptItem): boolean {
+  const view = streamedNodes.get(node);
+  if (!view || item.kind !== 'assistant' || !item.streaming || !item.text || item.reasoning !== view.reasoning) return false;
+  const body = node.querySelector<HTMLElement>(':scope > .markdown');
+  const blocks = body && markdownBlocks(item.text);
+  if (!body || !blocks) return false;
+  const done = settledBlocks(blocks);
+  if (done < view.raws.length || view.raws.some((raw, i) => blocks[i].raw !== raw)) return false;
+  // The last frame's last block goes; the blocks finished since stay for good; the last block follows.
+  while (body.childNodes.length > view.nodes) body.lastChild!.remove();
+  const finished = blocks.slice(view.raws.length, done);
+  if (finished.length) {
+    body.insertAdjacentHTML('beforeend', finished.map((b) => b.html()).join(''));
+    view.raws.push(...finished.map((b) => b.raw));
+    view.nodes = body.childNodes.length;
+  }
+  body.insertAdjacentHTML('beforeend', blocks.slice(done).map((b) => b.html()).join(''));
+  addCopyButtons(body);
+  return true;
+}
+
+/** A streaming answer's node was rendered whole: its Markdown is laid out by blocks, so the next frames can patch it. */
+function startStreaming(node: HTMLElement, item: TranscriptItem): void {
+  if (item.kind !== 'assistant' || !item.streaming || !item.text) return;
+  const body = node.querySelector<HTMLElement>(':scope > .markdown');
+  const blocks = body && markdownBlocks(item.text);
+  if (!body || !blocks) return;
+  const done = settledBlocks(blocks);
+  body.innerHTML = blocks
+    .slice(0, done)
+    .map((b) => b.html())
+    .join('');
+  const view: StreamedNode = { reasoning: item.reasoning, raws: blocks.slice(0, done).map((b) => b.raw), nodes: body.childNodes.length };
+  body.insertAdjacentHTML('beforeend', blocks.slice(done).map((b) => b.html()).join(''));
+  addCopyButtons(body);
+  streamedNodes.set(node, view);
 }
 
 function nearBottom(): boolean {
@@ -4140,7 +4209,9 @@ function flush(): void {
     const item = session.items.find((i) => i.id === id);
     if (!item) continue;
     const existing = el.transcript.querySelector<HTMLElement>(`:scope > [data-id="${CSS.escape(id)}"]`);
+    if (existing && patchStreaming(existing, item)) continue;
     const node = nodeFor(item);
+    startStreaming(node, item);
     if (existing) {
       // Keep keyboard focus in an approval note that is being typed while the card re-renders.
       const focused = document.activeElement;
