@@ -93,3 +93,14 @@ export {
   skillsPrompt,
   skillTemplate,
 } from './skills/Skills';
+export { galleryEntry, licenseName, openLicense, SKILL_GALLERY, type SkillGalleryEntry } from './skills/gallery';
+export {
+  GALLERY_MANIFEST,
+  type GalleryDownload,
+  galleryInstallPlan,
+  type GalleryManifest,
+  installBundledSkill,
+  installGallerySkill,
+  readGalleryManifest,
+  removeGallerySkill,
+} from './skills/galleryInstall';

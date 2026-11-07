@@ -1,0 +1,8 @@
+mcp-builder: a skill in Orka's skills gallery, from anthropics/skills.
+
+Source: https://github.com/anthropics/skills/tree/2c5958ecac7cee2b583967a2c4981d0f4a75c579/skills/mcp-builder
+Copyright (c) Anthropic, PBC
+Licensed under the Apache License, Version 2.0 (see LICENSE.txt).
+
+Changes made for Orka (2026-11-07):
+- Front matter: the license key names Apache-2.0. The body, references and scripts are unchanged.

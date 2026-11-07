@@ -1,0 +1,8 @@
+python-testing-patterns: a skill in Orka's skills gallery, from wshobson/agents.
+
+Source: https://github.com/wshobson/agents/tree/4bde3168b43c0655c4d00ea2726e631719908a6d/plugins/python-development/skills/python-testing-patterns
+Copyright (c) 2024 Seth Hobson
+Licensed under the MIT License (see LICENSE).
+
+Changes made for Orka (2026-11-07):
+- Front matter: a license key is added. The body and references are unchanged.

@@ -1,0 +1,8 @@
+silent-failure-hunter: a skill in Orka's skills gallery, from anthropics/claude-plugins-official.
+
+Source: https://github.com/anthropics/claude-plugins-official/tree/0412be76f50ab4f4f8abff3753efa9269fbbca5b/plugins/pr-review-toolkit/agents/silent-failure-hunter.md
+Copyright (c) Anthropic, PBC
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Changes made for Orka (2026-11-07):
+- Converted from an agent definition (agents/*.md) to a skill: new front matter (name, a description of when to use it, license); the model, color and tools keys are dropped. The body is unchanged, except that "CLAUDE.md" reads "the project's instructions (CLAUDE.md, AGENTS.md or similar)".
