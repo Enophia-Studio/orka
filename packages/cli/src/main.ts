@@ -10,6 +10,8 @@ import {
   checkAgentCli,
   comspec,
   copyToClipboard,
+  DEFAULT_MAX_RETRIES,
+  MAX_RETRIES_LIMIT,
   createProvider,
   DEFAULT_SUBAGENTS,
   externalAgent,
@@ -165,6 +167,7 @@ class Session {
     const c = this.config;
     return {
       maxIterations: clamp(c.maxIterations, 1, 500, 60),
+      maxRetries: clamp(c.maxRetries, 0, MAX_RETRIES_LIMIT, DEFAULT_MAX_RETRIES),
       autoVerify: true,
       commandTimeoutMs: clamp(c.commandTimeoutSeconds, 5, 3600, 180) * 1000,
       customInstructions: c.customInstructions,

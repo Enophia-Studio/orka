@@ -43,6 +43,8 @@ export interface OrkaConfig {
   /** "auto" (system language), "en" or "tr". */
   language?: string;
   maxIterations?: number;
+  /** Retries of a model request after a connection or server error (0 = none). */
+  maxRetries?: number;
   /** Pause a request after this many new tokens (0 = no limit). */
   tokenBudget?: number;
   commandTimeoutSeconds?: number;

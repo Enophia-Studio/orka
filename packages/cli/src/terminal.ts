@@ -3,6 +3,7 @@ import {
   estimateCost,
   t,
   unifiedDiff,
+  waitLabel,
   type AgentEvent,
   type ApprovalRequest,
   type ApprovalResponse,
@@ -81,6 +82,13 @@ export class Renderer {
           this.out('\n');
           this.midLine = false;
         }
+        break;
+      case 'assistant_retry':
+        // Printed text cannot be taken back: say that the answer starts again below it.
+        if (this.midLine) this.line(s.dim(t('(The answer was cut off; it starts again.)')));
+        break;
+      case 'wait':
+        if (event.wait?.reason === 'retrying' || event.wait?.reason === 'rate_limited') this.line(s.yellow(`↻ ${waitLabel(event.wait)}`));
         break;
       case 'tool_call':
         this.tool(event.call);
