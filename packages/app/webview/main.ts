@@ -37,6 +37,7 @@ import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAcc
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
 import { folderPickerCreated, folderPickerListing, openFolderPicker } from './features/folderPicker';
 import { hunksHtml } from './features/hunks';
+import { fitWithin, MAX_IMAGE_EDGE, pickImages } from './features/images';
 import { catalogFormHtml, catalogHtml, catalogListHtml, type CatalogState, missingFields } from './features/mcpCatalog';
 import {
   captureLimitDrafts,
@@ -1890,17 +1891,11 @@ function renderChips(): void {
 
 // ------------------------------------------------------------------ composer: images
 
-const MAX_IMAGES = 5;
-/** Long edge sent to the model: larger images cost more tokens without helping it see more. */
-const MAX_IMAGE_EDGE = 1568;
-
+/** Attach images (picked, pasted or dropped): PNG, JPEG, GIF or WebP, scaled down here; a notice for each one left out. */
 async function addImages(files: File[]): Promise<void> {
-  const room = MAX_IMAGES - composer.images.length;
-  if (room <= 0) {
-    onEvent({ type: 'notice', level: 'warning', message: t('At most {n} images per message.', { n: MAX_IMAGES }) });
-    return;
-  }
-  for (const file of files.filter((f) => f.type.startsWith('image/')).slice(0, room)) {
+  const { accepted, notices } = pickImages(files, composer.images.length);
+  for (const message of notices) onEvent({ type: 'notice', level: 'warning', message });
+  for (const file of accepted) {
     try {
       const bitmap = await createImageBitmap(file);
       const full = encodeImage(bitmap, MAX_IMAGE_EDGE);
@@ -1917,10 +1912,10 @@ async function addImages(files: File[]): Promise<void> {
 
 /** Scale down to `edge` and encode: PNG keeps screenshots sharp; JPEG when PNG would be large. */
 function encodeImage(bitmap: ImageBitmap, edge: number, force?: 'image/jpeg'): { mediaType: ImageAttachment['mediaType']; data: string; url: string } {
-  const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+  const size = fitWithin(bitmap.width, bitmap.height, edge);
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.width = size.width;
+  canvas.height = size.height;
   const g = canvas.getContext('2d')!;
   if (force === 'image/jpeg') {
     g.fillStyle = '#ffffff';
@@ -1951,6 +1946,7 @@ el.composer.addEventListener('dragover', (e) => {
 el.composer.addEventListener('dragleave', () => el.composer.classList.remove('drop'));
 el.composer.addEventListener('drop', (e) => {
   el.composer.classList.remove('drop');
+  // Images only (other files are left to the editor); an image type Orka cannot send gets a notice.
   const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith('image/'));
   if (!files.length) return;
   e.preventDefault();

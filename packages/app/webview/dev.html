@@ -625,6 +625,21 @@
         deliver({ type: 'showSettings', tab: 'mcp', mcp: 'servers' });
         setTimeout(() => document.querySelector('[data-action="mcp-limits"][data-name="unity-editor-mcp"]')?.click(), 20);
       }
+      // ?images: two pasted images in the message box (one large, scaled down) and an SVG that is refused with a notice.
+      if (params.has('images')) {
+        setTimeout(async () => {
+          const shot = (w, h, color) => new Promise((resolve) => {
+            const c = document.createElement('canvas'); c.width = w; c.height = h;
+            const g = c.getContext('2d'); g.fillStyle = color; g.fillRect(0, 0, w, h);
+            g.fillStyle = '#fff'; g.font = `${Math.round(h / 6)}px sans-serif`; g.fillText(`${w}×${h}`, w / 10, h / 2);
+            c.toBlob((blob) => resolve(new File([blob], `shot-${w}.png`, { type: 'image/png' })), 'image/png');
+          });
+          const files = [await shot(3200, 2000, '#3b82f6'), await shot(640, 400, '#10b981'), new File(['<svg xmlns="http://www.w3.org/2000/svg"/>'], 'logo.svg', { type: 'image/svg+xml' })];
+          const data = new DataTransfer();
+          for (const f of files) data.items.add(f);
+          document.getElementById('input')?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+        }, 50);
+      }
       // ?gallery: Settings > Skills > Gallery; ?gallery=details opens two entries, ?gallery=preview a skill's text, ?gallery=install the download consent.
       if (params.has('gallery')) {
         deliver({ type: 'showSettings', tab: 'skills', skills: 'gallery' });
