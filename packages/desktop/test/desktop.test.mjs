@@ -1218,9 +1218,10 @@ globalThis.fetch = (input, init) => {
     assert.doesNotMatch(menu, /Yolo/, "never the agent's own modes");
     await browser.clickSelector('#model-menu [data-action="session-option"][data-value="pro"]');
     await until(() => browser.evaluate('document.querySelector("#model-menu [data-value=pro]")?.getAttribute("aria-checked") === "true"'), 'the pick');
-    // A pick from the keyboard keeps the focus in the menu after it is drawn again.
+    // A pick from the keyboard keeps the focus in the menu after it is drawn again (a new value: the
+    // app sends the config only when it changed).
     await browser.evaluate(
-      'window.oldItem = document.querySelector("#model-menu button"); const b = document.querySelector("#model-menu [data-action=session-option][data-value=pro]"); b.focus(); b.click(); true',
+      'window.oldItem = document.querySelector("#model-menu button"); const b = document.querySelector("#model-menu [data-action=session-option][data-value=high]"); b.focus(); b.click(); true',
     );
     await until(() => browser.evaluate('!window.oldItem.isConnected'), 'the menu drawn again');
     assert.equal(await browser.evaluate('!!document.activeElement.closest("#model-menu") && document.activeElement.getAttribute("aria-checked")'), 'true');
