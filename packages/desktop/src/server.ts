@@ -28,6 +28,8 @@ const STATIC: Record<string, string> = {
 export interface PageLook {
   layout: 'ide' | 'classic';
   theme: 'system' | 'light' | 'dark';
+  /** The UI's language ("en", "tr"): the browser must not take a Turkish page for English and offer to translate it. */
+  locale?: string;
 }
 
 export interface UiServerOptions {
@@ -245,10 +247,12 @@ function page(nonce: string, state: unknown, look: PageLook): string {
   // Only known values reach the markup.
   const layout = look.layout === 'classic' ? 'classic' : 'ide';
   const theme = look.theme === 'light' || look.theme === 'dark' ? look.theme : 'system';
+  const lang = look.locale === 'tr' ? 'tr' : 'en';
   return `<!DOCTYPE html>
-<html lang="en" translate="no" data-layout="${layout}" data-theme="${theme}">
+<html lang="${lang}" translate="no" data-layout="${layout}" data-theme="${theme}">
 <head>
   <meta charset="UTF-8">
+  <meta name="google" content="notranslate">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" href="/icon.png">
   <link rel="stylesheet" href="/webview.css">

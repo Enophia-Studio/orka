@@ -28,8 +28,8 @@ describe('Orka desktop server', () => {
   after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
 
   /** A started server and a cookie that lets requests in. */
-  async function start() {
-    const server = new UiServer({ distDir: dir, onMessage: () => undefined, getState: () => null, setState: () => undefined });
+  async function start(options = {}) {
+    const server = new UiServer({ distDir: dir, onMessage: () => undefined, getState: () => null, setState: () => undefined, ...options });
     const port = await server.listen();
     const login = await request(port, new URL(server.startUrl).pathname + new URL(server.startUrl).search);
     const cookie = String(login.headers['set-cookie']).split(';')[0];
@@ -97,6 +97,23 @@ describe('Orka desktop server', () => {
       server.post({ type: 'saveRefused', path: 'a.txt', reason: 'running' });
       server.post({ type: 'setInput', text: 'kept' });
       assert.deepEqual(await firstEvents(port, cookie), [{ type: 'setInput', text: 'kept' }]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("names the UI's language on the page and asks the browser not to offer a translation", async () => {
+    let look = { layout: 'ide', theme: 'system', locale: 'tr' };
+    const { server, port, cookie } = await start({ getLook: () => look });
+    try {
+      const turkish = (await request(port, '/', { cookie })).body;
+      assert.match(turkish, /<html lang="tr" translate="no"/);
+      assert.match(turkish, /<meta name="google" content="notranslate">/);
+      look = { layout: 'ide', theme: 'system', locale: 'en' };
+      assert.match((await request(port, '/', { cookie })).body, /<html lang="en" translate="no"/);
+      // Only known languages reach the markup.
+      look = { layout: 'ide', theme: 'system', locale: '"><script>' };
+      assert.match((await request(port, '/', { cookie })).body, /<html lang="en" translate="no"/);
     } finally {
       server.close();
     }

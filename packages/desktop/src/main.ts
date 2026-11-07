@@ -1,5 +1,5 @@
 import { AppController, readSettings } from '@orka/app';
-import { hardenProgramLookup, t } from '@orka/core';
+import { getLocale, hardenProgramLookup, t } from '@orka/core';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
@@ -101,8 +101,9 @@ export async function main(argv: readonly string[]): Promise<number> {
         /* only the unsent draft is lost */
       }
     },
-    // The same reading of the settings as the UI's, so the page and the UI agree on the layout.
-    getLook: () => (shell ? readSettings(shell.settings).desktop : { layout: 'ide', theme: 'system' }),
+    // The same reading of the settings as the UI's, so the page and the UI agree on the layout, and
+    // the language the controller chose (it sets the locale before any page loads).
+    getLook: () => ({ ...(shell ? readSettings(shell.settings).desktop : { layout: 'ide', theme: 'system' }), locale: getLocale() }),
     onConnect: () => {
       windowConnected = true;
       clearTimeout(idleTimer);

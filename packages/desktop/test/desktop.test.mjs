@@ -296,6 +296,23 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
     assert.equal(await browser.evaluate('document.documentElement.dataset.theme'), 'light', 'the theme stays');
   });
 
+  it("loads the page in the UI's language, so the browser offers no translation, and follows a language change", async () => {
+    const settings = path.join(home, 'desktop', 'settings.json');
+    writeFileSync(settings, JSON.stringify({ ...JSON.parse(readFileSync(settings, 'utf8')), language: 'tr' }));
+    const url = await launch();
+    await browser.navigate(url);
+    await until(() => browser.evaluate('!!document.querySelector("#input") && document.querySelector("#input").placeholder !== ""'), 'the chat UI');
+    // As served, before the chat UI's script runs.
+    const served = await browser.evaluate(`fetch('/').then((r) => r.text())`);
+    assert.match(served, /<html lang="tr" translate="no"/);
+    assert.match(served, /<meta name="google" content="notranslate">/);
+    assert.equal(await browser.evaluate('document.documentElement.lang'), 'tr');
+
+    assert.equal(await post({ type: 'setSetting', key: 'language', value: 'en' }), 204);
+    await until(async () => (await browser.evaluate('document.documentElement.lang')) === 'en', 'the English UI');
+    assert.match(await browser.evaluate(`fetch('/').then((r) => r.text())`), /<html lang="en" translate="no"/, 'a reload loads it in English');
+  });
+
   it('shows Radar in a tab next to the plan and changes: off, naming every site it would contact, fetching nothing', async () => {
     // Every fetch the app makes is written down.
     const probe = path.join(home, 'fetch-probe.cjs');
