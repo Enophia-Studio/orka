@@ -6,6 +6,8 @@ import type {
   AgentEvent,
   AgentOption,
   Locale,
+  McpLimits,
+  McpServerLimits,
   ModelInfo,
   PermissionMode,
   PriceTable,
@@ -208,7 +210,7 @@ export interface ConfigView {
   skillErrors: string[];
   skillsFolder: string;
   /** platform: the system the app runs on (process.platform), for which catalog servers can run. */
-  mcp: { enabled: boolean; servers: McpServerView[]; platform: string };
+  mcp: { enabled: boolean; servers: McpServerView[]; platform: string; limits: McpLimits };
   /** Agents that run on their own in a terminal (Freebuff); Orka hands tasks over to them. */
   externalAgents: ExternalAgentView[];
   pricing: PriceTable;
@@ -332,6 +334,12 @@ export interface McpServerView {
   enabled: boolean;
   state: 'idle' | 'starting' | 'ready' | 'error' | 'closed';
   tools: number;
+  /** Of those, the tools the model gets (allow-list and the server's own tool limit applied). */
+  exposed: number;
+  /** The tool names the server lists (empty until it started). */
+  toolNames: string[];
+  /** Its own limits and tool allow-list (mcp.serverLimits); unset values follow the global limits. */
+  limits: McpServerLimits;
   error?: string;
   /** The MCP catalog entry it came from (added from the catalog, imported, or the same package or URL). */
   catalogId?: string;
@@ -762,6 +770,7 @@ export type FromWebview =
   | { type: 'selectFolder'; path: string }
   | { type: 'toggleMcpServer'; name: string; enabled: boolean }
   | { type: 'importMcp' }
+  | { type: 'setMcpServerLimits'; name: string; limits: McpServerLimits }
   | { type: 'restartMcp' }
   | { type: 'editMcpServers' }
   /** Add a server from Orka's bundled catalog: the app builds it from the entry and asks for consent first. */

@@ -38,6 +38,15 @@ import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './f
 import { folderPickerCreated, folderPickerListing, openFolderPicker } from './features/folderPicker';
 import { hunksHtml } from './features/hunks';
 import { catalogFormHtml, catalogHtml, catalogListHtml, type CatalogState, missingFields } from './features/mcpCatalog';
+import {
+  captureLimitDrafts,
+  globalLimitsHtml,
+  readServerLimitsForm,
+  restoreLimitDrafts,
+  serverLimitsForm,
+  serverLimitsHtml,
+  toolCountLabel,
+} from './features/mcpLimits';
 import { galleryHtml, galleryListHtml, galleryPreviewHtml, type GalleryState, originLabel } from './features/skillGallery';
 import { contextRing, effortLabel, modelButtonHtml, modelMenuHtml } from './features/modelMenu';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
@@ -439,6 +448,8 @@ document.addEventListener('keydown', (e) => {
 
 /** Settings > MCP: the user's servers or Orka's catalog; the catalog's search, filter and open details. */
 let mcpView: 'servers' | 'catalog' = 'servers';
+/** MCP servers whose own limits form is open (Settings > MCP). */
+const mcpLimitsOpen = new Set<string>();
 const catalog: CatalogState = { query: '', category: '', open: new Set() };
 /** The catalog's Add form (an entry with fields), with the required fields found empty. */
 let catalogForm: { id: string; missing: string[] } | undefined;
@@ -2774,6 +2785,34 @@ document.addEventListener('click', (e) => {
     case 'edit-mcp':
       post({ type: 'editMcpServers' });
       break;
+    case 'mcp-limits': {
+      const name = target.dataset.name!;
+      if (mcpLimitsOpen.has(name)) mcpLimitsOpen.delete(name);
+      else mcpLimitsOpen.add(name);
+      renderSettings();
+      break;
+    }
+    case 'mcp-tools-all':
+    case 'mcp-tools-none': {
+      const form = serverLimitsForm(document, target.dataset.name!);
+      for (const box of form?.querySelectorAll<HTMLInputElement>('input[data-mcp-tool]') ?? []) box.checked = action === 'mcp-tools-all';
+      break;
+    }
+    case 'mcp-limits-save': {
+      const name = target.dataset.name!;
+      const form = serverLimitsForm(document, name);
+      if (!form) break;
+      const server = config?.mcp.servers.find((s) => s.name === name);
+      post({ type: 'setMcpServerLimits', name, limits: readServerLimitsForm(form, server?.limits) });
+      mcpLimitsOpen.delete(name);
+      renderSettings();
+      break;
+    }
+    case 'mcp-limits-reset':
+      post({ type: 'setMcpServerLimits', name: target.dataset.name!, limits: {} });
+      mcpLimitsOpen.delete(target.dataset.name!);
+      renderSettings();
+      break;
     case 'mcp-view':
       mcpView = target.dataset.view === 'catalog' ? 'catalog' : 'servers';
       renderSettings();
@@ -3846,7 +3885,7 @@ function mcpTab(): string {
     !s.enabled
       ? statusPill(false, t('Off'))
       : s.state === 'ready'
-        ? statusPill(true, tn('{n} tool', '{n} tools', s.tools))
+        ? statusPill(true, toolCountLabel(s))
         : s.state === 'starting'
           ? `<span class="pill"><span class="spinner small"></span>${escapeHtml(t('Starting'))}</span>`
           : s.state === 'error'
@@ -3859,9 +3898,13 @@ function mcpTab(): string {
         <label class="switch"><input type="checkbox" data-mcp="${attr(s.name)}"${s.enabled ? ' checked' : ''}${m.enabled ? '' : ' disabled'}></label>
         <strong class="mono">${escapeHtml(s.name)}</strong><span class="tag">${escapeHtml(s.transport)}</span>${s.source === 'workspace' ? '<span class="tag sub">.mcp.json</span>' : ''}
         <span class="spacer"></span>${state(s)}
+        <button class="link" data-action="mcp-limits" data-name="${attr(s.name)}" aria-expanded="${mcpLimitsOpen.has(s.name)}">${escapeHtml(t('Limits'))}${
+          Object.keys(s.limits ?? {}).length ? ' •' : ''
+        }</button>
       </div>
       <div class="mono muted small ellipsis" title="${attr(s.target)}">${escapeHtml(s.target)}</div>
       ${s.error && s.enabled ? `<div class="hint warn">${icon('warn')}<span>${escapeHtml(s.error)}</span></div>` : ''}
+      ${mcpLimitsOpen.has(s.name) ? serverLimitsHtml(s, m.limits) : ''}
     </div>`,
     )
     .join('');
@@ -3881,7 +3924,8 @@ function mcpTab(): string {
       </div>
     </div>
     <div class="card skills-list">${rows || `<p class="footnote">${escapeHtml(t('No MCP servers yet. Add one from the catalog, import yours from Claude Code, or add them to the list (settings.json).'))}</p>`}</div>
-    <p class="footnote">${escapeHtml(t('A server is a command (stdio) or a URL (HTTP). A .mcp.json in the project folder is used after you allow it once.'))}</p>`;
+    <p class="footnote">${escapeHtml(t('A server is a command (stdio) or a URL (HTTP). A .mcp.json in the project folder is used after you allow it once.'))}</p>
+    ${globalLimitsHtml(m.limits)}`;
 }
 
 function controlTab(s: SettingsView): string {
@@ -4076,6 +4120,7 @@ function renderSettings(): void {
   const active = document.activeElement;
   const search = active instanceof HTMLInputElement && (active.id === 'mcp-catalog-search' || active.id === 'skill-gallery-search') ? active : undefined;
   const caret = search ? [search.selectionStart, search.selectionEnd] : undefined;
+  const drafts = captureLimitDrafts(el.settings);
   const tabs: Array<[SettingsTab, string]> = [
     ['agents', 'Agents'],
     ['accounts', t('Accounts')],
@@ -4101,6 +4146,7 @@ function renderSettings(): void {
       .map(([id, label]) => `<button role="tab" aria-selected="${ui.tab === id}" class="${ui.tab === id ? 'on' : ''}" data-action="tab" data-tab="${id}">${escapeHtml(label)}</button>`)
       .join('')}</nav>
     <div class="settings-body">${body}</div>`;
+  restoreLimitDrafts(el.settings, drafts);
   el.settings.scrollTop = scroll;
   const searchAgain = caret && search && document.getElementById(search.id);
   if (caret && searchAgain instanceof HTMLInputElement) {

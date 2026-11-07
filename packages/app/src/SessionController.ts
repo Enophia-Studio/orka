@@ -87,7 +87,7 @@ export interface SessionContext {
   /** The agent CLI that runs the main agent's turns in this folder, when the main agent is one. */
   externalAgent(root: string): ExternalAgentRuntime | undefined;
   /** Tools of the MCP servers this session may use (started on demand). */
-  mcpTools(session: SessionController): Promise<Tool[]>;
+  mcpTools(session: SessionController): Promise<{ tools: Tool[]; notices: string[] }>;
   /** Every loaded skill, disabled ones too (a skill the user names is used as named). */
   skills(): readonly Skill[];
   activeSkills(): Skill[];

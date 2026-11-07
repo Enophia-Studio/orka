@@ -2165,6 +2165,39 @@ input.num.wide {
   vertical-align: -2px;
 }
 
+/* ---------------------------------------------------------------- MCP limits */
+
+.mcp-server-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.mcp-server-limits .row:first-of-type {
+  border-top: none;
+}
+
+.mcp-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-bottom: 4px;
+}
+
+.mcp-tools .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 /* ---------------------------------------------------------------- agent asks the supervisor */
 
 .tool.ask-sup {

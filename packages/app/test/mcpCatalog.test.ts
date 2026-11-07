@@ -20,6 +20,9 @@ const server = (name: string, catalogId?: string): McpServerView => ({
   enabled: true,
   state: 'idle',
   tools: 0,
+  exposed: 0,
+  toolNames: [],
+  limits: {},
   catalogId,
 });
 

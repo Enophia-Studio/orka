@@ -46,7 +46,9 @@ import {
   catalogRunKind,
   catalogServerName,
   findCatalogEntry,
+  capMcpTools,
   McpManager,
+  readMcpServerLimits,
   type McpServerConfig,
   MODEL_CATALOG,
   type ModelInfo,
@@ -562,6 +564,9 @@ export class AppController implements Disposable {
         break;
       case 'importMcp':
         await this.importMcpFromClaude();
+        break;
+      case 'setMcpServerLimits':
+        await this.setMcpServerLimits(message.name, message.limits);
         break;
       case 'restartMcp':
         this.mcp.restart();
@@ -1281,19 +1286,36 @@ export class AppController implements Disposable {
    * .mcp.json servers once the user allowed them, which run in that session only (a task in another
    * folder neither stops nor sees them).
    */
-  private async mcpTools(session: SessionController): Promise<Tool[]> {
+  private async mcpTools(session: SessionController): Promise<{ tools: Tool[]; notices: string[] }> {
     if (!this.settings.mcp.enabled) {
       this.mcp.sync({});
       session.mcp.sync({});
-      return [];
+      return { tools: [], notices: [] };
     }
     const own = this.settings.mcp.servers;
-    this.mcp.sync(own);
-    session.mcp.sync(await session.trustedMcpServers(Object.keys(own), true));
+    const limits = { global: this.settings.mcp.limits, servers: this.settings.mcp.serverLimits };
+    this.mcp.sync(own, limits);
+    session.mcp.sync(await session.trustedMcpServers(Object.keys(own), true), limits);
     const [shared, workspace] = await Promise.all([this.mcp.tools(), session.mcp.tools()]);
     // Tool names are cleaned server names: two servers can still end up with one name.
     const names = new Set(shared.map((tool) => tool.name));
-    return [...shared, ...workspace.filter((tool) => !names.has(tool.name))];
+    const capped = capMcpTools([...shared, ...workspace.filter((tool) => !names.has(tool.name))], this.settings.mcp.limits.maxTools);
+    return { tools: capped.tools, notices: capped.notice ? [capped.notice] : [] };
+  }
+
+  /**
+   * One server's own limits and tool allow-list (Settings → MCP → Limits), kept under
+   * mcp.serverLimits by server name, so a folder's .mcp.json server can have them too. Values out
+   * of range are dropped; an empty entry removes the server's limits.
+   */
+  private async setMcpServerLimits(name: string, limits: unknown): Promise<void> {
+    if (typeof name !== 'string' || !/^[\w.-]{1,40}$/.test(name)) return;
+    const stored = this.shell.settings.get<unknown>('mcp.serverLimits', {});
+    const current = stored && typeof stored === 'object' && !Array.isArray(stored) ? { ...(stored as Record<string, unknown>) } : {};
+    const parsed = readMcpServerLimits({ [name]: limits })[name];
+    if (parsed) current[name] = parsed;
+    else delete current[name];
+    await this.updateSetting('mcp.serverLimits', current);
   }
 
   private async setMcpServerEnabled(name: string, enabled: boolean): Promise<void> {
@@ -1324,6 +1346,9 @@ export class AppController implements Disposable {
         enabled: source === 'workspace' ? workspaceAllowed : !config.disabled,
         state: s?.state ?? 'idle',
         tools: s?.tools ?? 0,
+        exposed: s?.exposed ?? 0,
+        toolNames: s?.toolNames ?? [],
+        limits: this.settings.mcp.serverLimits[name] ?? {},
         error: s?.error,
         catalogId: findCatalogEntry(name, config, process.platform)?.id,
       };
@@ -1332,6 +1357,7 @@ export class AppController implements Disposable {
     return {
       enabled: this.settings.mcp.enabled,
       platform: process.platform,
+      limits: this.settings.mcp.limits,
       servers: [
         ...Object.entries(own).map(([n, c]) => view(n, c, 'settings')),
         ...Object.entries(workspace.servers)

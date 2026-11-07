@@ -560,10 +560,12 @@
         skillErrors: [],
         skillsFolder: 'C:/Users/you/.orka/skills',
         externalAgents: [{ id: 'freebuff', label: 'Freebuff', description: 'Free, ad-supported terminal coding agent (open models, daily allowance).', installed: true, active: false }],
-        mcp: { enabled: true, platform: 'win32', servers: [
-          { name: 'unity-editor-mcp', source: 'settings', transport: 'stdio', target: 'unity mcp', enabled: true, state: 'ready', tools: 24 },
-          { name: 'blender', source: 'settings', transport: 'stdio', target: 'uvx mcp-for-blender', enabled: true, state: 'error', tools: 0, error: 'the server exited (code 1): Blender is not running', catalogId: 'blender-mcp' },
-          { name: 'UnityMCP', source: 'workspace', transport: 'http', target: 'http://localhost:8080/mcp', enabled: false, state: 'idle', tools: 0, catalogId: 'mcp-for-unity' },
+        mcp: { enabled: true, platform: 'win32', limits: { maxResultChars: 40000, callTimeoutSeconds: 0, startTimeoutSeconds: 30, maxTools: 100 }, servers: [
+          { name: 'unity-editor-mcp', source: 'settings', transport: 'stdio', target: 'unity mcp', enabled: true, state: 'ready', tools: 6, exposed: 4,
+            toolNames: ['manage_scene', 'manage_gameobject', 'manage_script', 'read_console', 'run_tests', 'manage_asset'],
+            limits: { maxResultChars: 20000, allowedTools: ['manage_scene', 'manage_gameobject', 'read_console', 'run_tests'] } },
+          { name: 'blender', source: 'settings', transport: 'stdio', target: 'uvx mcp-for-blender', enabled: true, state: 'error', tools: 0, exposed: 0, toolNames: [], limits: {}, error: 'the server exited (code 1): Blender is not running', catalogId: 'blender-mcp' },
+          { name: 'UnityMCP', source: 'workspace', transport: 'http', target: 'http://localhost:8080/mcp', enabled: false, state: 'idle', tools: 0, exposed: 0, toolNames: [], limits: {}, catalogId: 'mcp-for-unity' },
         ] },
         pricing: { 'gemini/gemini-3.8-*': { input: 0.3, output: 2.5 } },
         providers,
@@ -617,6 +619,11 @@
           if (params.get('catalog') === 'details') for (const id of ['mcp-for-unity', 'git']) document.querySelector('[data-action="catalog-details"][data-id="' + id + '"]')?.click();
           if (params.get('catalog') === 'add') document.querySelector('[data-action="catalog-add"][data-id="github-docker"]')?.click();
         }, 20);
+      }
+      // ?mcplimits: Settings > MCP with the limits form of a server open (4 of its 6 tools allowed).
+      if (params.has('mcplimits')) {
+        deliver({ type: 'showSettings', tab: 'mcp', mcp: 'servers' });
+        setTimeout(() => document.querySelector('[data-action="mcp-limits"][data-name="unity-editor-mcp"]')?.click(), 20);
       }
       // ?gallery: Settings > Skills > Gallery; ?gallery=details opens two entries, ?gallery=preview a skill's text, ?gallery=install the download consent.
       if (params.has('gallery')) {
