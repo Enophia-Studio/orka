@@ -43,6 +43,7 @@ export const BUILTIN_INVENTORY: FeatureInventory = {
     feature('skills.playbooks', 'skills', 'Skills', 'Built-in and user skills (Markdown playbooks) the agent loads when a task fits, or that the user invokes with /name.'),
     feature('mcp.client', 'mcp', 'MCP servers', 'stdio and Streamable HTTP MCP servers, a project .mcp.json, import from Claude Code, per-server on/off.'),
     feature('browser.headless', 'browser', 'Browser tool', 'Headless Chrome or Edge: screenshots, clicks, typing, page text and console errors.'),
+    feature('browser.panel', 'browser', 'Live browser panel', "The desktop app shows the agent's browser live; the user can type a localhost address and take the page over while the agent waits."),
     feature('web.fetch', 'web', 'Web fetch', 'Reads web pages and documentation as text; never reaches cloud metadata or link-local addresses.'),
     feature('terminal.commands', 'terminal', 'Terminal commands', 'Runs build, test and project commands with risk classification.'),
     feature('terminal.processes', 'terminal', 'Background processes', 'Starts dev servers and watchers in the background and waits until they are ready.'),

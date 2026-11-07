@@ -289,7 +289,7 @@ Hooks are your own commands that Orka runs around the agent's work, so your form
 
 ## Tools: browser, processes, web
 
-- **`browser`:** opens Chrome or Edge headless. The agent opens a page, **sees the screenshot**, clicks by coordinate or CSS selector, types, presses keys, scrolls, and reads the page text and console errors. Typical loop: `start_process` a dev server → look at it with `browser` → fix → look again. `localhost` and HTML files in the workspace need no approval; external sites need web permission (`orka.browser.path` to pick a browser).
+- **`browser`:** opens Chrome or Edge headless. The agent opens a page, **sees the screenshot**, clicks by coordinate or CSS selector, types, presses keys, scrolls, and reads the page text and console errors. Typical loop: `start_process` a dev server → look at it with `browser` → fix → look again. `localhost` and HTML files in the workspace need no approval; external sites need web permission (`orka.browser.path` to pick a browser). In the desktop app you watch it live in the [Browser tab](#browser-desktop), and can take the page over.
 - **`start_process` / `process_output` / `stop_process`:** run dev servers and watchers in the background and wait until they are ready (e.g. `wait_for: "Local:"`). In VS Code each process gets an **"Orka: <name>"** terminal; closing it stops the process.
 - **`web_fetch`** reads web pages and documentation; **`open_browser`** opens a URL in your browser or inside VS Code; **`open_file`** shows a file in the editor.
 - **`code_outline`** lists classes and methods with line numbers before reading a large file (C#, TypeScript/JavaScript, Python, Go, Java/Kotlin, Rust, C/C++), so the agent only reads the lines it needs.
@@ -407,6 +407,14 @@ The window's **Files** tab (next to the plan and changes; **Files** at the botto
 - **Send to the agent:** **Send selection** (or Ctrl+L) adds the selected lines to the next message as a chip such as `hello.ts:2–3`; the agent gets the file, the line numbers and the text as the editor shows it. **Attach file** adds the whole file as it is on disk. A secret-looking file (`.env`, keys, certificates) is added only after you confirm, and web access and MCP tools then ask for approval for the rest of the task.
 - **Your edits are protected:** after you save a file the agent changed, Revert all, Go back and Revert keep your edits (see [Reviewing changes](#reviewing-changes)). The agent is told that you edited the file and re-reads it before editing it again.
 - Leaving a file with unsaved changes (another file, another folder, closing the window) asks first. Only the open file's path is remembered across a reload, never its text.
+
+### Browser (desktop)
+
+The window's **Browser** tab (next to Files) shows the session's browser live: the same headless Chrome or Edge the agent's `browser` tool uses, so you see what the agent opens, clicks and types as it happens. The classic single-column window and the VS Code panel have no Browser tab.
+
+- **Address bar, back, forward and reload.** Type a local address (`localhost:5173`, `127.0.0.1:3000`, or just `5173`) or any http(s) address. What you type is your own choice, so it opens without an approval; pages the agent opens still follow the [browser tool's rule](#tools-browser-processes-web) (external sites ask). Cloud metadata and link-local addresses stay blocked either way. **Find dev servers** offers the local addresses your session's background processes printed (such as Vite's `Local: http://localhost:5173/`) and common dev-server ports that answer on this machine; it looks nowhere else.
+- **Take over** hands your mouse, wheel and keys to the page (Shift+Escape or **Give back** returns it). Meanwhile the agent can still take screenshots and read the page and its console, but its clicks, typing, navigation and closing are refused with a message telling it to wait, and a stopped run does not close the page. Switching to another session, hiding the tab or closing the session gives the page back.
+- **Private and live only.** Frames stream only while the tab is visible (JPEG, at most about eight a second, each acknowledged before the next), over Orka's own local server into the page, and are never written to disk; the window's strict CSP is unchanged. The browser profile is a temporary folder, and the browser closes with its session.
 
 ### Radar (desktop)
 
