@@ -1484,6 +1484,7 @@ globalThis.fetch = (input, init) => {
 <script>
   const report = (what) => fetch('/hit?' + new URLSearchParams(what));
   document.getElementById('all').addEventListener('mousedown', (e) => report({ kind: 'click', x: e.clientX, y: e.clientY }));
+  document.getElementById('all').addEventListener('mouseup', (e) => report({ kind: 'up', x: e.clientX, y: e.clientY, buttons: e.buttons }));
   addEventListener('keydown', (e) => report({ kind: 'key', key: e.key }));
 </script>`;
     const dev = http.createServer((req, res) => {
@@ -1529,6 +1530,21 @@ globalThis.fetch = (input, init) => {
       await until(async () => (await text()).includes('Waiting for you.'), 'the reply');
       assert.match(JSON.stringify(requests.at(-1).body.messages), /The user has taken over the browser/);
       assert.equal(hits.filter((h) => h.kind === 'click').length, 1, "the agent's click never reached the page");
+
+      // A button pressed on the page and released outside the frame (here over the address bar) is
+      // released in the page too, at the frame's nearest edge.
+      hits.length = 0;
+      await browser.evaluate(`(() => {
+        const r = document.getElementById('browser-frame').getBoundingClientRect();
+        const at = (y) => ({ bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: y, button: 0 });
+        document.getElementById('browser-frame').dispatchEvent(new MouseEvent('mousedown', at(r.top + r.height / 2)));
+        document.getElementById('browser-url').dispatchEvent(new MouseEvent('mouseup', at(r.top - 30)));
+        return true;
+      })()`);
+      await until(() => hits.find((h) => h.kind === 'up'), 'the release on the page');
+      const up = hits.find((h) => h.kind === 'up');
+      assert.ok(Number(up.y) <= 2 && Math.abs(Number(up.x) - 640) <= 12, `at the top edge: ${up.x},${up.y}`);
+      assert.equal(up.buttons, '0');
 
       await browser.clickSelector('[data-action="browser-control"]');
       await until(() => browser.evaluate('document.querySelector("[data-action=browser-control]").getAttribute("aria-pressed") === "false"'), 'given back');

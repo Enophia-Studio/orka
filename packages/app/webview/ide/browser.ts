@@ -109,12 +109,16 @@ export function modifiers(e: MouseEvent | KeyboardEvent): number {
   return (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 }
 
-/** Where on the shown frame an event is, from 0 to 1 of its width and height (undefined outside it). */
-export function framePoint(frame: HTMLImageElement, e: MouseEvent): { x: number; y: number } | undefined {
+/**
+ * Where on the shown frame an event is, from 0 to 1 of its width and height: undefined outside it,
+ * or (toEdge) the nearest point on its edge.
+ */
+export function framePoint(frame: HTMLImageElement, e: MouseEvent, toEdge = false): { x: number; y: number } | undefined {
   const box = frame.getBoundingClientRect();
   if (!box.width || !box.height) return undefined;
   const x = (e.clientX - box.left) / box.width;
   const y = (e.clientY - box.top) / box.height;
+  if (toEdge) return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
   if (x < 0 || y < 0 || x > 1 || y > 1) return undefined;
   return { x, y };
 }

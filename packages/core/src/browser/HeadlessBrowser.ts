@@ -49,6 +49,13 @@ export interface UserKeyEvent {
 
 const WIDTH = 1280;
 const HEIGHT = 800;
+/** Each mouse button's bit in the DevTools protocol's (and the page's) `buttons` mask. */
+const MOUSE_BUTTON_BITS: Record<string, number> = { left: 1, right: 2, middle: 4 };
+
+/** The button a move reports while buttons are held (left first, as a real mouse drag does). */
+function heldButton(buttons: number): 'left' | 'right' | 'middle' | 'none' {
+  return buttons & 1 ? 'left' : buttons & 2 ? 'right' : buttons & 4 ? 'middle' : 'none';
+}
 /** A cold start on a busy or slow machine (CI, antivirus scans) can take well over 20 seconds. */
 const START_TIMEOUT_MS = 45_000;
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -118,6 +125,10 @@ export class HeadlessBrowser {
    * refused until the user gives it back.
    */
   private held = false;
+  /** The user's mouse buttons held down (left 1, right 2, middle 4, as the page's MouseEvent.buttons). */
+  private buttons = 0;
+  /** Where the user's mouse last was on the page. */
+  private lastMouse = { x: 0, y: 0 };
 
   constructor(private readonly executable?: string) {
     this.events.add((method, params) => {
@@ -152,6 +163,8 @@ export class HeadlessBrowser {
   set userControl(value: boolean) {
     if (this.held === value) return;
     this.held = value;
+    // Given back with a button still down (released where the panel could not see it): let it go.
+    if (!value) void this.releaseButtons().catch(() => undefined);
     this.changed();
   }
 
@@ -223,9 +236,13 @@ export class HeadlessBrowser {
       this.socket!.addEventListener('error', () => reject(new Error('Could not connect to the browser.')), { once: true });
     });
     this.socket.addEventListener('message', (event) => this.onMessage(String(event.data)));
-    this.socket.addEventListener('close', () => {
+    const socket = this.socket;
+    socket.addEventListener('close', () => {
       this.failAll('The browser connection closed.');
-      this.changed();
+      // The browser went away on its own (a crash, out of memory, killed): clean up as close() does,
+      // so the user's control ends with it and the agent's next 'open' starts a new one.
+      if (this.socket === socket) this.close();
+      else this.changed();
     });
     const { targetInfos } = await this.send('Target.getTargets');
     let target = (targetInfos as Array<{ targetId: string; type: string }>).find((t) => t.type === 'page')?.targetId;
@@ -298,7 +315,25 @@ export class HeadlessBrowser {
   /** The user's own mouse event (Take over); nothing happens while the browser is not running. */
   async userMouse(event: UserMouseEvent): Promise<void> {
     if (!this.running) return;
-    await this.page('Input.dispatchMouseEvent', { ...event });
+    // The page sees which buttons are held on every event, so a move with one down is a drag
+    // (text selection, sliders, drag and drop), as with a real mouse.
+    if (event.type !== 'mouseWheel') this.lastMouse = { x: event.x, y: event.y };
+    const bit = MOUSE_BUTTON_BITS[event.button ?? 'none'] ?? 0;
+    if (event.type === 'mousePressed') this.buttons |= bit;
+    else if (event.type === 'mouseReleased') this.buttons &= ~bit;
+    const button = event.type === 'mouseMoved' ? heldButton(this.buttons) : event.button;
+    await this.page('Input.dispatchMouseEvent', { ...event, ...(button ? { button } : {}), buttons: this.buttons });
+  }
+
+  private async releaseButtons(): Promise<void> {
+    for (const [button, bit] of Object.entries(MOUSE_BUTTON_BITS)) {
+      if (this.buttons & bit) await this.userMouse({ type: 'mouseReleased', ...this.lastMouse, button: button as 'left' | 'right' | 'middle', clickCount: 1 });
+    }
+  }
+
+  /** The user's mouse buttons still held down, as the page sees them. */
+  get heldButtons(): number {
+    return this.buttons;
   }
 
   /** The user's own key event (Take over). */
@@ -427,6 +462,7 @@ export class HeadlessBrowser {
       this.cast.frames = 0;
     }
     this.held = false;
+    this.buttons = 0;
     this.changed();
     if (this.profileDir) {
       const dir = this.profileDir;

@@ -121,6 +121,41 @@ describe('browser tool (real headless Chrome/Edge)', { skip: !findBrowser() && '
     off();
   });
 
+  it("the user's drags reach the page with the button held, and a button still down is let go on give back", async () => {
+    const browser = browserFor(host);
+    await browserTool.execute({ action: 'open', url: base }, ctx);
+    await browser.evaluate(
+      `(() => { window.seen = []; for (const type of ['mousedown', 'mousemove', 'mouseup']) document.addEventListener(type, (e) => window.seen.push(type + ':' + e.buttons)); return true; })()`,
+    );
+    browser.userControl = true;
+    await browser.userMouse({ type: 'mousePressed', x: 100, y: 100, button: 'left', clickCount: 1 });
+    await browser.userMouse({ type: 'mouseMoved', x: 140, y: 110, button: 'none' });
+    await browser.userMouse({ type: 'mouseReleased', x: 140, y: 110, button: 'left', clickCount: 1 });
+    await browser.userMouse({ type: 'mouseMoved', x: 150, y: 120, button: 'none' });
+    assert.deepEqual(await browser.evaluate('window.seen'), ['mousedown:1', 'mousemove:1', 'mouseup:0', 'mousemove:0']);
+
+    await browser.evaluate('window.seen = []');
+    await browser.userMouse({ type: 'mousePressed', x: 100, y: 100, button: 'left', clickCount: 1 });
+    assert.equal(browser.heldButtons, 1);
+    browser.userControl = false;
+    const deadline = Date.now() + 5_000;
+    while (browser.heldButtons && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(await browser.evaluate('window.seen'), ['mousedown:1', 'mouseup:0']);
+  });
+
+  it('a browser that dies on its own ends the user control, and the agent can open a new one', async () => {
+    const browser = browserFor(host);
+    await browserTool.execute({ action: 'open', url: base }, ctx);
+    browser.userControl = true;
+    (browser as unknown as { proc: { kill(): void } }).proc.kill();
+    const deadline = Date.now() + 10_000;
+    while ((browser.userControl || browser.running) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+    assert.equal(browser.userControl, false, 'the page is not held by a browser that is gone');
+    assert.equal(browser.running, false);
+    const opened = await browserTool.execute({ action: 'open', url: base }, ctx);
+    assert.match(opened.content, /Cart/);
+  });
+
   it('closing the browser ends the user control and keeps the same browser for the host', async () => {
     const browser = browserFor(host);
     await browserTool.execute({ action: 'open', url: base }, ctx);

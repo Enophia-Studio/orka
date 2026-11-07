@@ -1206,10 +1206,13 @@ function openBrowserUrl(): void {
   post({ type: 'browserOpen', url });
 }
 
-/** Take over (the page gets the keyboard focus) or give back (keys still held are let go first). */
+/** Take over (the page gets the keyboard focus) or give back (keys and mouse buttons still held are let go first). */
 function setBrowserControl(take: boolean): void {
   if (!take) {
-    for (const input of browserView.held.values()) if (input.kind === 'key') post({ type: 'browserInput', input: { ...input, action: 'up', text: undefined } });
+    for (const input of browserView.held.values()) {
+      if (input.kind === 'key') post({ type: 'browserInput', input: { ...input, action: 'up', text: undefined } });
+      else if (input.kind === 'mouse') post({ type: 'browserInput', input: { ...input, action: 'up' } });
+    }
     browserView.held.clear();
   }
   post({ type: 'browserControl', take });
@@ -1269,8 +1272,23 @@ function pageMouse(e: MouseEvent, action: 'move' | 'down' | 'up'): void {
     return;
   }
   if (action === 'down') document.getElementById('browser-screen')?.focus();
-  post({ type: 'browserInput', input: { kind: 'mouse', action, x: at.x, y: at.y, button: e.button, clicks: Math.max(1, e.detail || 1), mods: modifiers(e) } });
+  const input: PageInput = { kind: 'mouse', action, x: at.x, y: at.y, button: e.button, clicks: Math.max(1, e.detail || 1), mods: modifiers(e) };
+  // A button held down is let go in the page too, wherever it is released (see the mouseup below).
+  if (action === 'down') browserView.held.set(`mouse:${e.button}`, input);
+  else browserView.held.delete(`mouse:${e.button}`);
+  post({ type: 'browserInput', input });
 }
+
+// A button pressed on the page and released outside it (past the frame's edge, over the address
+// bar, outside the window) is released in the page at the nearest point of the frame.
+document.addEventListener('mouseup', (e) => {
+  const down = browserView.held.get(`mouse:${e.button}`);
+  if (!down || down.kind !== 'mouse') return;
+  browserView.held.delete(`mouse:${e.button}`);
+  const frame = document.getElementById('browser-frame') as HTMLImageElement | null;
+  const at = (frame && !frame.hidden && framePoint(frame, e, true)) || down;
+  post({ type: 'browserInput', input: { ...down, action: 'up', x: at.x, y: at.y, mods: modifiers(e) } });
+});
 
 el.browserPanel?.addEventListener('mousedown', (e) => pageMouse(e, 'down'));
 el.browserPanel?.addEventListener('mouseup', (e) => pageMouse(e, 'up'));
