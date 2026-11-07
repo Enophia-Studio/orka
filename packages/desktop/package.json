@@ -25,7 +25,8 @@
     "start": "node esbuild.mjs && node dist/orka-desktop.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node esbuild.mjs && node --test \"test/*.test.mjs\"",
-    "build:exe": "node scripts/build-exe.mjs"
+    "build:exe": "node scripts/build-exe.mjs",
+    "bench": "node esbuild.mjs && node test/perf.bench.mjs"
   },
   "dependencies": {
     "@orka/app": "*",
