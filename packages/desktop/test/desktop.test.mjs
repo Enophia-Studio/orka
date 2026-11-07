@@ -1509,7 +1509,8 @@ globalThis.fetch = (input, init) => {
       await browser.evaluate(`document.getElementById('browser-url').value = ${JSON.stringify(devUrl.replace('http://', ''))}`);
       await browser.clickSelector('[data-action="browser-go"]');
       await until(() => browser.evaluate('(() => { const f = document.getElementById("browser-frame"); return !f.hidden && f.src.startsWith("data:image/jpeg;base64,") && f.naturalWidth === 1280; })()'), 'a frame of the page', 45_000);
-      assert.equal(await browser.evaluate('document.getElementById("browser-url").value'), devUrl);
+      // The state with the address can arrive just after the first frame.
+      await until(async () => (await browser.evaluate('document.getElementById("browser-url").value')) === devUrl, 'the full address in the field');
 
       // Take over: a click on the frame's middle reaches the middle of the page.
       await browser.clickSelector('[data-action="browser-control"]');
