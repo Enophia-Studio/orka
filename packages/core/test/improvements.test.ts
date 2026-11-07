@@ -438,7 +438,7 @@ describe('skills', () => {
       },
       (req) => {
         const results = req.messages.at(-1)!.content.map((b) => (b.type === 'tool_result' ? b.content : ''));
-        assert.match(results[0], /^<skill name="deploy">\nRead checklist\.md first\.\n<\/skill>$/);
+        assert.equal(results[0], `<skill name="deploy" folder="${path.join(user, 'deploy')}">\nRead checklist.md first.\n</skill>`);
         assert.equal(results[1], '1. build 2. upload');
         assert.match(results[2], /inside the skill folder/);
         return [call('run_subagent', { agent: 'explore', task: 'check' })];

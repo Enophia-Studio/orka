@@ -1,7 +1,8 @@
 // Writes THIRD_PARTY_NOTICES.txt for a bundle: the license and NOTICE texts of every npm package
 // esbuild put into it, including code those packages vendor in subfolders. Builds pass their
 // metafiles (esbuild option `metafile: true`); paths in a metafile are relative to the directory
-// the build ran in.
+// the build ran in. Third-party skills of the skills gallery (packages/core/skills/gallery, shipped
+// in every product's dist/skills) follow: each one's NOTICE and licence text.
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,14 +13,15 @@ const PACKAGE_DIR = /^(.*node_modules[\\/](?:@[^\\/]+[\\/])?[^\\/]+)[\\/]/;
 // License texts for packages that ship none, kept in scripts/licenses/<name>.txt.
 const KNOWN_LICENSES = path.join(path.dirname(fileURLToPath(import.meta.url)), 'licenses');
 const KNOWN = new Set(readdirSync(KNOWN_LICENSES).map((name) => name.replace(/\.txt$/, '')));
+const GALLERY_SKILLS = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'packages', 'core', 'skills', 'gallery');
 
 /**
  * @param {string} outFile
  * @param {string} product what the notices are for, e.g. "the Orka CLI"
  * @param {Array<import('esbuild').Metafile | undefined>} metafiles
- * @param {{ cwd?: string }} [options]
+ * @param {{ cwd?: string, skills?: string }} [options]
  */
-export function writeThirdPartyNotices(outFile, product, metafiles, { cwd = process.cwd() } = {}) {
+export function writeThirdPartyNotices(outFile, product, metafiles, { cwd = process.cwd(), skills = GALLERY_SKILLS } = {}) {
   const dirs = new Set();
   for (const metafile of metafiles) {
     for (const input of Object.keys(metafile?.inputs ?? {})) {
@@ -49,6 +51,7 @@ export function writeThirdPartyNotices(outFile, product, metafiles, { cwd = proc
 
   const rule = '-'.repeat(79);
   const parts = [...sections.keys()].sort().map((key) => sections.get(key));
+  parts.push(...skillNotices(skills));
   const header =
     `Third-party software in ${product}\n\n` +
     'Orka is released under the MIT License (https://github.com/Enophia-Studio/orka/blob/main/LICENSE). ' +
@@ -141,4 +144,29 @@ function readmeLicense(dir) {
   while (end < lines.length && !heading(end)) end++;
   const text = lines.slice(body, end).join('\n').trim();
   return text ? [text] : [];
+}
+
+/**
+ * The gallery's third-party skills: each folder's NOTICE (source, copyright, changes) and its
+ * licence text. Orka's own skills (copyright Enophia Software) are covered by Orka's licence.
+ */
+export function skillNotices(dir) {
+  let names;
+  try {
+    names = readdirSync(dir, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+  } catch {
+    return [];
+  }
+  const parts = [];
+  for (const name of names) {
+    const folder = path.join(dir, name);
+    const files = readdirSync(folder);
+    const notice = files.includes('NOTICE') ? readFileSync(path.join(folder, 'NOTICE'), 'utf8').trim() : '';
+    if (!notice) throw new Error(`The gallery skill ${name} has no NOTICE file.`);
+    if (/Copyright \(c\) \d{4} Enophia Software/.test(notice)) continue;
+    const license = files.find((file) => /^licen[cs]e(\.\w+)?$/i.test(file));
+    if (!license) throw new Error(`The gallery skill ${name} has no licence file.`);
+    parts.push(`Skill "${name}" (skills/gallery/${name})\n\n${notice}\n\n${readFileSync(path.join(folder, license), 'utf8').trim()}`);
+  }
+  return parts;
 }

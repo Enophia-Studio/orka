@@ -14,6 +14,7 @@ export { OpenAIProvider, DEFAULT_OPENAI_MODEL, type OpenAIProviderOptions } from
 export { GeminiProvider, DEFAULT_GEMINI_MODEL, type GeminiProviderOptions } from './GeminiProvider';
 export { ClaudeCodeProvider, resolveClaudeExecutable, type ClaudeCodeProviderOptions } from './ClaudeCodeProvider';
 export * from './textToolProtocol';
+export { chatWithRetry, DEFAULT_MAX_RETRIES, DEFAULT_RETRY_TIMING, isTransient, MAX_RETRIES_LIMIT, type RetryInfo, type RetryOptions, type RetryTiming, retryDelay } from './retry';
 export { describeModel, inferModel, isChatModelId, MODEL_CATALOG, type ModelInfo } from './catalog';
 
 export type ProviderKind = 'claude' | 'openai' | 'gemini' | 'claude-code';

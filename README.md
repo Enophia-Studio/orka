@@ -78,7 +78,7 @@ It runs in three places on one shared core: a **VS Code extension**, the **Orka 
 **VS Code extension (quickest):** download `orka-vscode-<version>.vsix` from the [latest release](https://github.com/Enophia-Studio/orka/releases/latest), then run **Extensions: Install from VSIX…** in VS Code (1.101 or newer), or:
 
 ```bash
-code --install-extension orka-vscode-0.7.0.vsix
+code --install-extension orka-vscode-0.8.0.vsix
 ```
 
 **Desktop app for Windows:** download `orka-desktop.exe` from the same release and run it; it needs no Node.js, only Edge or Chrome for its window. Only the Orka window opens; closing it quits Orka. If it does not start, the reason is in `~/.orka/desktop/desktop.log`. The file is not code-signed yet, so Windows SmartScreen may ask you to confirm the first start (**More info → Run anyway**), and on PCs where Windows' Smart App Control is on, it is blocked; use the CLI or run it from source there.
@@ -86,7 +86,7 @@ code --install-extension orka-vscode-0.7.0.vsix
 **CLI:** with **Node.js 22+**, install the `orka` command from the release (it is not on npm yet):
 
 ```bash
-npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.7.0/orka-agent-0.7.0.tgz
+npm install -g https://github.com/Enophia-Studio/orka/releases/download/v0.8.0/orka-agent-0.8.0.tgz
 ```
 
 The extension, the desktop app and the CLI package each include a `THIRD_PARTY_NOTICES.txt` with the licenses of the open-source software inside them.
@@ -109,7 +109,7 @@ npm run package
 ```
 
 ```bash
-code --install-extension packages/vscode-extension/dist/orka-vscode-0.7.0.vsix
+code --install-extension packages/vscode-extension/dist/orka-vscode-0.8.0.vsix
 ```
 
 **Desktop app** — run it, or build the single executable yourself (`packages/desktop/dist/orka-desktop.exe`, or `orka-desktop` on Linux):
@@ -186,6 +186,8 @@ Other modes: *On changes* (every file, command or plan step), *Every step* and *
 Model pickers group versions by family (e.g. **Opus** 5.5, 5, 4.8 · **GPT-6** Astra, Sol, Luna · **Gemini Flash** 3.8, 3.7, ...). **Load list** fetches the provider's own model list; models Orka does not know yet are added to the right family and marked "new". Lists are refreshed once a day in the background, and **Other…** lets you type any model id. The built-in catalog lives in `packages/core/src/providers/catalog.ts`.
 
 **Default provider (CLI-first):** until you pick one, Orka uses a CLI that is ready: Claude Code, if you turned it on and it is logged in, else an agent CLI you turned on whose check passed. API providers come after, as a fallback: the default one when it has a key, else the first provider that has a key. The provider pickers list a model API only once it has a key (add keys in **Settings → Providers**); the main agent's picker lists every agent CLI, also those that are off or not installed, and picking one turns it on.
+
+**Retries:** a model request that fails in a way that may pass (a dropped connection or a stream cut mid-answer, a server error, an overloaded model, a rate limit with a short `Retry-After`) is tried again up to `orka.maxRetries` times (default 3, 0 = never; **Settings → Control**), after a growing wait with jitter or exactly the wait the provider asked for. Stop ends a wait at once. A retried answer replaces what the failed attempt had shown, and no tool runs twice (tools run only after a complete answer). A bad key, a rejected request or a usage limit hours away fails at once (and goes to the fallback, if you set one). Claude Code is started again when it exits in the middle of an answer (Orka runs the tools, so the CLI did nothing a second try would repeat); an agent CLI that stops in the middle of a turn is not restarted, since it may have run commands or written files: the error says so, what it changed stays under Changes, and "continue" resumes.
 
 **Fallback:** Agents panel → main agent → *If its limit is reached, continue with*. When the main provider hits a usage or rate limit, is unreachable or returns a server error, the request continues on the fallback provider with the same conversation (`orka.fallback.provider`, `orka.fallback.model`).
 
@@ -266,6 +268,7 @@ The menu next to the send button holds the open session's model, its effort and,
 ## Reviewing changes
 
 - **Changes panel:** every changed file with a diff; keep or revert per file, per hunk (*Revert this part*) or all at once. The agent is told what you reverted.
+- **Review mode:** **Review** in the Changes panel shows the agent's changes one part at a time, file by file (*File 2 of 5 · Part 1 of 3*). **n** and **p** step, **k** keeps the part, **r** reverts it, **c** adds a comment (Ctrl+Enter), Esc closes. A new or deleted file is one part. Keep and Revert are the panel's own, so a part that touches lines you edited, or that changed in the meantime, stays as it is (the summary counts it as *left as it was*); Revert waits while the agent works. The summary lists what you kept and reverted and your comments, and **Put feedback in the message box** writes them, with each file and part, after your draft as the next message: you read it and send it, nothing is sent on its own.
 - **Your own edits stay (desktop):** a file you saved in the [editor](#files-desktop) after an agent changed it gets a pencil mark, **Edited by you**, in Changes and in the Files tree. **Revert all** and **Go back** keep it as you saved it and name it, a part (hunk) that touches lines you edited is not reverted, and **Revert** on the file offers only **Undo only the agent's part**: with Git, it takes out the agent's lines and keeps yours when they are apart, and otherwise changes nothing and says why. Nothing offers to throw your edits away.
 - **Inline review (VS Code):** added lines are highlighted, removed lines are marked, and each change has **Keep | Revert | Orka change 1/3** above it (`orka.inlineReview`).
 - **Terminal commands:** before and after a command that can change files, Orka takes a snapshot of the workspace in a **private git directory** (your own repository is never touched; `node_modules`, `Library`, `obj` and `.gitignore`d files are skipped). Files the command changed, added or deleted (`package-lock.json` from `npm install`, generators, formatters) show up in the Changes panel and can be reverted (`orka.trackCommandChanges`).
@@ -289,7 +292,7 @@ Hooks are your own commands that Orka runs around the agent's work, so your form
 
 ## Tools: browser, processes, web
 
-- **`browser`:** opens Chrome or Edge headless. The agent opens a page, **sees the screenshot**, clicks by coordinate or CSS selector, types, presses keys, scrolls, and reads the page text and console errors. Typical loop: `start_process` a dev server → look at it with `browser` → fix → look again. `localhost` and HTML files in the workspace need no approval; external sites need web permission (`orka.browser.path` to pick a browser).
+- **`browser`:** opens Chrome or Edge headless. The agent opens a page, **sees the screenshot**, clicks by coordinate or CSS selector, types, presses keys, scrolls, and reads the page text and console errors. Typical loop: `start_process` a dev server → look at it with `browser` → fix → look again. `localhost` and HTML files in the workspace need no approval; external sites need web permission (`orka.browser.path` to pick a browser). In the desktop app you watch it live in the [Browser tab](#browser-desktop), and can take the page over.
 - **`start_process` / `process_output` / `stop_process`:** run dev servers and watchers in the background and wait until they are ready (e.g. `wait_for: "Local:"`). In VS Code each process gets an **"Orka: <name>"** terminal; closing it stops the process.
 - **`web_fetch`** reads web pages and documentation; **`open_browser`** opens a URL in your browser or inside VS Code; **`open_file`** shows a file in the editor.
 - **`code_outline`** lists classes and methods with line numbers before reading a large file (C#, TypeScript/JavaScript, Python, Go, Java/Kotlin, Rust, C/C++), so the agent only reads the lines it needs.
@@ -306,20 +309,26 @@ Hooks are your own commands that Orka runs around the agent's work, so your form
 Skills are ready-made expert playbooks for specific kinds of work. They are **global**: the same skills are available in every project and in all three apps.
 
 - **Built in:** `unity`, `debugging`, `testing`, `code-review`, `refactoring`, `git-workflow`, `security`, `performance`, `documentation`, `new-project`, `frontend` (`packages/core/skills/`).
-- **Your own:** in `~/.orka/skills/`, either a single file (`name.md`) or a folder with extra files (`name/SKILL.md`). A file with the same name as a built-in skill replaces it.
-- **Format:** `name` and `description` front matter on top (the agent decides when to use a skill from its description), Markdown instructions below.
+- **Your own:** in `~/.orka/skills/` (`$ORKA_HOME/skills` when `ORKA_HOME` is set), either a single file (`name.md`) or a folder with extra files (`name/SKILL.md`). A file with the same name as a built-in skill replaces it.
+- **Format:** `name` and `description` front matter on top (the agent decides when to use a skill from its description; a YAML block such as `description: >` works too), Markdown instructions below. For a folder skill, `load_skill` tells the agent the folder, so it can find the scripts and files the skill mentions.
 - **Use:** the skill list is part of the system prompt and the agent loads a skill with `load_skill` when a task fits. You can also add one directly: `/unity make a player controller`.
 - **Settings → Skills:** turn skills on or off, open them, **Customize** a built-in skill into your own folder, or start a **New skill**.
+- **Gallery** (**Settings → Skills → Gallery**, desktop and the VS Code panel; VS Code: **Orka: Browse the Skills Gallery**): about 70 more skills to add, with search, a category and a licence filter, **Details** (what a skill needs, such as Python or LibreOffice, its licence terms and notes) and the author and licence on every row. Gallery skills are not always on, because every skill you have is listed in each request's instructions; you add the ones you want.
+  - **Included** (34): copied from Orka on **Enable**, with their licence and a `NOTICE` (source at a fixed commit, copyright, what Orka changed). **Preview** shows the text first. They are Orka's own skills (`unreal-engine`, `godot`, `accessibility`, `api-design`, `database-migrations`, `ci-pipelines`) and openly licensed ones: from [anthropics/skills](https://github.com/anthropics/skills) and [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official) (Apache-2.0; review agents turned into skills), [obra/superpowers](https://github.com/obra/superpowers) (MIT) and [wshobson/agents](https://github.com/wshobson/agents) (MIT). `packages/core/skills/gallery/`; the apps' `THIRD_PARTY_NOTICES.txt` lists them.
+  - **From GitHub** (37): offered as downloads, because their licence does not let Orka ship them (no licence stated, the Unity Companion License of Unity's own skills, CC BY-SA 4.0 of Trail of Bits' security skills) or because they are big and need programs (Anthropic's Word, PDF, PowerPoint and Excel skills). **Install** first shows a dialog with every URL, the licence and its terms; only then does Orka fetch exactly those files over HTTPS from `raw.githubusercontent.com` at a fixed commit, checking each one's size and SHA-256 (no other host, no redirects, size limits, no path outside the skill's folder) and writing the skill only when every file passed. Orka never runs a skill's scripts; an agent may ask to, with the usual approval.
+  - Installed skills show where they came from in **My skills** and can be **Removed** (after a dialog). Skills whose licence forbids use with other products (such as Anthropic's *claude-security*) are not offered.
 
 ## MCP servers
 
 Agents can use tools from MCP (Model Context Protocol) servers: Unity Editor, Blender, databases, browsers… **Settings → MCP**:
 
+- **Catalog:** about 60 servers that come with Orka (Unity, Unreal, Godot, Blender, Playwright, GitHub, databases, cloud, docs search, ...), each checked against its publisher's README or docs page. Search it, filter by category, and open **Details** for what a server does, what it needs first (for Unity: add the package to your project), its licence, whether its publisher is the vendor (**Official**) or someone else (**Community**), and the exact command or URL it runs. Browsing uses no network. **Add** asks for the server's settings (keys and passwords in password fields), then shows the exact command or URL, that a package runner (`npx`, `uvx`, `docker`) downloads and runs third-party code on its first start, and that secret values are kept in your Orka settings file and passed only to that server. Only **Add and turn on** writes it to your user-level MCP list; nothing is downloaded until a task starts the server. Servers already in your list are marked **Added**. Servers that only sign in through OAuth (Slack, Vercel, Asana, Notion, Figma's hosted server, ...) are not in the catalog, since Orka's MCP client does not do OAuth. VS Code: **Orka: Browse the MCP Catalog**.
 - **Import from Claude Code:** brings the MCP servers from `~/.claude.json` (global and this project's) into Orka in one click.
 - **Edit the list:** `orka.mcpServers`, each entry either `{"command": "uvx", "args": ["blender-mcp"]}` (stdio) or `{"url": "http://localhost:8080/mcp"}` (Streamable HTTP).
 - A project's **`.mcp.json`** (Claude Code format) is used too; because it starts programs on your machine, Orka asks the first time.
 - On Windows, a server whose `command` is a bare name that is not on `PATH` but sits in its configured `cwd` starts from there by its full path. Programs the server itself starts are not looked up in its folder by bare name.
 - Servers start when a task needs them and stay up between tasks. Their state (ready · N tools / error / off) is shown, and each one can be turned on or off. Tools are named `mcp__<server>__<tool>` and follow the terminal rules; read-only sub-agents only see tools their server marks read-only.
+- **Limits** (bottom of the tab, for every server): the largest tool result the model gets (`orka.mcp.maxResultChars`, default 40000 characters, up to 1000000; a longer result is cut and the model is told how much was left out and to ask for less), how long one call may take (`orka.mcp.callTimeoutSeconds`, 0 = the command timeout, at least 60 s), how long a server may take to start and list its tools (`orka.mcp.startTimeoutSeconds`, default 30, also when a call starts it again after a crash) and how many MCP tools the model gets from all servers together (`orka.mcp.maxTools`, default 100, 0 = no limit; providers refuse requests with too many tools, and the agent says when some were left out). **Limits** on a server's row sets its own values (an empty field follows the one for every server) and, once the server has started, which of its tools the model may use; the row then says *4 of 6 tools*. They are kept by server name in `orka.mcp.serverLimits` (so a `.mcp.json` server can have them too) and apply from the next task; changing them restarts nothing. CLI: `mcpLimits` and `mcpServerLimits` in its config.
 
 ## Tasks, history and tokens
 
@@ -336,8 +345,10 @@ Agents can use tools from MCP (Model Context Protocol) servers: Unity Editor, Bl
   ```
 
 - **Token budget:** `orka.tokenBudget` caps the new tokens (input + output + cache writes) a request may spend across all agents. When it is reached the agent pauses; type "continue" to go on with a fresh budget. 0 = no limit.
+- **What it waits for:** while a request runs, the status line says why it waits: starting the CLI, thinking, running a tool (an MCP tool as *server · tool*), waiting for your approval, retrying in *n* s (attempt *k*/*n*), rate limited until *hh:mm*, compacting, or waiting for a sub-agent. The desktop session list says the same under each running session's title.
+- **Stop one tool:** a running command, MCP call, browser action, search or sub-agent has its own **Stop** on its card. It ends that call only: the agent gets "cancelled by the user" as its result and the request goes on (file writes are short and cannot be stopped halfway). A failed call shows its reason in one line, with the full text a click away.
 - **Light model:** Agents panel → *Answer simple questions with* (e.g. Claude Haiku). Short questions that need no changes go to the lighter model; if the request turns out to need a change, the main model takes over with the same conversation.
-- **Images:** paste (Ctrl+V) or drop up to 5 images per message; large images are downscaled before sending.
+- **Images:** paste (Ctrl+V), drop or pick (**+ → Add an image**) up to 5 PNG, JPEG, GIF or WebP images per message, each up to 20 MB; they show as thumbnails you can remove, and are scaled down in the page to a 1568 px long edge before sending. Another type or a larger file is left out with a notice naming it. Images go only to the provider that answers: as image content to the Anthropic, OpenAI and Gemini APIs, to Claude Code in its stream-json input, and to an agent CLI that says it takes images; an agent CLI that does not, and a model known to read text alone (DeepSeek chat and reasoner, o1-mini, o3-mini, GPT-3.5, gpt-oss, Codestral, Devstral, Qwen coder), get the text with a line where each image was, and you get a notice. A saved task keeps no image data (the conversation notes where an image was; the chat keeps its thumbnails), so a task reopened later no longer has them.
 - **Hand off to Freebuff:** [Freebuff](https://freebuff.com) is a free, ad-supported terminal agent without an API, so Orka hands a task over instead of calling it: **Agents → Other agents → Continue in Freebuff** (or `/freebuff` in the CLI). Orka snapshots the workspace, copies a task summary to the clipboard and opens Freebuff in a terminal; afterwards, the files Freebuff changed show up in the Changes panel.
 
 **Chat box:** `/new`, `/compact`, `/history`, `/review [focus]`, `/plan <task>`, `/explore <question>`, `/agents`, `/skills`, `/usage`, `/settings`, `/help`, and `/<skill> <request>`. Type `@` to attach a file.
@@ -402,6 +413,14 @@ The window's **Files** tab (next to the plan and changes; **Files** at the botto
 - **Send to the agent:** **Send selection** (or Ctrl+L) adds the selected lines to the next message as a chip such as `hello.ts:2–3`; the agent gets the file, the line numbers and the text as the editor shows it. **Attach file** adds the whole file as it is on disk. A secret-looking file (`.env`, keys, certificates) is added only after you confirm, and web access and MCP tools then ask for approval for the rest of the task.
 - **Your edits are protected:** after you save a file the agent changed, Revert all, Go back and Revert keep your edits (see [Reviewing changes](#reviewing-changes)). The agent is told that you edited the file and re-reads it before editing it again.
 - Leaving a file with unsaved changes (another file, another folder, closing the window) asks first. Only the open file's path is remembered across a reload, never its text.
+
+### Browser (desktop)
+
+The window's **Browser** tab (next to Files) shows the session's browser live: the same headless Chrome or Edge the agent's `browser` tool uses, so you see what the agent opens, clicks and types as it happens. The classic single-column window and the VS Code panel have no Browser tab.
+
+- **Address bar, back, forward and reload.** Type a local address (`localhost:5173`, `127.0.0.1:3000`, or just `5173`) or any http(s) address. What you type is your own choice, so it opens without an approval; pages the agent opens still follow the [browser tool's rule](#tools-browser-processes-web) (external sites ask). Cloud metadata and link-local addresses stay blocked either way. **Find dev servers** offers the local addresses your session's background processes printed (such as Vite's `Local: http://localhost:5173/`) and common dev-server ports that answer on this machine; it looks nowhere else.
+- **Take over** hands your mouse, wheel and keys to the page (Shift+Escape or **Give back** returns it). Meanwhile the agent can still take screenshots and read the page and its console, but its clicks, typing, navigation and closing are refused with a message telling it to wait, and a stopped run does not close the page. Switching to another session, hiding the tab or closing the session gives the page back.
+- **Private and live only.** Frames stream only while the tab is visible (JPEG, at most about eight a second, each acknowledged before the next), over Orka's own local server into the page, and are never written to disk; the window's strict CSP is unchanged. The browser profile is a temporary folder, and the browser closes with its session.
 
 ### Radar (desktop)
 
@@ -471,7 +490,7 @@ npm test
 ```
 packages/
 ├── core/                # @orka/core: editor-agnostic engine
-│   ├── skills/          # Built-in skills (Markdown)
+│   ├── skills/          # Built-in skills (Markdown); gallery/ holds the skills to add from the gallery
 │   └── src/
 │       ├── orchestrator/  # Agent loop, events, sub-agent runner
 │       ├── supervisor/    # Supervisor: checkpoints, reviews, interventions
@@ -483,7 +502,7 @@ packages/
 │       ├── changes/       # Line diff, hunks, accept / revert, checkpoints, ShadowGit
 │       ├── browser/       # Headless Chrome/Edge (DevTools protocol)
 │       ├── mcp/           # MCP client (stdio + Streamable HTTP) and manager
-│       ├── skills/        # Skill loader, load_skill tool
+│       ├── skills/        # Skill loader, load_skill tool, skills gallery and its installer
 │       ├── i18n/          # t() and dictionaries (tr)
 │       ├── usage/         # Cost estimates, user price table
 │       └── persistence/   # Task history

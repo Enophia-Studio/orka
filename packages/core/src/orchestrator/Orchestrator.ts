@@ -20,6 +20,7 @@ import type { PermissionManager } from '../permissions/PermissionManager';
 import { formatPlan, type Plan } from '../planning/Plan';
 import { AbortedError, type AIProvider, type ChatResponse, isAbortError, ProviderError, type ProviderStreamEvent } from '../providers/AIProvider';
 import { INVALID_JSON_KEY } from '../providers/OpenAIProvider';
+import { chatWithRetry, DEFAULT_MAX_RETRIES, isTransient, type RetryInfo, type RetryTiming } from '../providers/retry';
 import { defaultTools } from '../tools';
 import { type Tool, type ToolAction, type ToolContext, ToolError, toSpec, truncateMiddle, validateInput } from '../tools/Tool';
 import {
@@ -32,7 +33,7 @@ import {
   type ToolResultBlock,
   type Usage,
 } from '../types';
-import type { AgentEvent, AgentPhase, AgentUsage, ContextFill, RunEndReason, ToolCallView } from './events';
+import type { AgentEvent, AgentPhase, AgentUsage, ContextFill, RunEndReason, ToolCallView, WaitStatus } from './events';
 import { Handoff, handoffBrief, recordChangesSince, userRequests } from '../handoff/Handoff';
 import type { AcpClient } from '../acp/AcpClient';
 import { AcpAgentSession, type AcpSessionContext, type AcpTurnResult } from '../acp/AcpAgentSession';
@@ -75,6 +76,13 @@ export interface OrchestratorSettings {
    * one after another in the workspace.
    */
   parallelWorkers?: boolean;
+  /**
+   * Model requests that fail in a way that may pass (a cut connection, a server error, an
+   * overloaded model, a short rate limit) are tried again up to this many times. Default 3; 0: never.
+   */
+  maxRetries?: number;
+  /** The waits between those tries (tests make them short). */
+  retryTiming?: RetryTiming;
 }
 
 /** An image the user attached to a request (e.g. a pasted screenshot). */
@@ -123,8 +131,11 @@ export interface OrchestratorOptions {
   getLightProvider?: () => AIProvider | undefined;
   /** Snapshots around terminal commands, so the files they change can be reverted. */
   commandSnapshots?: ShadowGit;
-  /** More tools for new tasks, e.g. from MCP servers; loaded when a task starts and frozen with it. */
-  getExtraTools?: () => Promise<Tool[]>;
+  /**
+   * More tools for new tasks, e.g. from MCP servers; loaded when a task starts and frozen with it.
+   * Notices (some tools left out by a limit) are shown to the user.
+   */
+  getExtraTools?: () => Promise<Tool[] | { tools: Tool[]; notices?: string[] }>;
   /**
    * A third-party coding agent (Gemini CLI, Codex, ...) as the main agent, over ACP; read when a
    * request starts. While it returns a runtime, requests run in the agent's own loop and
@@ -142,6 +153,10 @@ export interface OrchestratorOptions {
 }
 
 const MAX_TOOL_RESULT_CHARS = 40_000;
+/** The result of a tool call the user stopped from its card (the request goes on). */
+const CANCELLED_BY_USER =
+  'Cancelled by the user: they stopped this tool call before it finished, so its effects may be partial. ' +
+  'Do not run it again unchanged unless the user asks; continue with the task another way, or ask the user.';
 /** How much of the task's diff the supervisor sees in its final review. */
 const FINAL_REVIEW_DIFF_CHARS = 16_000;
 const NON_CODE_EXTENSIONS = new Set(['.md', '.markdown', '.txt', '.rst']);
@@ -413,7 +428,9 @@ export class Orchestrator {
     this.extraLoaded = true;
     if (!this.options.getExtraTools) return;
     try {
-      this.extraTools = await this.options.getExtraTools();
+      const extra = await this.options.getExtraTools();
+      this.extraTools = Array.isArray(extra) ? extra : extra.tools;
+      for (const message of Array.isArray(extra) ? [] : (extra.notices ?? [])) this.emit({ type: 'notice', level: 'info', message });
     } catch (error) {
       this.extraTools = [];
       this.emit({ type: 'notice', level: 'warning', message: t('MCP tools are not available: {error}', { error: errorMessage(error) }) });
@@ -490,11 +507,14 @@ export class Orchestrator {
         reason = 'error';
         this.lastError = errorMessage(error);
         const action = error instanceof ProviderError ? error.action : undefined;
-        this.emit({ type: 'notice', level: 'error', message: this.lastError, action });
+        // A failure that may pass, still there after the retries: the conversation is intact, so "continue" picks it up.
+        const resumable = isTransient(error, this.options.getSettings().retryTiming) ? ` ${t('The conversation is intact: send "continue" to try again.')}` : '';
+        this.emit({ type: 'notice', level: 'error', message: this.lastError + resumable, action });
       }
     } finally {
       this.abort = undefined;
       this.setPhase('idle');
+      this.endWaits();
       this.emit({ type: 'run_finished', reason });
     }
     return reason;
@@ -612,11 +632,12 @@ export class Orchestrator {
         await this.compactConversation('auto', signal);
       }
       this.setPhase('thinking');
+      this.setWait({ reason: 'thinking' });
       const assistantId = this.nextId('a');
       this.emit({ type: 'assistant_start', id: assistantId });
       let response: ChatResponse;
       // A model that writes the same line over and over is stopped (this request only).
-      const guard = new RepeatGuard();
+      let guard = new RepeatGuard();
       const turn = new AbortController();
       const stopTurn = () => turn.abort();
       signal.addEventListener('abort', stopTurn, { once: true });
@@ -624,9 +645,20 @@ export class Orchestrator {
       if (signal.aborted) turn.abort();
       let looped: string | undefined;
       let shown = '';
+      let streamed = false;
+      // The turn starts over (a retry, or the provider's own): what it streamed is dropped, not shown twice.
+      const restart = () => {
+        if (streamed) this.emit({ type: 'assistant_retry', id: assistantId });
+        shown = '';
+        streamed = false;
+        guard = new RepeatGuard();
+      };
       try {
-        response = await provider.chat({ system: this.systemPrompt!, messages: this.messages, tools: this.taskTools.map(toSpec), signal: turn.signal }, (event) => {
+        const request = { system: this.systemPrompt!, messages: this.messages, tools: this.taskTools.map(toSpec), signal: turn.signal };
+        response = await chatWithRetry(provider, request, (event) => {
           if (looped) return;
+          if (event.type === 'restart') return restart();
+          if (event.type === 'text_delta' || event.type === 'reasoning_delta') streamed = true;
           if (event.type === 'text_delta') {
             shown += event.text;
             looped = guard.push(event.text);
@@ -635,8 +667,8 @@ export class Orchestrator {
               return;
             }
           }
-          this.forwardStreamEvent(assistantId, event);
-        });
+          this.forwardStreamEvent(assistantId, event, provider.label);
+        }, this.retryOptions(settings, { reason: 'thinking' }, restart));
       } catch (error) {
         if (looped && !signal.aborted) return this.endLoop(assistantId, shown, looped);
         const next = !fallback && !signal.aborted ? this.fallbackFor(provider, error) : undefined;
@@ -966,6 +998,7 @@ export class Orchestrator {
 
     // Stop works while the agent starts (initialize) and opens its session (session/new) too.
     let client: AcpClient;
+    this.setWait({ reason: 'starting', agent: agent.label });
     try {
       client = await agent.acquire(signal);
     } catch (error) {
@@ -988,6 +1021,7 @@ export class Orchestrator {
           if (!tracking) throw noSnapshots();
         }
         this.setPhase('thinking');
+        this.setWait({ reason: 'thinking' });
         // The agent does not report tokens: the call is counted, its usage is marked unreported.
         this.recordUsage('main', `agent:${agent.id}`, agent.label, emptyUsage(), 1, true);
         this.lastModel = agent.label;
@@ -1007,7 +1041,8 @@ export class Orchestrator {
         // Also after a failure: what the agent wrote before it stopped stays reviewable.
         const changed: CommandChange[] = await net.collect(false, () => !left()).catch(() => []);
         if (left()) return 'stopped';
-        if (!result) throw this.agentError(agent, failure);
+        // Not tried again on its own: the agent may have run commands or written files in that turn.
+        if (!result) throw this.agentError(agent, failure, true);
         const files = changed.map((c) => `${c.path} (${c.status})`);
         this.activity = [...this.activity, ...result.activity, ...(files.length ? [`- files changed: ${files.slice(0, 20).join(', ')}`] : [])].slice(-ACTIVITY_LINES);
         if (result.changedCode || changed.some((c) => !NON_CODE_EXTENSIONS.has(path.extname(c.path).toLowerCase()))) {
@@ -1116,7 +1151,7 @@ export class Orchestrator {
   }
 
   /** A failure of the external agent as the user should see it; a missing sign-in names the vendor's login command. */
-  private agentError(agent: ExternalAgentRuntime, error: unknown): Error {
+  private agentError(agent: ExternalAgentRuntime, error: unknown, midTurn = false): Error {
     if (isAbortError(error)) return error as Error;
     const message = errorMessage(error);
     const authRequired = (error instanceof JsonRpcError && error.code === ACP_AUTH_REQUIRED) || AUTH_FAILURE.test(message);
@@ -1128,7 +1163,8 @@ export class Orchestrator {
         'auth',
       );
     }
-    return new Error(message.startsWith(agent.label) ? message : `${agent.label}: ${message}`);
+    const text = message.startsWith(agent.label) ? message : `${agent.label}: ${message}`;
+    return new Error(midTurn ? `${text} ${t('What it changed so far stays under Changes. Send "continue" to resume.')}` : text);
   }
 
   private dropAcpSession(): void {
@@ -1218,6 +1254,7 @@ export class Orchestrator {
     } finally {
       this.abort = undefined;
       this.setPhase('idle');
+      this.endWaits();
       this.emit({ type: 'run_finished', reason: abort.signal.aborted ? 'stopped' : 'completed' });
     }
     return ok;
@@ -1234,6 +1271,7 @@ export class Orchestrator {
     const beforeTokens = this.lastPromptTokens || estimateTokens(this.messages);
     this.emit({ type: 'compaction', id, status: 'running', reason, beforeTokens });
     this.setPhase('thinking');
+    this.setWait({ reason: 'compacting' });
     try {
       const provider = this.options.getProvider();
       // Ask for the note at the end of the current history (same prefix: cheap with caching).
@@ -1241,7 +1279,13 @@ export class Orchestrator {
       const last = request[request.length - 1];
       if (last.role === 'user') request[request.length - 1] = { role: 'user', content: [...last.content, { type: 'text', text: COMPACT_REQUEST }] };
       else request.push({ role: 'user', content: [{ type: 'text', text: COMPACT_REQUEST }] });
-      const response = await provider.chat({ system: this.systemPrompt!, messages: request, tools: this.taskTools.map(toSpec), signal }, () => {});
+      const compacting: WaitStatus = { reason: 'compacting' };
+      const response = await chatWithRetry(
+        provider,
+        { system: this.systemPrompt!, messages: request, tools: this.taskTools.map(toSpec), signal },
+        () => {},
+        this.retryOptions(this.options.getSettings(), compacting),
+      );
       this.recordUsage(this.options.role?.name ?? 'main', provider.id, response.model, response.usage);
       const note = messageText(response.message).trim();
       if (!note) throw new Error('The model returned an empty handoff note.');
@@ -1520,11 +1564,13 @@ export class Orchestrator {
     if (invalid) return fail(`Invalid input: ${invalid}. Input received: ${truncateMiddle(JSON.stringify(call.input), 2000)}`);
 
     let output = '';
+    // The call's own stop: Stop on its card ends this call only, Stop of the request ends it too.
+    const own = new AbortController();
     const ctx: ToolContext = {
       callId: call.id,
       host: this.options.host,
       changes: this.changes,
-      signal,
+      signal: own.signal,
       commandTimeoutMs: this.options.getSettings().commandTimeoutMs,
       plan: this.plan,
       setPlan: (plan) => {
@@ -1564,6 +1610,7 @@ export class Orchestrator {
       detail: action.detail,
       path: action.preview?.path ?? targetPath(this.options.host.workspaceRoot, call.input),
     };
+    if (call.name === SUBAGENT_TOOL && typeof call.input.agent === 'string') this.subagentNames.set(call.id, call.input.agent);
     this.setPhase(phaseFor(call.name, action.category));
 
     let decision = this.options.permissions.decide(action);
@@ -1602,6 +1649,20 @@ export class Orchestrator {
       if (answer.alwaysAllow) this.options.permissions.grantForSession(action);
     }
 
+    // A file write is short and stopping it halfway would leave a half-written file: only other
+    // calls (commands, MCP calls, the browser, sub-agents, searches) can be stopped on their own.
+    const cancellable = action.category !== 'edit' && action.category !== 'delete';
+    const stopOwn = () => own.abort();
+    signal.addEventListener('abort', stopOwn, { once: true });
+    if (signal.aborted) own.abort();
+    if (cancellable) {
+      this.toolAborts.set(call.id, own);
+      view.cancellable = true;
+    }
+    /** Stopped from its card, while the request goes on. */
+    const cancelledAlone = () => own.signal.aborted && !signal.aborted;
+    /** A finished call offers no Stop any more. */
+    const done = { cancellable: undefined };
     this.emit({ type: 'tool_call', call: view });
     // A command that can change files runs between two snapshots, so its changes can be reviewed and reverted.
     const snapshots = call.name === 'run_command' && action.risk !== 'safe' ? this.options.commandSnapshots : undefined;
@@ -1610,35 +1671,53 @@ export class Orchestrator {
     let delegatedEdits = false;
     const watchDelegate = call.name === SUBAGENT_TOOL ? this.changes.onDidChange(() => (delegatedEdits = true)) : undefined;
     try {
-      const result = await tool.execute(call.input, ctx).finally(() => watchDelegate?.());
+      const result = await tool.execute(call.input, ctx).finally(() => {
+        watchDelegate?.();
+        this.toolAborts.delete(call.id);
+        signal.removeEventListener('abort', stopOwn);
+      });
       const byCommand = before ? await this.recordCommandChanges(snapshots!, before) : [];
       const note = byCommand.length
         ? `\n\nFiles changed by this command (revertible in the Changes panel): ${byCommand.slice(0, 30).map((c) => `${c.path} (${c.status})`).join(', ')}${byCommand.length > 30 ? `, and ${byCommand.length - 30} more` : ''}`
         : '';
       const hooks = action.category === 'edit' && !result.isError && view.path ? await this.afterEditHooks(view.path, signal) : '';
-      const content = truncateMiddle(result.content, MAX_TOOL_RESULT_CHARS) + note + hooks;
-      this.emit({ type: 'tool_call', call: { ...view, status: result.isError ? 'error' : 'done', output: content, image: result.thumb } });
+      // A tool that cuts its own result to the user's limit (MCP) is not cut again at the general one.
+      const reported = tool.capsOwnResult ? result.content : truncateMiddle(result.content, MAX_TOOL_RESULT_CHARS);
+      // Edits made by a command or a worker sub-agent count even when the call was stopped from its card.
+      const changedElsewhere = byCommand.some((c) => !NON_CODE_EXTENSIONS.has(path.extname(c.path).toLowerCase())) || delegatedEdits;
+      if (cancelledAlone()) {
+        // The tool noticed the stop and returned what it had: the agent hears that the user stopped it.
+        const content = `${CANCELLED_BY_USER}${reported ? `\n\nWhat it reported before it stopped:\n${reported}` : ''}${note}`;
+        this.emit({ type: 'tool_call', call: { ...view, ...done, status: 'cancelled', output: content } });
+        return { result: { type: 'tool_result', toolCallId: call.id, content, isError: true }, changedCode: changedElsewhere, ranCommand: false };
+      }
+      const content = reported + note + hooks;
+      this.emit({ type: 'tool_call', call: { ...view, ...done, status: result.isError ? 'error' : 'done', output: content, image: result.thumb } });
       const changedCode =
         ((action.category === 'edit' || action.category === 'delete') &&
           !result.isError &&
           !NON_CODE_EXTENSIONS.has(path.extname(view.path ?? '').toLowerCase())) ||
-        byCommand.some((c) => !NON_CODE_EXTENSIONS.has(path.extname(c.path).toLowerCase())) ||
-        delegatedEdits;
-      const ranCommand = call.name === 'run_command' && !signal.aborted;
+        changedElsewhere;
+      const ranCommand = call.name === 'run_command' && !own.signal.aborted;
       if (!result.isError && this.secretFile === undefined) this.secretFile = secretTouched(call);
       const images = result.images?.length ? { images: result.images } : {};
       return { result: { type: 'tool_result', toolCallId: call.id, content, isError: result.isError, ...images }, changedCode, ranCommand };
     } catch (error) {
-      if (isAbortError(error) || signal.aborted) {
-        this.emit({ type: 'tool_call', call: { ...view, status: 'cancelled', output } });
+      if (signal.aborted) {
+        this.emit({ type: 'tool_call', call: { ...view, ...done, status: 'cancelled', output } });
         return {
           result: { type: 'tool_result', toolCallId: call.id, content: 'Cancelled: the user stopped the agent.', isError: true },
           changedCode: false,
           ranCommand: false,
         };
       }
+      if (cancelledAlone() || isAbortError(error)) {
+        const content = `${CANCELLED_BY_USER}${output ? `\n\nOutput before it stopped:\n${truncateMiddle(output, MAX_TOOL_RESULT_CHARS)}` : ''}`;
+        this.emit({ type: 'tool_call', call: { ...view, ...done, status: 'cancelled', output: content } });
+        return { result: { type: 'tool_result', toolCallId: call.id, content, isError: true }, changedCode: false, ranCommand: false };
+      }
       const message = error instanceof ToolError ? error.message : `Tool failed: ${errorMessage(error)}`;
-      this.emit({ type: 'tool_call', call: { ...view, status: 'error', output: message } });
+      this.emit({ type: 'tool_call', call: { ...view, ...done, status: 'error', output: message } });
       return { result: { type: 'tool_result', toolCallId: call.id, content: message, isError: true }, changedCode: false, ranCommand: false };
     }
   }
@@ -1663,7 +1742,12 @@ export class Orchestrator {
     this.setPhase('thinking');
     try {
       this.messages.push({ role: 'user', content: [{ type: 'text', text: LESSONS_REQUEST }] });
-      const response = await provider.chat({ system: this.systemPrompt!, messages: this.messages, tools: this.taskTools.map(toSpec), signal }, () => {});
+      const response = await chatWithRetry(
+        provider,
+        { system: this.systemPrompt!, messages: this.messages, tools: this.taskTools.map(toSpec), signal },
+        () => {},
+        this.retryOptions(this.options.getSettings(), { reason: 'thinking' }),
+      );
       this.messages.push(response.message);
       this.recordUsage(this.options.role?.name ?? 'main', provider.id, response.model, response.usage);
       this.emitUsage();
@@ -1793,6 +1877,7 @@ export class Orchestrator {
     child.secretFile = this.secretFile;
     const stopChild = () => child.stop();
     ctx.signal.addEventListener('abort', stopChild, { once: true });
+    this.children.add(child);
     try {
       const reason = await child.run(isolated ? `${input.task}\n\n${ISOLATED_WORKER_NOTE}` : input.task);
       this.secretFile ??= child.secretFile;
@@ -1819,6 +1904,7 @@ export class Orchestrator {
       }
     } finally {
       ctx.signal.removeEventListener('abort', stopChild);
+      this.children.delete(child);
       child.dispose();
     }
   }
@@ -1838,7 +1924,7 @@ export class Orchestrator {
     return 'error';
   }
 
-  private forwardStreamEvent(assistantId: string, event: ProviderStreamEvent): void {
+  private forwardStreamEvent(assistantId: string, event: ProviderStreamEvent, providerLabel: string): void {
     switch (event.type) {
       case 'text_delta':
         this.emit({ type: 'assistant_delta', id: assistantId, text: event.text });
@@ -1849,9 +1935,89 @@ export class Orchestrator {
       case 'notice':
         this.emit({ type: 'notice', level: 'info', message: event.message });
         break;
+      case 'status':
+        this.setWait(event.reason === 'starting' ? { reason: 'starting', agent: providerLabel } : { reason: 'thinking' });
+        break;
       case 'tool_call_start':
+      case 'restart':
         break;
     }
+  }
+
+  /**
+   * Retries of a model request: each wait shows in the status line (rate limited with a time, or
+   * a countdown), `resume` is the wait once the next attempt starts, `beforeRetry` drops what the
+   * failed attempt streamed.
+   */
+  private retryOptions(settings: OrchestratorSettings, resume: WaitStatus, beforeRetry?: () => void) {
+    return {
+      maxRetries: settings.maxRetries ?? DEFAULT_MAX_RETRIES,
+      timing: settings.retryTiming,
+      onRetry: (info: RetryInfo) => {
+        beforeRetry?.();
+        const { attempt, max, until } = info;
+        this.setWait(info.error.kind === 'rate_limit' ? { reason: 'rate_limited', until, attempt, max } : { reason: 'retrying', until, attempt, max });
+      },
+      onResume: () => this.setWait(resume),
+    };
+  }
+
+  /** The run ended: nothing is waited for. */
+  private endWaits(): void {
+    this.toolWaits.clear();
+    this.subagentNames.clear();
+    this.toolAborts.clear();
+    this.setWait(undefined);
+  }
+
+  private setWait(wait: WaitStatus | undefined): void {
+    if (JSON.stringify(wait) === JSON.stringify(this.wait)) return;
+    this.wait = wait;
+    this.emit({ type: 'wait', wait });
+  }
+
+  /**
+   * The wait follows the tool calls: an approval comes first (also a sub-agent's: the user must
+   * answer it), then the newest running call, a sub-agent's run as "waiting for a sub-agent".
+   * With none left, the agent is thinking again.
+   */
+  private trackToolWait(event: AgentEvent): void {
+    let inner = event;
+    let key = '';
+    while (inner.type === 'subagent') {
+      key += `${inner.parentId}/`;
+      inner = inner.event;
+    }
+    if (inner.type !== 'tool_call') return;
+    const nested = key !== '';
+    const call = inner.call;
+    key += call.id;
+    if (call.status === 'awaiting_approval') this.toolWaits.set(key, { reason: 'approval' });
+    else if (call.status === 'running' && !nested) {
+      const agent = this.subagentNames.get(call.id);
+      this.toolWaits.set(key, call.name === SUBAGENT_TOOL ? { reason: 'subagent', agent: agent ?? '' } : { reason: 'tool', tool: call.name, title: call.title });
+    } else {
+      this.toolWaits.delete(key);
+      if (!nested && call.status !== 'running') this.subagentNames.delete(call.id);
+    }
+    if (!this.abort) return;
+    const waits = [...this.toolWaits.values()];
+    this.setWait(waits.find((w) => w.reason === 'approval') ?? waits[waits.length - 1] ?? { reason: 'thinking' });
+  }
+
+  /**
+   * Stop one running tool call (its card's Stop): the agent gets "cancelled by the user" as its
+   * result and the request goes on. A sub-agent's call is found in that sub-agent. False when
+   * the call is not running (any more).
+   */
+  cancelTool(callId: string): boolean {
+    const own = this.toolAborts.get(callId);
+    if (own) {
+      own.abort();
+      return true;
+    }
+    for (const child of this.children) if (child.cancelTool(callId)) return true;
+    return false;
   }
 
   private placeholderView(call: ToolCallBlock): ToolCallView {
@@ -1867,6 +2033,16 @@ export class Orchestrator {
   }
 
   private currentPhase: AgentPhase = 'idle';
+  /** What the running request waits for (the status line). */
+  private wait?: WaitStatus;
+  /** Tool calls that set the wait (approval, running), by call id (a sub-agent's prefixed with its parent's). */
+  private readonly toolWaits = new Map<string, WaitStatus>();
+  /** Sub-agent names of running run_subagent calls, by call id. */
+  private readonly subagentNames = new Map<string, string>();
+  /** Running tool calls the user can stop on their own, by call id. */
+  private readonly toolAborts = new Map<string, AbortController>();
+  /** Sub-agents running now (a tool call of theirs can be stopped from here). */
+  private readonly children = new Set<Orchestrator>();
   private setPhase(phase: AgentPhase): void {
     if (phase === this.currentPhase) return;
     this.currentPhase = phase;
@@ -1874,6 +2050,7 @@ export class Orchestrator {
   }
 
   private emit(event: AgentEvent): void {
+    if (event.type === 'tool_call' || event.type === 'subagent') this.trackToolWait(event);
     for (const listener of this.listeners) {
       try {
         listener(event);

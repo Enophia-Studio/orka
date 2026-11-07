@@ -6,6 +6,8 @@ import type {
   AgentEvent,
   AgentOption,
   Locale,
+  McpLimits,
+  McpServerLimits,
   ModelInfo,
   PermissionMode,
   PriceTable,
@@ -18,6 +20,7 @@ import type {
   RadarStage,
   SessionView,
   TaskSummary,
+  WaitStatus,
 } from '@orka/core';
 
 export interface ProviderView {
@@ -142,6 +145,8 @@ export interface SkillView {
   enabled: boolean;
   /** A user skill with the same name as a built-in one replaces it. */
   overridesBuiltin?: boolean;
+  /** Installed from the skills gallery: the entry, bundled with Orka or downloaded (owner/name at a commit). */
+  origin?: { id: string; kind: 'bundled' | 'source'; license: string; repo?: string; ref?: string };
 }
 
 export interface SettingsView {
@@ -153,6 +158,8 @@ export interface SettingsView {
   /** Keep / Revert above changes in the editor (VS Code only; undefined elsewhere). */
   inlineReview?: boolean;
   maxIterations: number;
+  /** Retries of a model request that failed in a way that may pass. */
+  maxRetries: number;
   tokenBudget: number;
   commandTimeoutSeconds: number;
   shell: string;
@@ -202,7 +209,8 @@ export interface ConfigView {
   skills: SkillView[];
   skillErrors: string[];
   skillsFolder: string;
-  mcp: { enabled: boolean; servers: McpServerView[] };
+  /** platform: the system the app runs on (process.platform), for which catalog servers can run. */
+  mcp: { enabled: boolean; servers: McpServerView[]; platform: string; limits: McpLimits };
   /** Agents that run on their own in a terminal (Freebuff); Orka hands tasks over to them. */
   externalAgents: ExternalAgentView[];
   pricing: PriceTable;
@@ -217,7 +225,39 @@ export interface ConfigView {
   agentClisLeftOut: Array<{ id: string; reason: string }>;
   /** Desktop only: the window's layout and color theme, and how many sessions may run at once (sessions.maxRunning). */
   ui?: { layout: 'ide' | 'classic'; theme: 'system' | 'light' | 'dark'; maxRunning: number };
+  /** Desktop only: the Browser tab (the agent's browser, live) can show. */
+  browserPanel?: true;
 }
+
+/** The Browser panel: the session's browser as the page shows it. */
+export interface BrowserStateView {
+  running: boolean;
+  url: string;
+  canBack: boolean;
+  canForward: boolean;
+  /** The user has taken the page over (the agent may only look). */
+  control: boolean;
+  /** A page is being opened from the address bar. */
+  loading?: boolean;
+  /** Why the last address could not be opened. */
+  error?: string;
+}
+
+/** A dev server the Browser panel offers: one a background process printed, or a common port that answers. */
+export interface DevServerView {
+  url: string;
+  /** The background process that printed it. */
+  process?: string;
+}
+
+/**
+ * The user's input to a taken-over page. x and y: where in the shown frame (0 to 1 of its width
+ * and height); the app turns them into the page's pixels. mods: Alt 1, Ctrl 2, Meta 4, Shift 8.
+ */
+export type BrowserInputView =
+  | { kind: 'mouse'; action: 'move' | 'down' | 'up'; x: number; y: number; button?: number; clicks?: number; mods?: number }
+  | { kind: 'wheel'; x: number; y: number; dx: number; dy: number; mods?: number }
+  | { kind: 'key'; action: 'down' | 'up'; key: string; code: string; keyCode: number; text?: string; mods?: number };
 
 export interface AppVersionView {
   version: string;
@@ -252,6 +292,8 @@ export interface LiveSessionView {
   state: 'idle' | 'running' | 'approval';
   /** Approvals waiting for the user. */
   approvals: number;
+  /** Why it waits while it runs (the list says it under the title). */
+  wait?: WaitStatus;
 }
 
 /** How the user arranged the session list: their own groups, which task is in which, hidden tasks. */
@@ -292,7 +334,15 @@ export interface McpServerView {
   enabled: boolean;
   state: 'idle' | 'starting' | 'ready' | 'error' | 'closed';
   tools: number;
+  /** Of those, the tools the model gets (allow-list and the server's own tool limit applied). */
+  exposed: number;
+  /** The tool names the server lists (empty until it started). */
+  toolNames: string[];
+  /** Its own limits and tool allow-list (mcp.serverLimits); unset values follow the global limits. */
+  limits: McpServerLimits;
   error?: string;
+  /** The MCP catalog entry it came from (added from the catalog, imported, or the same package or URL). */
+  catalogId?: string;
 }
 
 export interface HunkView {
@@ -485,7 +535,9 @@ export type ToWebview =
   | Scoped<{ type: 'event'; event: AgentEvent }>
   | { type: 'config'; config: ConfigView }
   | { type: 'showAgents' }
-  | { type: 'showSettings'; tab?: SettingsTab }
+  | { type: 'showSettings'; tab?: SettingsTab; mcp?: 'servers' | 'catalog'; skills?: 'mine' | 'gallery' }
+  /** The text of a bundled gallery skill, asked for by the gallery's preview. */
+  | { type: 'skillPreview'; id: string; text: string }
   | { type: 'showHistory' }
   | { type: 'history'; tasks: TaskSummary[]; currentId?: string }
   /** Desktop: the tasks of the recent folders, for the session list; taskId: the task open now (saved or not). */
@@ -502,7 +554,10 @@ export type ToWebview =
    */
   | { type: 'showSession'; id: string }
   | Scoped<{ type: 'fileMatches'; query: string; files: string[] }>
-  | Scoped<{ type: 'hunks'; path: string; hunks: HunkView[] }>
+  /** total: the file's number of parts, also past the ones sent. */
+  | Scoped<{ type: 'hunks'; path: string; hunks: HunkView[]; total?: number }>
+  /** The answer to revertChange: whether the file was reverted (it may stay: the user cancelled, another session works nearby). */
+  | Scoped<{ type: 'changeReverted'; path: string; reverted: boolean }>
   | { type: 'dialog'; id: string; dialog: DialogView }
   | { type: 'closeDialog'; id: string }
   /**
@@ -543,18 +598,23 @@ export type ToWebview =
       places?: FolderPlaceView[];
     }
   /** The reply to createFolder `id`: the new folder's path and name, or why there is none. */
-  | { type: 'folderCreated'; id: number; path?: string; name?: string; error?: CreateFolderError };
+  | { type: 'folderCreated'; id: number; path?: string; name?: string; error?: CreateFolderError }
+  /** Desktop Browser panel: the session's browser, a frame of its page (JPEG, base64; never kept), the dev servers found. */
+  | Scoped<{ type: 'browserState'; state: BrowserStateView }>
+  | Scoped<{ type: 'browserFrame'; data: string; width: number; height: number }>
+  | Scoped<{ type: 'browserServers'; servers: DevServerView[] }>;
 
 /** What one session sends to the page (always with its sessionId). */
 export type SessionPost = Extract<
   ToWebview,
-  { type: 'init' | 'event' | 'fileMatches' | 'hunks' | 'setInput' | 'dirEntries' | 'fileContent' | 'fileSaved' | 'saveRefused' }
+  { type: 'init' | 'event' | 'fileMatches' | 'hunks' | 'changeReverted' | 'setInput' | 'dirEntries' | 'fileContent' | 'fileSaved' | 'saveRefused' | 'browserState' | 'browserFrame' | 'browserServers' }
 >;
 
 /** The page's messages that act on one session: its task, its changes, its folder's files. */
 const SESSION_MESSAGE_TYPES = [
   'send',
   'stop',
+  'cancelTool',
   'rewind',
   'compact',
   'approve',
@@ -576,6 +636,12 @@ const SESSION_MESSAGE_TYPES = [
   'initMemory',
   'setSessionModel',
   'useModelAsDefault',
+  'browserView',
+  'browserOpen',
+  'browserNav',
+  'browserControl',
+  'browserInput',
+  'browserServers',
 ] as const;
 
 export const SESSION_MESSAGES: ReadonlySet<string> = new Set<string>(SESSION_MESSAGE_TYPES);
@@ -591,6 +657,8 @@ export type FromWebview =
   /** editor: the desktop editor's file and selection (ignored elsewhere). */
   | Scoped<{ type: 'send'; text: string; files?: string[]; skills?: string[]; images?: ImageAttachment[]; editor?: EditorSelection }>
   | Scoped<{ type: 'stop' }>
+  /** Stop one running tool call from its card; the request goes on. */
+  | Scoped<{ type: 'cancelTool'; id: string }>
   /** Go back to just before this user message (conversation and files). */
   | Scoped<{ type: 'rewind'; id: string }>
   /**
@@ -659,6 +727,16 @@ export type FromWebview =
   | Scoped<{ type: 'setSessionModel'; model?: string; effort?: string; profile?: string; option?: { id: string; value: string } }>
   /** Save this session's model, effort and profile as the settings' defaults for new sessions. */
   | Scoped<{ type: 'useModelAsDefault' }>
+  /** Desktop Browser panel: it shows or hides (frames stream only while it shows). */
+  | Scoped<{ type: 'browserView'; visible: boolean }>
+  /** An address the user typed (the user's own consent: no approval). */
+  | Scoped<{ type: 'browserOpen'; url: string }>
+  | Scoped<{ type: 'browserNav'; action: 'back' | 'forward' | 'reload' }>
+  /** Take over (the agent may only look meanwhile) or give back. */
+  | Scoped<{ type: 'browserControl'; take: boolean }>
+  | Scoped<{ type: 'browserInput'; input: BrowserInputView }>
+  /** Look for dev servers on this machine. */
+  | Scoped<{ type: 'browserServers' }>
   | { type: 'openSettings' }
   | { type: 'listTasks' }
   | { type: 'listSessions' }
@@ -684,11 +762,24 @@ export type FromWebview =
   | { type: 'newSkill' }
   | { type: 'openSkillsFolder' }
   | { type: 'reloadSkills' }
+  /** Add a gallery skill to the user's skills folder (a download asks for consent first, with every URL). */
+  | { type: 'installGallerySkill'; id: string }
+  /** Remove a skill the gallery installed (asks first). */
+  | { type: 'removeGallerySkill'; name: string }
+  /** Ask for the text of a bundled gallery skill (answered with skillPreview). */
+  | { type: 'previewGallerySkill'; id: string }
+  /** A gallery entry's page upstream (the URL comes from the gallery, never from the page). */
+  | { type: 'openGallerySkillSource'; id: string }
   | { type: 'selectFolder'; path: string }
   | { type: 'toggleMcpServer'; name: string; enabled: boolean }
   | { type: 'importMcp' }
+  | { type: 'setMcpServerLimits'; name: string; limits: McpServerLimits }
   | { type: 'restartMcp' }
   | { type: 'editMcpServers' }
+  /** Add a server from Orka's bundled catalog: the app builds it from the entry and asks for consent first. */
+  | { type: 'addMcpFromCatalog'; id: string; values: Record<string, string> }
+  /** A catalog entry's page: its homepage, its setup step's page, or where a field's value is created. */
+  | { type: 'openMcpCatalogLink'; id: string; link: 'homepage' | 'setup' | 'field'; field?: string }
   /** The answer to a dialog: the action, the text entered or the index picked; undefined = cancelled. */
   | { type: 'dialogResult'; id: string; value?: string | number }
   /**

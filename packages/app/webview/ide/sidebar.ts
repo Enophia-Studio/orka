@@ -6,6 +6,7 @@ import type { LiveSessionView, RadarView, SessionGroup, SessionOrganizerView } f
 import { attr, escapeHtml, icon } from '../core/dom';
 import { ago } from '../core/format';
 import { radarBadge, radarLabel } from '../features/radar';
+import { waitHtml } from '../features/wait';
 
 export interface SidebarView {
   /** The recent folders with their newest tasks. */
@@ -114,6 +115,11 @@ interface Listed {
   folderName: string;
 }
 
+/** What an open session that runs waits for, under its title ('' when it does not run). */
+function liveWait(live: LiveSessionView | undefined): string {
+  return live && live.state !== 'idle' && live.wait ? waitHtml(live.wait, 'side-meta side-wait') : '';
+}
+
 /** A row's classes and the mark before its title for the open session it shows, if any. */
 function liveState(live: LiveSessionView | undefined): { cls: string; mark: string } {
   if (live?.state === 'approval') {
@@ -150,7 +156,7 @@ export function sessionListHtml(v: SidebarView): string {
     const action = live && !shown ? `data-action="switch-session" data-session="${attr(live.id)}"` : 'data-action="open-session"';
     return `<div class="side-item${shown ? ' current' : ''}${state.cls}">
       <button class="side-open" ${action} data-id="${attr(item.task.id)}" data-folder="${attr(item.folder)}" title="${attr(`${item.task.title}\n${item.folderName} · ${ago(item.task.updatedAt)}`)}"${shown ? ' aria-current="true"' : ''}>
-        <span class="side-title">${state.mark}<span class="ellipsis">${escapeHtml(item.task.title)}</span>${meta ? `<span class="side-meta">${escapeHtml(meta)}</span>` : ''}</span></button>
+        <span class="side-title">${state.mark}<span class="ellipsis">${escapeHtml(item.task.title)}</span>${liveWait(live) || (meta ? `<span class="side-meta">${escapeHtml(meta)}</span>` : '')}</span></button>
       ${moreButton(item.task.id, item.folder, live, shown)}
     </div>`;
   };
@@ -159,7 +165,7 @@ export function sessionListHtml(v: SidebarView): string {
     const shown = live.id === v.activeId;
     const title = (shown ? v.draftTitle || live.title : live.title) || t('New session');
     const state = liveState(live);
-    const inner = `<span class="side-title">${state.mark}<span class="ellipsis">${escapeHtml(title)}</span></span>`;
+    const inner = `<span class="side-title">${state.mark}<span class="ellipsis">${escapeHtml(title)}</span>${liveWait(live)}</span>`;
     return shown
       ? `<div class="side-item current draft${state.cls}"><span class="side-open" aria-current="true">${inner}</span></div>`
       : `<div class="side-item draft${state.cls}"><button class="side-open" data-action="switch-session" data-session="${attr(live.id)}" title="${attr(title)}">${inner}</button>

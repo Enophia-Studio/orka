@@ -1,0 +1,9 @@
+verification-before-completion: a skill in Orka's skills gallery, from obra/superpowers.
+
+Source: https://github.com/obra/superpowers/tree/22f0b463e7a5e579904dd6211a520321035526f7/skills/verification-before-completion
+Copyright (c) 2025 Jesse Vincent
+Licensed under the MIT License (see LICENSE).
+
+Changes made for Orka (2026-11-07):
+- Front matter: a license key is added.
+- In the Markdown files, references to other skills drop the "superpowers:" prefix (the skills keep their names in Orka). Nothing else is changed.

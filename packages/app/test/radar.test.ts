@@ -258,6 +258,10 @@ describe('Radar (desktop)', () => {
     const userScoped = Object.assign(new MemorySettings({ ...values }), { scopeOf: () => 'user' as const });
     assert.deepEqual(readSettings(userScoped).radar, { enabled: true, provider: 'openai', model: 'gpt-6-sol', autoAnalyze: true, writeNotes: false });
     assert.equal(readSettings(new MemorySettings({})).radar.writeNotes, true, 'notes are on by default');
+    // A hand-edited retry count that is not a number is the default, never endless retries.
+    assert.equal(readSettings(new MemorySettings({ maxRetries: 'three' })).orchestrator.maxRetries, 3);
+    assert.equal(readSettings(new MemorySettings({ maxRetries: 99 })).orchestrator.maxRetries, 10);
+    assert.equal(readSettings(new MemorySettings({ maxRetries: 1.7 })).orchestrator.maxRetries, 1);
     // Only a real true turns it on; an agent CLI is never its provider, Claude Code only once it is turned on.
     const odd = readSettings(new MemorySettings({ 'radar.enabled': 'true', 'radar.autoAnalyze': 1, 'radar.provider': 'claude-code', 'claudeCode.enabled': true }));
     assert.deepEqual([odd.radar.enabled, odd.radar.autoAnalyze, odd.radar.provider], [false, false, 'claude-code']);

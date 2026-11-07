@@ -1,4 +1,4 @@
-export { AppController, type AppControllerOptions, USER_SKILLS_DIR } from './AppController';
+export { AppController, type AppControllerOptions, USER_SKILLS_DIR, userSkillsDir } from './AppController';
 export { validImages } from './SessionController';
 export { findFilesByName } from './files';
 export { checkFolderPath, type FolderListing, folderNameProblem, MAX_FOLDER_ENTRIES, NodeFolderBrowser } from './folderBrowser';

@@ -145,6 +145,19 @@ describe('a third-party agent over ACP as the main agent', () => {
     assert.deepEqual([usage.agent, usage.provider, usage.model, usage.calls, usage.unreported], ['main', 'agent:fake', 'Fake Agent', 1, true]);
   });
 
+  gitIt('shows the agent starting, and an agent that dies mid-turn ends with a resumable error, not a silent retry', async () => {
+    const { orchestrator, events } = setup([[{ chunk: 'Working on it. ' }, { writeFile: { path: file('a.txt'), content: 'half' } }, { exit: 3 }]]);
+    assert.equal(await orchestrator.run('change a.txt'), 'error');
+    const waits = events.filter((e) => e.type === 'wait').map((e) => (e.type === 'wait' ? e.wait?.reason : undefined));
+    assert.ok(waits.includes('starting') && waits.includes('thinking'), waits.join(','));
+    const starting = events.find((e) => e.type === 'wait' && e.wait?.reason === 'starting');
+    assert.ok(starting?.type === 'wait' && starting.wait?.reason === 'starting' && starting.wait.agent === 'Fake Agent');
+    const notice = events.find((e) => e.type === 'notice' && e.level === 'error');
+    assert.ok(notice?.type === 'notice' && /What it changed so far stays under Changes\. Send "continue" to resume\./.test(notice.message), JSON.stringify(notice));
+    assert.equal(logged().filter((e) => e.event === 'prompt').length, 1, 'the prompt was not sent again on its own');
+    assert.deepEqual((await orchestrator.changes.list()).map((c) => c.relPath), ['a.txt'], 'what it wrote stays reviewable');
+  });
+
   gitIt('answers permission requests with Orka\'s rules, always "once", and passes declines on', async () => {
     const execute = (id: string, command: string) => ({ permission: { id, kind: 'execute', title: command, rawInput: { command } } });
     const { orchestrator, approvals } = setup(
@@ -485,8 +498,8 @@ describe('a third-party agent over ACP as the main agent', () => {
     assert.deepEqual(orchestrator.history, [], 'no message of the old turn');
     assert.deepEqual(await orchestrator.changes.list(), [], 'no change of the old turn');
     assert.equal(orchestrator.currentPlan, undefined);
-    const after = events.slice(resetAt).map((e) => e.type);
-    assert.ok(after.every((type) => type === 'phase' || type === 'run_finished'), `only the run's end: ${after.join(', ')}`);
+    const after = events.slice(resetAt).map((e) => (e.type === 'wait' && !e.wait ? 'wait-end' : e.type));
+    assert.ok(after.every((type) => type === 'phase' || type === 'wait-end' || type === 'run_finished'), `only the run's end: ${after.join(', ')}`);
   });
 
   /** A promise the test opens, and one that says the code under test is waiting for it. */
@@ -520,8 +533,8 @@ describe('a third-party agent over ACP as the main agent', () => {
     held.open();
     assert.equal(await running, 'stopped');
     assert.deepEqual(orchestrator.usageByAgent, [], 'no call of the old request is counted in the new task');
-    const after = events.slice(resetAt).map((e) => e.type);
-    assert.ok(after.every((type) => type === 'phase' || type === 'run_finished'), `only the run's end: ${after.join(', ')}`);
+    const after = events.slice(resetAt).map((e) => (e.type === 'wait' && !e.wait ? 'wait-end' : e.type));
+    assert.ok(after.every((type) => type === 'phase' || type === 'wait-end' || type === 'run_finished'), `only the run's end: ${after.join(', ')}`);
     assert.equal(logged().filter((e) => e.event === 'prompt').length, 1, 'the correction was never sent');
   });
 
@@ -575,8 +588,8 @@ describe('a third-party agent over ACP as the main agent', () => {
     const resetAt = events.length;
     held.open();
     assert.equal(await running, 'stopped');
-    const after = events.slice(resetAt).map((e) => e.type);
-    assert.ok(after.every((type) => type === 'phase' || type === 'run_finished'), `only the run's end: ${after.join(', ')}`);
+    const after = events.slice(resetAt).map((e) => (e.type === 'wait' && !e.wait ? 'wait-end' : e.type));
+    assert.ok(after.every((type) => type === 'phase' || type === 'wait-end' || type === 'run_finished'), `only the run's end: ${after.join(', ')}`);
     assert.equal(logged().filter((e) => e.event === 'prompt').length, 0);
   });
 

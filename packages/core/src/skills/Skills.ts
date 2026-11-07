@@ -17,6 +17,8 @@ import { type Tool, ToolError, truncateMiddle } from '../tools/Tool';
  *   name: unity
  *   description: When to use this skill, in one or two sentences.
  *   ---
+ * A value can also be a YAML block ("description: >" or "|-" with indented lines below it), as many
+ * published skills write their description; its lines are joined with spaces.
  */
 export interface Skill {
   name: string;
@@ -57,6 +59,8 @@ export async function loadSkills(sources: readonly SkillSource[]): Promise<Loade
       continue; // a missing folder simply has no skills
     }
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      // Hidden entries (".x.installing-..." while the gallery fills a skill folder) are not skills.
+      if (entry.name.startsWith('.')) continue;
       const isFile = entry.isFile() && /\.md$/i.test(entry.name) && !/^readme\.md$/i.test(entry.name);
       const file = isFile ? path.join(dir, entry.name) : entry.isDirectory() ? path.join(dir, entry.name, 'SKILL.md') : undefined;
       if (!file) continue;
@@ -84,9 +88,18 @@ export function parseSkill(text: string, fallbackName: string): { name: string; 
   const match = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/.exec(normalized);
   const meta: Record<string, string> = {};
   if (match) {
-    for (const line of match[1].split('\n')) {
-      const kv = /^([A-Za-z][\w-]*)\s*:\s*(.*)$/.exec(line);
-      if (kv) meta[kv[1].toLowerCase()] = kv[2].trim().replace(/^(["'])(.*)\1$/, '$2');
+    const lines = match[1].split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const kv = /^([A-Za-z][\w-]*)\s*:\s*(.*)$/.exec(lines[i]);
+      if (!kv) continue;
+      let value = kv[2].trim();
+      // A block scalar (">" or "|", with an optional chomping sign): the indented lines below it.
+      if (/^[>|][+-]?$/.test(value)) {
+        const block: string[] = [];
+        while (i + 1 < lines.length && (lines[i + 1].trim() === '' || /^\s/.test(lines[i + 1]))) block.push(lines[++i].trim());
+        value = block.filter(Boolean).join(' ');
+      }
+      meta[kv[1].toLowerCase()] = value.replace(/^(["'])(.*)\1$/, '$2');
     }
   }
   const body = (match ? match[2] : normalized).trim();
@@ -126,7 +139,8 @@ export function createSkillTool(skills: readonly Skill[]): Tool<{ name: string; 
     async execute(input) {
       const skill = byName.get(input.name);
       if (!skill) throw new ToolError(`Unknown skill "${input.name}". Available: ${[...byName.keys()].join(', ') || 'none'}.`);
-      if (!input.file) return { content: `<skill name="${skill.name}">\n${skill.body}\n</skill>` };
+      // A folder skill names its folder, so the agent can find the scripts and files it refers to.
+      if (!input.file) return { content: `<skill name="${skill.name}"${skill.dir ? ` folder="${skill.dir}"` : ''}>\n${skill.body}\n</skill>` };
       if (!skill.dir) throw new ToolError(`The "${skill.name}" skill has no supporting files.`);
       const target = path.resolve(skill.dir, input.file);
       const inside = path.relative(skill.dir, target);

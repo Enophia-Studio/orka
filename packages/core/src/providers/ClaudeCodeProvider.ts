@@ -88,6 +88,8 @@ export class ClaudeCodeProvider implements AIProvider {
     } else {
       session?.kill();
       session = new CliSession(this.spawnArgs(), system);
+      // Until the CLI says it is up, the wait is for its start, not for the model.
+      onEvent({ type: 'status', reason: 'starting' });
       payload = renderTranscript(request.messages);
       // A restarted session gets the images of the latest message only; earlier ones are noted in the transcript.
       images = userImages(request.messages.slice(-1));
@@ -114,6 +116,7 @@ export class ClaudeCodeProvider implements AIProvider {
         : payload;
       const turn = await session.turn(input, (event) => {
         if (event.type === 'text') filter.push(event.text);
+        else if (event.type === 'ready') onEvent({ type: 'status', reason: 'thinking' });
         else if (event.type === 'thinking') {
           reasoning += event.text;
           onEvent({ type: 'reasoning_delta', text: event.text });
@@ -218,7 +221,8 @@ interface SpawnSpec {
   configDir?: string;
 }
 
-type CliStreamEvent = { type: 'text'; text: string } | { type: 'thinking'; text: string };
+/** ready: the CLI started and reported its session (once per process). */
+type CliStreamEvent = { type: 'text'; text: string } | { type: 'thinking'; text: string } | { type: 'ready' };
 
 /** A user message for stream-json input: plain text, or text plus image blocks. */
 type CliContent =
@@ -243,6 +247,8 @@ class CliSession {
   private lineBuffer = '';
   private stderrTail = '';
   private exited = false;
+  /** The CLI reported its session (system init): it is up. */
+  private started = false;
   private idleTimer?: NodeJS.Timeout;
   private model = '';
   /** The streaming message's content blocks by index: their type ("text", "thinking", "redacted_thinking", ...). */
@@ -291,7 +297,9 @@ class CliSession {
     this.child.on('exit', (code) => {
       this.exited = true;
       const detail = this.stderrTail.trim() ? `: ${this.stderrTail.trim().split(/\r?\n/).slice(-3).join(' ')}` : '';
-      this.fail(new ProviderError(`Claude Code exited unexpectedly (code ${code})${detail}`, 'other'));
+      // Gone after it had started answering: a fresh process can redo the turn (Orka runs the
+      // tools, so the CLI did nothing a second try would repeat). Gone at start: it would again.
+      this.fail(new ProviderError(`Claude Code exited unexpectedly (code ${code})${detail}`, 'other', undefined, undefined, { transient: this.started }));
       this.cleanup();
     });
     this.child.stdin.on('error', () => {
@@ -345,7 +353,12 @@ class CliSession {
 
   private handle(message: any): void {
     const pending = this.pending;
-    if (message.type === 'system' && message.subtype === 'init' && typeof message.model === 'string') this.model = message.model;
+    if (message.type === 'system' && message.subtype === 'init') {
+      if (typeof message.model === 'string') this.model = message.model;
+      const first = !this.started;
+      this.started = true;
+      if (first) pending?.onEvent({ type: 'ready' });
+    }
     if (!pending) return;
     switch (message.type) {
       case 'stream_event': {
@@ -428,8 +441,11 @@ class CliSession {
   }
 }
 
-function classifyError(text: string): ProviderError['kind'] {
-  if (/limit|quota|rate|overloaded/i.test(text)) return 'rate_limit';
+export function classifyError(text: string): ProviderError['kind'] {
+  // An overloaded model or a server error passes; a usage limit does not (see isTransient).
+  if (/overloaded|internal server error|api error: 5\d\d|\b52\d\b/i.test(text)) return 'server';
+  if (/connection error|econnreset|socket hang up|fetch failed|timed out/i.test(text)) return 'network';
+  if (/limit|quota|rate/i.test(text)) return 'rate_limit';
   if (/log ?in|auth|credential|api key|unauthori|forbidden/i.test(text)) return 'auth';
   return 'other';
 }

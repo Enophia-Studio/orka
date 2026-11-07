@@ -24,7 +24,24 @@ export interface ToolCallView {
   path?: string;
   /** A small preview image (data URL), e.g. of a browser screenshot. */
   image?: string;
+  /** While running: the user can stop this call on its own (cancelTool); the request goes on. */
+  cancellable?: boolean;
 }
+
+/**
+ * Why a running request waits, for the status line and the session list. starting: an agent CLI
+ * starts (`agent`: its name, when known). tool: a tool runs (`title`: what it does). retrying /
+ * rate_limited: the next attempt starts at `until` (epoch ms), retry `attempt` of `max`.
+ */
+export type WaitStatus =
+  | { reason: 'starting'; agent?: string }
+  | { reason: 'thinking' }
+  | { reason: 'tool'; tool: string; title?: string }
+  | { reason: 'approval' }
+  | { reason: 'retrying'; until: number; attempt: number; max: number }
+  | { reason: 'rate_limited'; until: number; attempt: number; max: number }
+  | { reason: 'compacting' }
+  | { reason: 'subagent'; agent: string };
 
 /** Token use of one agent role ("main", "supervisor", or a sub-agent name) in the current task. */
 export interface AgentUsage {
@@ -74,11 +91,15 @@ export type AgentEvent =
   | { type: 'assistant_delta'; id: string; text: string }
   | { type: 'reasoning_delta'; id: string; text: string }
   | { type: 'assistant_end'; id: string; text: string; model: string }
+  /** The turn is tried again: what this message streamed so far is dropped, the next attempt streams anew. */
+  | { type: 'assistant_retry'; id: string }
   | { type: 'tool_call'; call: ToolCallView }
   | { type: 'tool_output'; id: string; chunk: string }
   | { type: 'plan'; plan: Plan | undefined }
   | { type: 'changes'; changes: FileChange[] }
   | { type: 'phase'; phase: AgentPhase }
+  /** What the running request waits for now (none: it does not run). */
+  | { type: 'wait'; wait?: WaitStatus }
   /** `context`: how full the main agent's context is, when its provider says (none: unknown). */
   | { type: 'usage'; total: Usage; model: string; byAgent?: AgentUsage[]; context?: ContextFill }
   /** The main agent's agent CLI (`agent`: its id) advertised these choices for its session. */

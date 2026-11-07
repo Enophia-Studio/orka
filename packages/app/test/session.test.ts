@@ -175,6 +175,25 @@ describe('sessions', () => {
 });
 
 describe('parallel sessions (desktop IDE layout)', () => {
+  it("the session list says why a running session waits, and a tool card's Stop reaches that session's agent", async () => {
+    const { shell, controller } = await start('desktop', { ...agentSettings, permissionMode: 'ask' });
+    const a = controller.activeSession!;
+    script([{ chunk: 'Alpha works.' }, { permission: { id: 'p1', title: 'Run a command', kind: 'execute' } }, { stop: 'end_turn' }]);
+    const sent = controller.send('Task in alpha');
+    await until(() => pendingOf(a).size === 1, "alpha's approval");
+    const waitOf = () => shell.last('live')?.sessions.find((s) => s.id === a.id)?.wait;
+    await until(() => waitOf()?.reason === 'approval', 'the approval as the wait in the list');
+    const reasons = shell.posted.flatMap((m) => (m.type === 'live' ? m.sessions.filter((s) => s.id === a.id).map((s) => s.wait?.reason) : []));
+    assert.ok(reasons.includes('starting'), reasons.join(','));
+    const stopped: string[] = [];
+    a.orchestrator.cancelTool = (id: string) => (stopped.push(id), true);
+    await controller.handleMessage({ type: 'cancelTool', id: 'call-7', sessionId: a.id });
+    assert.deepEqual(stopped, ['call-7']);
+    await controller.handleMessage({ type: 'approve', id: [...pendingOf(a).keys()][0], approved: true, sessionId: a.id });
+    await sent;
+    assert.equal(waitOf(), undefined, 'an idle session waits for nothing');
+  });
+
   it('runs sessions of two folders at once and shows each without stopping the other', async () => {
     const log = path.join(home, 'acp.log');
     process.env.FAKE_ACP_LOG = log;
@@ -411,7 +430,7 @@ describe('parallel sessions (desktop IDE layout)', () => {
     const { shell, controller } = await start('desktop', { mcpServers: { shared: server } });
     // What a new task of the session gets (the orchestrator asks for it once per task).
     const toolsFor = async (session: SessionController) =>
-      [...new Set((await (controller as unknown as { mcpTools(s: SessionController): Promise<Tool[]> }).mcpTools(session)).map((tool) => tool.name.split('__')[1]))];
+      [...new Set((await (controller as unknown as { mcpTools(s: SessionController): Promise<{ tools: Tool[] }> }).mcpTools(session)).tools.map((tool) => tool.name.split('__')[1]))];
     const states = (session: SessionController) => session.mcp.status().map((s) => [s.name, s.state]);
     const a = controller.activeSession!;
     shell.answer = 'Allow';

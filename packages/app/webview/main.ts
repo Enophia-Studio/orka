@@ -2,14 +2,19 @@ import type { AgentEvent, AgentPhase, AgentUsage, FileChange, ModelInfo, Plan, S
 import { getLocale, setLocale, t, tn } from '@orka/core/src/i18n';
 import { isSecretFile } from '@orka/core/src/permissions/secrets';
 import { applyEvent, emptySession } from '@orka/core/src/ui/transcript';
+import { catalogEntry } from '@orka/core/src/mcp/catalog';
+import { galleryEntry } from '@orka/core/src/skills/gallery';
 import { estimateCost } from '@orka/core/src/usage/pricing';
 import orkaLogo from '../media/orka-logo.svg';
 import type {
   AgentCliView,
   AgentView,
+  BrowserStateView,
   ConfigView,
+  DevServerView,
   Eol,
   FileReason,
+  FromWebview,
   HunkView,
   ImageAttachment,
   LiveSessionView,
@@ -32,8 +37,36 @@ import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAcc
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
 import { folderPickerCreated, folderPickerListing, openFolderPicker } from './features/folderPicker';
 import { hunksHtml } from './features/hunks';
+import {
+  addComment,
+  currentPart,
+  decide,
+  feedbackText,
+  hunksToFetch,
+  receiveHunks,
+  receiveRevert,
+  reviewHtml,
+  type ReviewState,
+  startReview,
+  step,
+  syncFiles,
+} from './features/review';
+import { fitWithin, MAX_IMAGE_EDGE, pickImages } from './features/images';
+import { catalogFormHtml, catalogHtml, catalogListHtml, type CatalogState, missingFields } from './features/mcpCatalog';
+import {
+  captureLimitDrafts,
+  globalLimitsHtml,
+  readServerLimitsForm,
+  restoreLimitDrafts,
+  serverLimitsForm,
+  serverLimitsHtml,
+  toolCountLabel,
+} from './features/mcpLimits';
+import { galleryHtml, galleryListHtml, galleryPreviewHtml, type GalleryState, originLabel } from './features/skillGallery';
 import { contextRing, effortLabel, modelButtonHtml, modelMenuHtml } from './features/modelMenu';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
+import { cancelToolButton, errorSummary } from './features/toolCard';
+import { scheduleWaitTicks, waitHtml } from './features/wait';
 import {
   changePath,
   editorBannerHtml,
@@ -50,6 +83,7 @@ import {
   type DirState,
   type EditorBanner,
 } from './ide/files';
+import { browserFrame, browserPanelHtml, browserServersHtml, browserUpdate, framePoint, keyInput, modifiers, NO_BROWSER } from './ide/browser';
 import { appSkeleton, layout } from './ide/layout';
 import { approvalsBadgeHtml, newSessionMenuHtml, radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml, waitingSessions } from './ide/sidebar';
 
@@ -78,7 +112,7 @@ const ui: {
   organizer: SessionOrganizerView;
   collapsed: Set<string>;
   showHidden: boolean;
-  /** The side panel's tab: the task's plan and changes, Files, or Radar. */
+  /** The side panel's tab: the task's plan and changes, Files, Browser, or Radar. */
   asideTab: AsideTab;
   /** The task shown, as the app reported it with the session. */
   taskId?: string;
@@ -99,7 +133,7 @@ const ui: {
   organizer: { groups: [], assigned: {}, hidden: [] },
   collapsed: new Set((uiState().collapsedSections ?? []).filter((k) => typeof k === 'string').slice(0, 200)),
   showHidden: false,
-  asideTab: uiState().asideTab === 'radar' || uiState().asideTab === 'files' ? uiState().asideTab! : 'task',
+  asideTab: uiState().asideTab === 'radar' || uiState().asideTab === 'files' || uiState().asideTab === 'browser' ? uiState().asideTab! : 'task',
   live: [],
 };
 
@@ -109,7 +143,7 @@ const ui: {
  */
 const drafts = new Map<string, string>();
 
-type AsideTab = 'task' | 'radar' | 'files';
+type AsideTab = 'task' | 'radar' | 'files' | 'browser';
 
 /** The conversation or the open file: the views with the message box and the side panel. */
 function workView(): boolean {
@@ -166,6 +200,7 @@ const el = {
   asideTask: document.getElementById('aside-task'),
   radarPanel: document.getElementById('radar-panel'),
   filesPanel: document.getElementById('files-panel'),
+  browserPanel: document.getElementById('browser-panel'),
   editorPane: document.getElementById('editor-pane'),
   editorHead: document.getElementById('editor-head'),
   editorBanner: document.getElementById('editor-banner'),
@@ -265,6 +300,7 @@ function renderSidebar(): void {
       draftTitle: sessionTitle(),
       query: ui.sessionQuery,
     });
+    if (live.some((s) => s.wait)) scheduleWaitTicks();
   }
   for (const [id, where] of [
     ['side-approvals', 'head'],
@@ -425,6 +461,96 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+/** Settings > MCP: the user's servers or Orka's catalog; the catalog's search, filter and open details. */
+let mcpView: 'servers' | 'catalog' = 'servers';
+/** MCP servers whose own limits form is open (Settings > MCP). */
+const mcpLimitsOpen = new Set<string>();
+const catalog: CatalogState = { query: '', category: '', open: new Set() };
+/** The catalog's Add form (an entry with fields), with the required fields found empty. */
+let catalogForm: { id: string; missing: string[] } | undefined;
+const catalogLayer = document.createElement('div');
+catalogLayer.className = 'catalog-layer';
+document.body.appendChild(catalogLayer);
+
+function openCatalogForm(id: string, missing: string[] = []): void {
+  const entry = catalogEntry(id);
+  if (!entry) return;
+  // Values typed so far stay when the form is drawn again (to mark empty required fields).
+  const typed = catalogValues();
+  catalogForm = { id, missing };
+  catalogLayer.innerHTML = `<div class="modal-backdrop" data-action="catalog-form-close">${catalogFormHtml(entry, missing)}</div>`;
+  for (const input of catalogLayer.querySelectorAll<HTMLInputElement>('[data-catalog-field]')) {
+    const value = typed[input.dataset.catalogField!];
+    if (value !== undefined) input.value = value;
+  }
+  (catalogLayer.querySelector<HTMLElement>('[aria-invalid="true"]') ?? catalogLayer.querySelector<HTMLElement>('[data-catalog-field]') ?? catalogLayer.querySelector<HTMLElement>('.btn.primary'))?.focus();
+}
+
+/** The values in the open form; cleared from the page as soon as the form closes. */
+function catalogValues(): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const input of catalogLayer.querySelectorAll<HTMLInputElement>('[data-catalog-field]')) values[input.dataset.catalogField!] = input.value;
+  return values;
+}
+
+function closeCatalogForm(): void {
+  if (!catalogForm) return;
+  catalogForm = undefined;
+  catalogLayer.innerHTML = '';
+}
+
+/** Add from the catalog: an entry with fields asks for them first; the app always asks for consent before anything is written. */
+function addFromCatalog(id: string, values: Record<string, string> = {}): void {
+  post({ type: 'addMcpFromCatalog', id, values });
+}
+
+/** Settings > Skills: the user's skills or the gallery; the gallery's search, filters, open details and preview. */
+let skillsView: 'mine' | 'gallery' = 'mine';
+const gallery: GalleryState = { query: '', category: '', license: '', open: new Set() };
+/** The preview dialog of a bundled gallery skill: its id, and its text once the app sent it. */
+let galleryPreview: { id: string; text?: string } | undefined;
+
+function renderGalleryPreview(): void {
+  const entry = galleryPreview && galleryEntry(galleryPreview.id);
+  if (!galleryPreview || !entry) {
+    catalogLayer.innerHTML = '';
+    return;
+  }
+  catalogLayer.innerHTML = `<div class="modal-backdrop" data-action="gallery-preview-close">${galleryPreviewHtml(entry, galleryPreview.text)}</div>`;
+  catalogLayer.querySelector<HTMLElement>('.btn[data-action="gallery-preview-close"]')?.focus();
+}
+
+function closeGalleryPreview(): void {
+  if (!galleryPreview) return;
+  galleryPreview = undefined;
+  renderGalleryPreview();
+}
+
+// Typing in a search box (MCP catalog, skills gallery) redraws only its list, so the box keeps its focus.
+document.addEventListener('input', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.id === 'mcp-catalog-search') {
+    catalog.query = (target as HTMLInputElement).value;
+    renderCatalogList();
+  } else if (target.id === 'skill-gallery-search') {
+    gallery.query = (target as HTMLInputElement).value;
+    renderGalleryList();
+  } else if (target.id === 'browser-url') {
+    browserView.typing = true;
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && catalogForm && !modalOpen()) {
+    e.preventDefault();
+    closeCatalogForm();
+  }
+  if (e.key === 'Escape' && galleryPreview && !modalOpen()) {
+    e.preventDefault();
+    closeGalleryPreview();
+  }
+});
+
 /** The … menu of an account row in the sidebar, under its button. */
 function openAccountMenu(button: HTMLElement): void {
   closeSessionMenu();
@@ -442,16 +568,19 @@ function radarAvailable(): boolean {
   return !!el.radarPanel && !!radar;
 }
 
-/** The side panel shows while the task has a plan or changes, or while the user keeps Files or Radar open in it. */
+/** The side panel shows while the task has a plan or changes, or while the user keeps Files, Browser or Radar open in it. */
 function asideOpen(): boolean {
   return (
-    workView() && !ui.asideClosed && (asideContent() || (radarAvailable() && ui.asideTab === 'radar') || (filesAvailable() && ui.asideTab === 'files'))
+    workView() &&
+    !ui.asideClosed &&
+    (asideContent() || (radarAvailable() && ui.asideTab === 'radar') || (filesAvailable() && ui.asideTab === 'files') || (browserAvailable() && ui.asideTab === 'browser'))
   );
 }
 
-/** Its tab: Files or Radar when chosen, or one of them when the task has nothing to show. */
+/** Its tab: Files, Browser or Radar when chosen, or one of them when the task has nothing to show. */
 function shownTab(): AsideTab {
   if (filesAvailable() && ui.asideTab === 'files') return 'files';
+  if (browserAvailable() && ui.asideTab === 'browser') return 'browser';
   if (radarAvailable() && (ui.asideTab === 'radar' || !asideContent())) return 'radar';
   return !asideContent() && filesAvailable() ? 'files' : 'task';
 }
@@ -479,6 +608,12 @@ function updateAside(): void {
     el.filesPanel.hidden = el.aside.hidden || tab !== 'files';
     if (wasHidden && !el.filesPanel.hidden) showFilesPanel();
   }
+  el.aside.classList.toggle('wide', tab === 'browser');
+  if (el.browserPanel) {
+    el.browserPanel.hidden = el.aside.hidden || tab !== 'browser';
+    if (!el.browserPanel.hidden) drawBrowser();
+    syncBrowserView();
+  }
   renderAsideTabs();
   // The top bar offers to show or hide it once there is something in it.
   if (asideContent() !== asideHadContent) {
@@ -489,11 +624,11 @@ function updateAside(): void {
 
 function renderAsideTabs(): void {
   if (!el.asideTabs) return;
-  el.asideTabs.hidden = !radarAvailable() && !filesAvailable();
+  el.asideTabs.hidden = !radarAvailable() && !filesAvailable() && !browserAvailable();
   if (el.asideTabs.hidden) return;
   el.asideTabs.setAttribute('aria-label', t('Side panel'));
   const current = shownTab();
-  const panels: Record<AsideTab, string> = { task: 'aside-task', files: 'files-panel', radar: 'radar-panel' };
+  const panels: Record<AsideTab, string> = { task: 'aside-task', files: 'files-panel', browser: 'browser-panel', radar: 'radar-panel' };
   const tab = (id: AsideTab, label: string, extra: string, disabled: boolean, name?: string) =>
     `<button role="tab" id="aside-tab-${id}" aria-selected="${current === id}" aria-controls="${panels[id]}" tabindex="${current === id ? 0 : -1}" class="${
       current === id ? 'on' : ''
@@ -502,6 +637,7 @@ function renderAsideTabs(): void {
   const html =
     tab('task', escapeHtml(t('Plan and changes')), changes ? `<span class="count">${changes}</span>` : '', !asideContent()) +
     (filesAvailable() ? tab('files', `${icon('files')}<span>${escapeHtml(t('Files'))}</span>`, '', false) : '') +
+    (browserAvailable() ? tab('browser', `${icon('globe')}<span>${escapeHtml(t('Browser'))}</span>`, browserView.state.control ? '<span class="browser-dot" aria-hidden="true"></span>' : '', false) : '') +
     (radarAvailable() ? tab('radar', `${icon('radar')}<span>Radar</span>`, radarBadge(radar), false, radar?.pending ? radarLabel('Radar', radar) : undefined) : '');
   // Rebuilt only when it changed, so a focused tab keeps its focus.
   if (el.asideTabs.dataset.html !== html) {
@@ -514,6 +650,7 @@ function renderAsideTabs(): void {
 function showAsideTab(tab: AsideTab, focus = false): void {
   if (tab === 'radar' && !radarAvailable()) return;
   if (tab === 'files' && !filesAvailable()) return;
+  if (tab === 'browser' && !browserAvailable()) return;
   if (tab === 'task' && !asideContent()) return;
   if (!workView()) {
     ui.view = 'chat';
@@ -704,8 +841,8 @@ function toggleAside(): void {
   if (asideOpen()) ui.asideClosed = true;
   else {
     ui.asideClosed = false;
-    // Nothing of the task to show: open on Radar, or on Files when that was the tab open last.
-    if (!asideContent() && !(ui.asideTab === 'files' && filesAvailable())) {
+    // Nothing of the task to show: open on Radar, or on Files or Browser when that was the tab open last.
+    if (!asideContent() && !(ui.asideTab === 'files' && filesAvailable()) && !(ui.asideTab === 'browser' && browserAvailable())) {
       if (radarAvailable()) ui.asideTab = 'radar';
       else if (filesAvailable()) ui.asideTab = 'files';
     }
@@ -727,7 +864,7 @@ el.asideTabs?.addEventListener('keydown', (e) => {
 });
 
 function asideTabOf(value: string | undefined): AsideTab {
-  return value === 'radar' || value === 'files' ? value : 'task';
+  return value === 'radar' || value === 'files' || value === 'browser' ? value : 'task';
 }
 
 /**
@@ -975,6 +1112,205 @@ const tree = {
 function filesAvailable(): boolean {
   return layout === 'ide' && !!window.orkaEditor && !!el.filesPanel && !!config?.workspaceOpen && !!config.folder;
 }
+
+// ------------------------------------------------------------------ Browser tab (desktop IDE layout)
+
+type PageInput = Extract<FromWebview, { type: 'browserInput' }>['input'];
+
+/**
+ * The Browser tab: the session's browser as the app last reported it, the session whose frames the
+ * page asked for ('' before the page knows its session), the dev servers found, the keys held down
+ * while the user has the page (let go before control goes back), and whether the user is typing an
+ * address (the app's updates leave it alone meanwhile).
+ */
+const browserView = {
+  state: NO_BROWSER as BrowserStateView,
+  streaming: undefined as string | undefined,
+  servers: undefined as DevServerView[] | 'looking' | undefined,
+  held: new Map<string, PageInput>(),
+  typing: false,
+  lastMove: 0,
+};
+
+/** The Browser tab: the desktop app's IDE layout with a folder open (each session has its browser). */
+function browserAvailable(): boolean {
+  return layout === 'ide' && !!el.browserPanel && !!config?.browserPanel && !!config.workspaceOpen;
+}
+
+/** The tab came into view: drawn once (again after a language change), then updated in place. */
+function drawBrowser(): void {
+  const panel = el.browserPanel;
+  if (!panel) return;
+  if (panel.dataset.drawn !== getLocale()) {
+    panel.dataset.drawn = getLocale();
+    panel.setAttribute('aria-labelledby', 'aside-tab-browser');
+    panel.innerHTML = browserPanelHtml();
+    // Dev servers on this machine are offered at once (the app only looks at local ports and its own processes).
+    if (browserView.servers === undefined) {
+      browserView.servers = 'looking';
+      post({ type: 'browserServers' });
+    }
+    renderBrowserServers();
+  }
+  renderBrowser();
+}
+
+function renderBrowser(): void {
+  const panel = el.browserPanel;
+  if (panel?.dataset.drawn) browserUpdate(panel, browserView.state, browserView.typing);
+  renderAsideTabs();
+}
+
+function renderBrowserServers(): void {
+  const box = document.getElementById('browser-servers');
+  if (!box) return;
+  const servers = browserView.servers;
+  box.hidden = servers === undefined;
+  box.innerHTML =
+    servers === 'looking' ? `<span class="spinner small"></span><span class="muted">${escapeHtml(t('Looking for dev servers…'))}</span>` : servers ? browserServersHtml(servers) : '';
+}
+
+/** Frames come only while the tab shows and the window is in sight; a tab that goes out of sight gives the page back. */
+function syncBrowserView(): void {
+  const panel = el.browserPanel;
+  const shown = !!panel && !panel.hidden && browserAvailable();
+  if (!shown && browserView.state.control) setBrowserControl(false);
+  const want = shown && document.visibilityState !== 'hidden' ? (shownSessionId() ?? '') : undefined;
+  if (want === browserView.streaming) return;
+  const was = browserView.streaming;
+  browserView.streaming = want;
+  // Another session's panel was hidden by the app when that session went out of sight.
+  if (was !== undefined && was === (shownSessionId() ?? '')) post({ type: 'browserView', visible: false });
+  if (want !== undefined) post({ type: 'browserView', visible: true });
+}
+
+/** Another session is shown: nothing of the last one's browser stays. */
+function resetBrowser(): void {
+  browserView.state = NO_BROWSER;
+  browserView.streaming = undefined;
+  browserView.servers = undefined;
+  browserView.held.clear();
+  browserView.typing = false;
+  const panel = el.browserPanel;
+  if (!panel) return;
+  delete panel.dataset.drawn;
+  panel.innerHTML = '';
+}
+
+function openBrowserUrl(): void {
+  const box = document.getElementById('browser-url') as HTMLInputElement | null;
+  const url = box?.value.trim();
+  if (!url) return;
+  browserView.typing = false;
+  // What the user typed is the user's own choice: the app opens it without asking.
+  post({ type: 'browserOpen', url });
+}
+
+/** Take over (the page gets the keyboard focus) or give back (keys and mouse buttons still held are let go first). */
+function setBrowserControl(take: boolean): void {
+  if (!take) {
+    for (const input of browserView.held.values()) {
+      if (input.kind === 'key') post({ type: 'browserInput', input: { ...input, action: 'up', text: undefined } });
+      else if (input.kind === 'mouse') post({ type: 'browserInput', input: { ...input, action: 'up' } });
+    }
+    browserView.held.clear();
+  }
+  post({ type: 'browserControl', take });
+  if (take) document.getElementById('browser-screen')?.focus();
+}
+
+el.browserPanel?.addEventListener('keydown', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.id === 'browser-url') {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      openBrowserUrl();
+    } else if (e.key === 'Escape' && browserView.typing) {
+      e.preventDefault();
+      e.stopPropagation();
+      browserView.typing = false;
+      renderBrowser();
+    }
+    return;
+  }
+  if (target.id !== 'browser-screen' || !browserView.state.control || e.isComposing) return;
+  // Every key goes to the page (none to Orka or the window), except Shift+Escape, which gives it back.
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === 'Escape' && e.shiftKey) {
+    setBrowserControl(false);
+    el.browserPanel?.querySelector<HTMLElement>('[data-action="browser-control"]')?.focus();
+    return;
+  }
+  const input = keyInput(e, 'down');
+  browserView.held.set(e.code || e.key, input);
+  post({ type: 'browserInput', input });
+});
+
+el.browserPanel?.addEventListener('keyup', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.id !== 'browser-screen' || !browserView.state.control) return;
+  e.preventDefault();
+  e.stopPropagation();
+  browserView.held.delete(e.code || e.key);
+  post({ type: 'browserInput', input: keyInput(e, 'up') });
+});
+
+/** A mouse event over the shown page, while the user has it. */
+function pageMouse(e: MouseEvent, action: 'move' | 'down' | 'up'): void {
+  const frame = document.getElementById('browser-frame') as HTMLImageElement | null;
+  if (!browserView.state.control || !frame || frame.hidden) return;
+  const at = framePoint(frame, e);
+  if (!at) return;
+  e.preventDefault();
+  if (action === 'move') {
+    // At most one move every 40 ms: the page needs no more to follow the pointer.
+    const now = performance.now();
+    if (now - browserView.lastMove < 40) return;
+    browserView.lastMove = now;
+    post({ type: 'browserInput', input: { kind: 'mouse', action, x: at.x, y: at.y, mods: modifiers(e) } });
+    return;
+  }
+  if (action === 'down') document.getElementById('browser-screen')?.focus();
+  const input: PageInput = { kind: 'mouse', action, x: at.x, y: at.y, button: e.button, clicks: Math.max(1, e.detail || 1), mods: modifiers(e) };
+  // A button held down is let go in the page too, wherever it is released (see the mouseup below).
+  if (action === 'down') browserView.held.set(`mouse:${e.button}`, input);
+  else browserView.held.delete(`mouse:${e.button}`);
+  post({ type: 'browserInput', input });
+}
+
+// A button pressed on the page and released outside it (past the frame's edge, over the address
+// bar, outside the window) is released in the page at the nearest point of the frame.
+document.addEventListener('mouseup', (e) => {
+  const down = browserView.held.get(`mouse:${e.button}`);
+  if (!down || down.kind !== 'mouse') return;
+  browserView.held.delete(`mouse:${e.button}`);
+  const frame = document.getElementById('browser-frame') as HTMLImageElement | null;
+  const at = (frame && !frame.hidden && framePoint(frame, e, true)) || down;
+  post({ type: 'browserInput', input: { ...down, action: 'up', x: at.x, y: at.y, mods: modifiers(e) } });
+});
+
+el.browserPanel?.addEventListener('mousedown', (e) => pageMouse(e, 'down'));
+el.browserPanel?.addEventListener('mouseup', (e) => pageMouse(e, 'up'));
+el.browserPanel?.addEventListener('mousemove', (e) => pageMouse(e, 'move'));
+el.browserPanel?.addEventListener('contextmenu', (e) => {
+  if (browserView.state.control && (e.target as HTMLElement).closest('#browser-screen')) e.preventDefault();
+});
+el.browserPanel?.addEventListener(
+  'wheel',
+  (e) => {
+    const frame = document.getElementById('browser-frame') as HTMLImageElement | null;
+    if (!browserView.state.control || !frame || frame.hidden) return;
+    const at = framePoint(frame, e);
+    if (!at) return;
+    e.preventDefault();
+    // Lines or pages scroll as many pixels as a line (40) or a page would.
+    const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
+    post({ type: 'browserInput', input: { kind: 'wheel', x: at.x, y: at.y, dx: e.deltaX * scale, dy: e.deltaY * scale, mods: modifiers(e) } });
+  },
+  { passive: false },
+);
+document.addEventListener('visibilitychange', syncBrowserView);
 
 function sameFolder(a: string | undefined, b: string | undefined): boolean {
   const norm = (p: string | undefined) => (p ?? '').replace(/[\\/]+$/, '').toLowerCase();
@@ -1587,17 +1923,11 @@ function renderChips(): void {
 
 // ------------------------------------------------------------------ composer: images
 
-const MAX_IMAGES = 5;
-/** Long edge sent to the model: larger images cost more tokens without helping it see more. */
-const MAX_IMAGE_EDGE = 1568;
-
+/** Attach images (picked, pasted or dropped): PNG, JPEG, GIF or WebP, scaled down here; a notice for each one left out. */
 async function addImages(files: File[]): Promise<void> {
-  const room = MAX_IMAGES - composer.images.length;
-  if (room <= 0) {
-    onEvent({ type: 'notice', level: 'warning', message: t('At most {n} images per message.', { n: MAX_IMAGES }) });
-    return;
-  }
-  for (const file of files.filter((f) => f.type.startsWith('image/')).slice(0, room)) {
+  const { accepted, notices } = pickImages(files, composer.images.length);
+  for (const message of notices) onEvent({ type: 'notice', level: 'warning', message });
+  for (const file of accepted) {
     try {
       const bitmap = await createImageBitmap(file);
       const full = encodeImage(bitmap, MAX_IMAGE_EDGE);
@@ -1614,10 +1944,10 @@ async function addImages(files: File[]): Promise<void> {
 
 /** Scale down to `edge` and encode: PNG keeps screenshots sharp; JPEG when PNG would be large. */
 function encodeImage(bitmap: ImageBitmap, edge: number, force?: 'image/jpeg'): { mediaType: ImageAttachment['mediaType']; data: string; url: string } {
-  const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+  const size = fitWithin(bitmap.width, bitmap.height, edge);
   const canvas = document.createElement('canvas');
-  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+  canvas.width = size.width;
+  canvas.height = size.height;
   const g = canvas.getContext('2d')!;
   if (force === 'image/jpeg') {
     g.fillStyle = '#ffffff';
@@ -1648,6 +1978,7 @@ el.composer.addEventListener('dragover', (e) => {
 el.composer.addEventListener('dragleave', () => el.composer.classList.remove('drop'));
 el.composer.addEventListener('drop', (e) => {
   el.composer.classList.remove('drop');
+  // Images only (other files are left to the editor); an image type Orka cannot send gets a notice.
   const files = [...(e.dataTransfer?.files ?? [])].filter((f) => f.type.startsWith('image/'));
   if (!files.length) return;
   e.preventDefault();
@@ -1840,7 +2171,7 @@ document.addEventListener(
   (e) => {
     if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || !session.running || !workView()) return;
     const overlay =
-      modalOpen() || ui.modelMenuOpen || ui.agentsOpen || !!sessionMenu || !!addAccount || (!!el.composerMenu && !el.composerMenu.hidden) || (!!composer.suggest && !el.suggest.hidden);
+      modalOpen() || ui.modelMenuOpen || ui.agentsOpen || !!sessionMenu || !!addAccount || !!catalogForm || !!galleryPreview || (!!el.composerMenu && !el.composerMenu.hidden) || (!!composer.suggest && !el.suggest.hidden);
     if (overlay) return;
     const target = e.target;
     if (target !== el.input && target !== document.body && !(target instanceof Node && el.transcript.contains(target))) return;
@@ -1938,6 +2269,10 @@ document.addEventListener('click', (e) => {
     case 'preview':
       post({ type: 'previewApproval', id: id! });
       break;
+    case 'cancel-tool':
+      (target as HTMLButtonElement).disabled = true;
+      post({ type: 'cancelTool', id: id! });
+      break;
     case 'diff':
       post({ type: 'openDiff', path: path! });
       break;
@@ -1962,6 +2297,42 @@ document.addEventListener('click', (e) => {
     case 'revert-hunk':
       target.setAttribute('disabled', '');
       post({ type: 'revertHunk', path: path!, index: Number(target.dataset.index), ...hunkHeader(target) });
+      break;
+    case 'review-start':
+      openReview();
+      break;
+    case 'review-close':
+      closeReview();
+      break;
+    case 'review-next':
+      reviewStep(1);
+      break;
+    case 'review-prev':
+      reviewStep(-1);
+      break;
+    case 'review-keep':
+      reviewDecide('kept');
+      break;
+    case 'review-revert':
+      reviewDecide('reverted');
+      break;
+    case 'review-comment':
+      if (review && currentPart(review)) {
+        review.commenting = true;
+        renderChanges();
+      }
+      break;
+    case 'review-comment-save':
+      saveReviewComment();
+      break;
+    case 'review-comment-cancel':
+      if (review) {
+        review.commenting = false;
+        renderChanges();
+      }
+      break;
+    case 'review-feedback':
+      reviewToComposer();
       break;
     case 'accept-all':
       post({ type: 'acceptAll' });
@@ -2202,6 +2573,27 @@ document.addEventListener('click', (e) => {
       break;
     case 'open-radar':
       showAsideTab('radar', true);
+      break;
+    case 'browser-nav':
+      if (target.dataset.nav === 'back' || target.dataset.nav === 'forward' || target.dataset.nav === 'reload') post({ type: 'browserNav', action: target.dataset.nav });
+      break;
+    case 'browser-go':
+      openBrowserUrl();
+      break;
+    case 'browser-open-server':
+      if (target.dataset.url) {
+        const box = document.getElementById('browser-url') as HTMLInputElement | null;
+        if (box) box.value = target.dataset.url;
+        openBrowserUrl();
+      }
+      break;
+    case 'browser-servers':
+      browserView.servers = 'looking';
+      renderBrowserServers();
+      post({ type: 'browserServers' });
+      break;
+    case 'browser-control':
+      setBrowserControl(!browserView.state.control);
       break;
     case 'radar-switch':
       // Turning Radar on is this click; the panel named the sites it contacts before it.
@@ -2457,6 +2849,97 @@ document.addEventListener('click', (e) => {
     case 'edit-mcp':
       post({ type: 'editMcpServers' });
       break;
+    case 'mcp-limits': {
+      const name = target.dataset.name!;
+      if (mcpLimitsOpen.has(name)) mcpLimitsOpen.delete(name);
+      else mcpLimitsOpen.add(name);
+      renderSettings();
+      break;
+    }
+    case 'mcp-tools-all':
+    case 'mcp-tools-none': {
+      const form = serverLimitsForm(document, target.dataset.name!);
+      for (const box of form?.querySelectorAll<HTMLInputElement>('input[data-mcp-tool]') ?? []) box.checked = action === 'mcp-tools-all';
+      break;
+    }
+    case 'mcp-limits-save': {
+      const name = target.dataset.name!;
+      const form = serverLimitsForm(document, name);
+      if (!form) break;
+      const server = config?.mcp.servers.find((s) => s.name === name);
+      post({ type: 'setMcpServerLimits', name, limits: readServerLimitsForm(form, server?.limits) });
+      mcpLimitsOpen.delete(name);
+      renderSettings();
+      break;
+    }
+    case 'mcp-limits-reset':
+      post({ type: 'setMcpServerLimits', name: target.dataset.name!, limits: {} });
+      mcpLimitsOpen.delete(target.dataset.name!);
+      renderSettings();
+      break;
+    case 'mcp-view':
+      mcpView = target.dataset.view === 'catalog' ? 'catalog' : 'servers';
+      renderSettings();
+      break;
+    case 'catalog-details':
+      if (catalog.open.has(id!)) catalog.open.delete(id!);
+      else catalog.open.add(id!);
+      renderCatalogList();
+      break;
+    case 'catalog-add': {
+      const entry = catalogEntry(id);
+      if (entry?.fields.length) openCatalogForm(entry.id);
+      else if (entry) addFromCatalog(entry.id);
+      break;
+    }
+    case 'catalog-link':
+      post({ type: 'openMcpCatalogLink', id: id!, link: target.dataset.link === 'setup' ? 'setup' : target.dataset.link === 'field' ? 'field' : 'homepage', field: target.dataset.field });
+      break;
+    case 'catalog-form-submit': {
+      const entry = catalogEntry(id);
+      if (!entry) break;
+      const values = catalogValues();
+      const missing = missingFields(entry, values);
+      if (missing.length) {
+        openCatalogForm(entry.id, missing);
+        break;
+      }
+      closeCatalogForm();
+      addFromCatalog(entry.id, values);
+      break;
+    }
+    case 'skills-view':
+      skillsView = target.dataset.view === 'gallery' ? 'gallery' : 'mine';
+      renderSettings();
+      break;
+    case 'gallery-details':
+      if (gallery.open.has(id!)) gallery.open.delete(id!);
+      else gallery.open.add(id!);
+      renderGalleryList();
+      break;
+    case 'gallery-install':
+      if (galleryEntry(id)) post({ type: 'installGallerySkill', id: id! });
+      break;
+    case 'gallery-remove':
+      post({ type: 'removeGallerySkill', name: name! });
+      break;
+    case 'gallery-source':
+      if (galleryEntry(id)) post({ type: 'openGallerySkillSource', id: id! });
+      break;
+    case 'gallery-preview':
+      if (galleryEntry(id)?.kind !== 'bundled') break;
+      galleryPreview = { id: id! };
+      renderGalleryPreview();
+      post({ type: 'previewGallerySkill', id: id! });
+      break;
+    case 'gallery-preview-close':
+      // The backdrop closes the preview only when clicked itself, not through the dialog.
+      if (target === clicked || target.tagName === 'BUTTON') closeGalleryPreview();
+      break;
+    case 'catalog-form-close':
+      // The backdrop closes the form only when clicked itself, not through the form.
+      if (target === clicked || target.tagName === 'BUTTON') closeCatalogForm();
+      break;
     case 'reload-skills':
       post({ type: 'reloadSkills' });
       break;
@@ -2506,6 +2989,17 @@ document.addEventListener('change', (e) => {
       if (go) post({ type: 'selectFolder', path: folder });
       else target.value = config?.folder ?? '';
     });
+    return;
+  }
+  if (target instanceof HTMLSelectElement && target.id === 'mcp-catalog-category') {
+    catalog.category = target.value;
+    renderCatalogList();
+    return;
+  }
+  if (target instanceof HTMLSelectElement && (target.id === 'skill-gallery-category' || target.id === 'skill-gallery-license')) {
+    if (target.id === 'skill-gallery-category') gallery.category = target.value;
+    else gallery.license = target.value === 'open' || target.value === 'other' ? target.value : '';
+    renderGalleryList();
     return;
   }
   if (target instanceof HTMLInputElement && target.dataset.mcp) {
@@ -2601,6 +3095,17 @@ function phaseLabel(phase: AgentPhase): string {
   return labels[phase];
 }
 
+/**
+ * What the agent does now: why it waits when that says more than the phase (starting the CLI, a
+ * tool, an approval, a retry's countdown, compacting, a sub-agent), else the phase.
+ */
+function statusHtml(phase: AgentPhase): string {
+  const wait = session.running ? session.wait : undefined;
+  if (!wait || wait.reason === 'thinking') return `<span class="phase-label">${escapeHtml(phaseLabel(phase))}</span>`;
+  scheduleWaitTicks();
+  return waitHtml(wait, 'phase-label');
+}
+
 function modeLabel(mode: ConfigView['mode']): string {
   return { ask: t('Ask'), balanced: t('Balanced'), autonomous: t('Autonomous') }[mode];
 }
@@ -2673,7 +3178,7 @@ function renderTopbar(): void {
   const main = config?.main.effective;
   const warn = main && !providerView(main.provider)?.ready;
   el.topbar.innerHTML = `
-    <div class="phase" data-phase="${attr(phase)}"><span class="dot"></span><span class="phase-label">${escapeHtml(phaseLabel(phase))}</span></div>
+    <div class="phase" data-phase="${attr(phase)}"><span class="dot"></span>${statusHtml(phase)}</div>
     ${folderButton}
     ${
       main
@@ -2707,7 +3212,7 @@ function ideTopbar(phase: AgentPhase, folderButton: string): string {
     ? `<button class="usage-btn${ui.usageOpen ? ' open' : ''}" data-action="toggle-usage" title="${attr(t('Token usage per agent'))}">${escapeHtml(t('{n} tokens', { n: fmt(tokens) }))}</button>`
     : '';
   const open = asideOpen();
-  const asideLabel = radarAvailable() || filesAvailable()
+  const asideLabel = radarAvailable() || filesAvailable() || browserAvailable()
     ? open
       ? t('Hide the side panel')
       : t('Show the side panel')
@@ -2718,7 +3223,7 @@ function ideTopbar(phase: AgentPhase, folderButton: string): string {
   const radarNew = !!radar?.pending && !(open && shownTab() === 'radar');
   const radarDot = radarNew ? `<span class="radar-dot" aria-hidden="true"></span>` : '';
   const aside =
-    asideContent() || radarAvailable() || filesAvailable()
+    asideContent() || radarAvailable() || filesAvailable() || browserAvailable()
       ? `<button class="icon-btn aside-btn${open ? ' on' : ''}" data-action="toggle-aside" aria-label="${attr(radarNew ? radarLabel(asideLabel, radar) : asideLabel)}" aria-expanded="${open}" title="${attr(`${asideLabel} (Ctrl+Alt+B)`)}">${icon('aside')}${
           session.changes.length ? `<span class="count">${Number(session.changes.length) || 0}</span>` : ''
         }${radarDot}</button>`
@@ -2726,7 +3231,7 @@ function ideTopbar(phase: AgentPhase, folderButton: string): string {
   // An open file: a switch between it and the conversation.
   const views = editor ? viewSwitchHtml({ editorShown: ui.view === 'editor', path: editor.path, dirty: editor.dirty }) : '';
   return `<div class="phase session-head" data-phase="${attr(phase)}"><span class="dot"></span><span class="session-title" title="${attr(title)}">${escapeHtml(title)}</span>${
-    session.running ? `<span class="phase-label">${escapeHtml(phaseLabel(phase))}</span>` : ''
+    session.running ? statusHtml(phase) : ''
   }</div>${views}${folderButton}${usage}${aside}`;
 }
 
@@ -3359,11 +3864,29 @@ function providersTab(s: SettingsView): string {
     <p class="footnote">${escapeHtml(t("Keys are kept in VS Code's secret storage on this machine and are only sent to their provider."))}</p>`;
 }
 
+/** My skills or Gallery (skills to add from Orka's list). */
+function skillsViewSwitch(): string {
+  const button = (view: 'mine' | 'gallery', label: string) =>
+    `<button class="seg-btn" role="radio" aria-checked="${skillsView === view}" data-action="skills-view" data-view="${view}">${escapeHtml(label)}</button>`;
+  return `<div class="seg mcp-view" role="radiogroup" aria-label="Skills">${button('mine', t('My skills'))}${button('gallery', t('Gallery'))}</div>`;
+}
+
+/** The gallery's list alone (search and filter changes), so the search box keeps its focus. */
+function renderGalleryList(): void {
+  const list = document.getElementById('skill-gallery-list');
+  if (list && config) list.innerHTML = galleryListHtml(gallery, config.skills);
+}
+
 function skillsTab(): string {
   if (!config) return '';
+  if (skillsView === 'gallery') return `${skillsViewSwitch()}${galleryHtml(gallery, config.skills)}`;
   const on = config.skillsEnabled;
   const tag = (s: SkillView) =>
-    s.source === 'builtin' ? `<span class="tag">${escapeHtml(t('built-in'))}</span>` : `<span class="tag sub">${escapeHtml(s.overridesBuiltin ? t('yours · replaces built-in') : t('yours'))}</span>`;
+    s.source === 'builtin'
+      ? `<span class="tag">${escapeHtml(t('built-in'))}</span>`
+      : s.origin
+        ? `<span class="tag sub" title="${attr(originLabel(s.origin))}">${escapeHtml(t('from the gallery'))}</span>`
+        : `<span class="tag sub">${escapeHtml(s.overridesBuiltin ? t('yours · replaces built-in') : t('yours'))}</span>`;
   const rows = config.skills
     .map(
       (s) => `<div class="skill-row${s.enabled && on ? '' : ' off'}">
@@ -3373,8 +3896,10 @@ function skillsTab(): string {
         <button class="link" data-action="use-skill" data-name="${attr(s.name)}" title="${attr(t('Use it for your next request'))}">/${escapeHtml(s.name)}</button>
         <button class="link" data-action="open-skill" data-name="${attr(s.name)}">${escapeHtml(t('Open'))}</button>
         ${s.source === 'builtin' ? `<button class="link" data-action="customize-skill" data-name="${attr(s.name)}" title="${attr(t('Copy it to your skills folder and edit the copy'))}">${escapeHtml(t('Customize'))}</button>` : ''}
+        ${s.origin ? `<button class="link" data-action="gallery-remove" data-name="${attr(s.name)}">${escapeHtml(t('Remove'))}</button>` : ''}
       </div>
       <div class="muted small">${escapeHtml(s.description)}</div>
+      ${s.origin ? `<div class="mono muted small ellipsis">${escapeHtml(originLabel(s.origin))}</div>` : ''}
     </div>`,
     )
     .join('');
@@ -3384,6 +3909,7 @@ function skillsTab(): string {
         .join('')}</div>`
     : '';
   return `
+    ${skillsViewSwitch()}
     <div class="card">
       <div class="card-head">${icon('skill', 'sub')}<strong>Skills</strong><span class="spacer"></span>
         <label class="switch"><input type="checkbox" data-setting="skills.enabled"${on ? ' checked' : ''}> ${escapeHtml(on ? t('On') : t('Off'))}</label></div>
@@ -3391,7 +3917,8 @@ function skillsTab(): string {
         t('Skills are expert playbooks (Unity, debugging, testing, security…). Agents load the ones a task needs; type /name to use one yourself. They are global: the same skills in every project.'),
       )}</div>
       <div class="key-row">
-        <button class="btn primary" data-action="new-skill">${icon('plus')}${escapeHtml(t('New skill'))}</button>
+        <button class="btn primary" data-action="skills-view" data-view="gallery">${icon('plus')}${escapeHtml(t('Add from the gallery'))}</button>
+        <button class="btn" data-action="new-skill">${icon('plus')}${escapeHtml(t('New skill'))}</button>
         <button class="btn" data-action="open-skills-folder">${icon('folder')}${escapeHtml(t('Open folder'))}</button>
         <button class="icon-btn" data-action="reload-skills" aria-label="${attr(t('Reload'))}" title="${attr(t('Reload'))}">${icon('refresh')}</button>
       </div>
@@ -3401,14 +3928,28 @@ function skillsTab(): string {
     <p class="footnote">${escapeHtml(t('Your skills folder: {path}. A skill is a Markdown file with a name and a description at the top; a file with the name of a built-in skill replaces it.', { path: config.skillsFolder }))}</p>`;
 }
 
+/** Servers (the user's list) or Catalog (Orka's bundled list to add from). */
+function mcpViewSwitch(): string {
+  const button = (view: 'servers' | 'catalog', label: string) =>
+    `<button class="seg-btn" role="radio" aria-checked="${mcpView === view}" data-action="mcp-view" data-view="${view}">${escapeHtml(label)}</button>`;
+  return `<div class="seg mcp-view" role="radiogroup" aria-label="MCP">${button('servers', t('My servers'))}${button('catalog', t('Catalog'))}</div>`;
+}
+
+/** The catalog's list alone (search and filter changes), so the search box keeps its focus. */
+function renderCatalogList(): void {
+  const list = document.getElementById('mcp-catalog-list');
+  if (list && config) list.innerHTML = catalogListHtml(catalog, config.mcp.servers, config.mcp.platform);
+}
+
 function mcpTab(): string {
   if (!config) return '';
   const m = config.mcp;
+  if (mcpView === 'catalog') return `${mcpViewSwitch()}${catalogHtml(catalog, m.servers, m.platform)}`;
   const state = (s: McpServerView) =>
     !s.enabled
       ? statusPill(false, t('Off'))
       : s.state === 'ready'
-        ? statusPill(true, tn('{n} tool', '{n} tools', s.tools))
+        ? statusPill(true, toolCountLabel(s))
         : s.state === 'starting'
           ? `<span class="pill"><span class="spinner small"></span>${escapeHtml(t('Starting'))}</span>`
           : s.state === 'error'
@@ -3421,27 +3962,34 @@ function mcpTab(): string {
         <label class="switch"><input type="checkbox" data-mcp="${attr(s.name)}"${s.enabled ? ' checked' : ''}${m.enabled ? '' : ' disabled'}></label>
         <strong class="mono">${escapeHtml(s.name)}</strong><span class="tag">${escapeHtml(s.transport)}</span>${s.source === 'workspace' ? '<span class="tag sub">.mcp.json</span>' : ''}
         <span class="spacer"></span>${state(s)}
+        <button class="link" data-action="mcp-limits" data-name="${attr(s.name)}" aria-expanded="${mcpLimitsOpen.has(s.name)}">${escapeHtml(t('Limits'))}${
+          Object.keys(s.limits ?? {}).length ? ' •' : ''
+        }</button>
       </div>
       <div class="mono muted small ellipsis" title="${attr(s.target)}">${escapeHtml(s.target)}</div>
       ${s.error && s.enabled ? `<div class="hint warn">${icon('warn')}<span>${escapeHtml(s.error)}</span></div>` : ''}
+      ${mcpLimitsOpen.has(s.name) ? serverLimitsHtml(s, m.limits) : ''}
     </div>`,
     )
     .join('');
   return `
+    ${mcpViewSwitch()}
     <div class="card">
       <div class="card-head">${icon('plug', 'sub')}<strong>MCP</strong><span class="spacer"></span>
         <label class="switch"><input type="checkbox" data-setting="mcp.enabled"${m.enabled ? ' checked' : ''}> ${escapeHtml(m.enabled ? t('On') : t('Off'))}</label></div>
       <div class="card-text">${escapeHtml(
         t('MCP servers give the agents tools that work outside the project: the Unity Editor, Blender, a browser, a database… They start when a task needs them. Tools a server marks as destructive always ask first.'),
       )}</div>
-      <div class="key-row">
-        <button class="btn primary" data-action="import-mcp">${escapeHtml(t('Import from Claude Code'))}</button>
+      <div class="key-row wrap">
+        <button class="btn primary" data-action="mcp-view" data-view="catalog">${icon('plus')}${escapeHtml(t('Add from catalog'))}</button>
+        <button class="btn" data-action="import-mcp">${escapeHtml(t('Import from Claude Code'))}</button>
         <button class="btn" data-action="edit-mcp">${escapeHtml(t('Edit list'))}</button>
         <button class="icon-btn" data-action="restart-mcp" aria-label="${attr(t('Restart servers'))}" title="${attr(t('Restart servers'))}">${icon('refresh')}</button>
       </div>
     </div>
-    <div class="card skills-list">${rows || `<p class="footnote">${escapeHtml(t('No MCP servers yet. Import yours from Claude Code, or add them to the list (settings.json).'))}</p>`}</div>
-    <p class="footnote">${escapeHtml(t('A server is a command (stdio) or a URL (HTTP). A .mcp.json in the project folder is used after you allow it once.'))}</p>`;
+    <div class="card skills-list">${rows || `<p class="footnote">${escapeHtml(t('No MCP servers yet. Add one from the catalog, import yours from Claude Code, or add them to the list (settings.json).'))}</p>`}</div>
+    <p class="footnote">${escapeHtml(t('A server is a command (stdio) or a URL (HTTP). A .mcp.json in the project folder is used after you allow it once.'))}</p>
+    ${globalLimitsHtml(m.limits)}`;
 }
 
 function controlTab(s: SettingsView): string {
@@ -3494,6 +4042,9 @@ function controlTab(s: SettingsView): string {
           : t('Files changed by terminal commands (npm install, generators, formatters) join the Changes list and can be reverted. Uses a private snapshot, never your own git repository.'),
       )}</span></span></label>
       <div class="row"><span class="grow">${escapeHtml(t('Max steps per request'))}</span><input class="num" type="number" min="1" max="500" data-type="int" data-setting="maxIterations" value="${attr(String(s.maxIterations))}"></div>
+      <div class="row"><span class="grow">${escapeHtml(t('Retries after a connection or server error'))}<br><span class="muted small">${escapeHtml(
+        t('A dropped connection, a server error, an overloaded model or a short rate limit is tried again after a growing wait. 0 = never.'),
+      )}</span></span><input class="num" type="number" min="0" max="10" data-type="int" data-setting="maxRetries" value="${attr(String(s.maxRetries))}"></div>
       <div class="row"><span class="grow">${escapeHtml(t('Token budget per request'))}<br><span class="muted small">${escapeHtml(
         t('Pauses the request when all agents together used this many new tokens (cache reads not counted). 0 = no limit.'),
       )}</span></span><input class="num wide" type="number" min="0" step="50000" data-type="int" data-setting="tokenBudget" value="${attr(String(s.tokenBudget))}"></div>
@@ -3628,8 +4179,12 @@ function aboutCard(app: ConfigView['app']): string {
 function renderSettings(): void {
   el.settings.hidden = ui.view !== 'settings' || !config;
   if (el.settings.hidden || !config) return;
-  // Keep scroll when settings re-render after a change.
+  // Keep scroll when settings re-render after a change, and the catalog's search box its focus and caret.
   const scroll = el.settings.scrollTop;
+  const active = document.activeElement;
+  const search = active instanceof HTMLInputElement && (active.id === 'mcp-catalog-search' || active.id === 'skill-gallery-search') ? active : undefined;
+  const caret = search ? [search.selectionStart, search.selectionEnd] : undefined;
+  const drafts = captureLimitDrafts(el.settings);
   const tabs: Array<[SettingsTab, string]> = [
     ['agents', 'Agents'],
     ['accounts', t('Accounts')],
@@ -3655,7 +4210,13 @@ function renderSettings(): void {
       .map(([id, label]) => `<button role="tab" aria-selected="${ui.tab === id}" class="${ui.tab === id ? 'on' : ''}" data-action="tab" data-tab="${id}">${escapeHtml(label)}</button>`)
       .join('')}</nav>
     <div class="settings-body">${body}</div>`;
+  restoreLimitDrafts(el.settings, drafts);
   el.settings.scrollTop = scroll;
+  const searchAgain = caret && search && document.getElementById(search.id);
+  if (caret && searchAgain instanceof HTMLInputElement) {
+    searchAgain.focus();
+    searchAgain.setSelectionRange(caret[0], caret[1]);
+  }
 }
 
 function renderView(): void {
@@ -3705,21 +4266,120 @@ function renderPlan(): void {
 }
 
 /** In the desktop app's IDE layout the hunks are highlighted and their buttons carry the header; elsewhere they are plain, as always. */
-function changeHunksHtml(change: FileChange): string {
-  const ide = layout === 'ide';
-  const highlight = ide && window.orkaEditor ? (path: string, lines: string[]) => window.orkaEditor?.highlightLines(path, lines) : undefined;
-  return hunksHtml(change, ui.hunks.get(change.absPath), { highlight, withHeader: ide });
+/** The desktop editor's highlighter for changed lines (IDE layout), else none. */
+function changeHighlighter(): ((path: string, lines: string[]) => string[] | undefined) | undefined {
+  return layout === 'ide' && window.orkaEditor ? (path: string, lines: string[]) => window.orkaEditor?.highlightLines(path, lines) : undefined;
 }
+
+function changeHunksHtml(change: FileChange): string {
+  return hunksHtml(change, ui.hunks.get(change.absPath), { highlight: changeHighlighter(), withHeader: layout === 'ide' });
+}
+
+/** Review mode of the Changes panel (features/review.ts), while it is open. */
+let review: ReviewState | undefined;
+
+function renderReview(): void {
+  if (!review) return;
+  syncFiles(review, session.changes);
+  const fetch = hunksToFetch(review);
+  if (fetch) {
+    review.hunks.set(fetch, undefined);
+    post({ type: 'getHunks', path: fetch });
+  }
+  const focused = el.changes.contains(document.activeElement) && document.activeElement?.id !== 'review-comment';
+  el.changes.innerHTML = reviewHtml(review, { highlight: changeHighlighter(), running: session.running });
+  const box = document.getElementById('review-comment') as HTMLTextAreaElement | null;
+  if (box) box.focus();
+  else if (focused) el.changes.querySelector<HTMLElement>('.review')?.focus();
+}
+
+function openReview(): void {
+  review = startReview(session.changes);
+  renderChanges();
+  el.changes.querySelector<HTMLElement>('.review')?.focus();
+}
+
+function closeReview(): void {
+  review = undefined;
+  // With nothing left to list the panel only hides: the review must not stay in it.
+  el.changes.innerHTML = '';
+  renderChanges();
+}
+
+/** The review's comments and decisions go into the message box, after any draft; the user sends them. */
+function reviewToComposer(): void {
+  if (!review) return;
+  el.input.value = appendToDraft(el.input.value, feedbackText(review));
+  closeReview();
+  el.input.dispatchEvent(new Event('input'));
+  el.input.focus();
+}
+
+function reviewDecide(action: 'kept' | 'reverted'): void {
+  if (!review || (action === 'reverted' && session.running)) return;
+  const message = decide(review, action);
+  if (message) post(message);
+  renderChanges();
+}
+
+function reviewStep(direction: 1 | -1): void {
+  if (!review) return;
+  step(review, direction);
+  renderChanges();
+}
+
+function saveReviewComment(): void {
+  const box = document.getElementById('review-comment') as HTMLTextAreaElement | null;
+  if (!review || !box) return;
+  if (addComment(review, box.value)) renderChanges();
+}
+
+// Review keys: n and p step, k keeps, r reverts, c comments, Esc closes (the comment box first).
+// Only while the focus is in the review, outside a text field.
+document.addEventListener('keydown', (e) => {
+  if (!review || modalOpen() || e.ctrlKey || e.metaKey || e.altKey) {
+    if (review && e.key === 'Enter' && (e.ctrlKey || e.metaKey) && (e.target as HTMLElement | null)?.id === 'review-comment') {
+      e.preventDefault();
+      saveReviewComment();
+    }
+    return;
+  }
+  const target = e.target as HTMLElement | null;
+  if (!target || !el.changes.contains(target)) return;
+  if (target.id === 'review-comment') {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      review.commenting = false;
+      renderChanges();
+      el.changes.querySelector<HTMLElement>('.review')?.focus();
+    }
+    return;
+  }
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+  const key = e.key.toLowerCase();
+  if (key === 'escape') closeReview();
+  else if (key === 'n') reviewStep(1);
+  else if (key === 'p') reviewStep(-1);
+  else if (key === 'k') reviewDecide('kept');
+  else if (key === 'r') reviewDecide('reverted');
+  else if (key === 'c' && currentPart(review)) {
+    review.commenting = true;
+    renderChanges();
+  } else return;
+  e.preventDefault();
+});
 
 function renderChanges(): void {
   const changes: FileChange[] = session.changes;
-  el.changes.hidden = !workView() || !changes.length;
+  el.changes.hidden = !workView() || (!changes.length && !review);
   updateAside();
   if (el.changes.hidden) return;
+  if (review) return renderReview();
   const badge = { added: 'A', modified: 'M', deleted: 'D' } as const;
   el.changes.innerHTML = `
     <div class="panel-head">
       <strong>${escapeHtml(t('Changes'))}</strong><span class="muted">${escapeHtml(tn('{n} file', '{n} files', changes.length))}</span><span class="spacer"></span>
+      <button class="link" data-action="review-start" title="${attr(t('Step through the changes part by part: n/p, k keep, r revert, c comment'))}">${escapeHtml(t('Review'))}</button>
       <button class="link" data-action="accept-all" title="${attr(t('Keep all changes'))}">${escapeHtml(t('Accept all'))}</button>
       <button class="link" data-action="revert-all" title="${attr(t('Undo all AI changes'))}">${escapeHtml(t('Revert all'))}</button>
     </div>
@@ -3948,11 +4608,11 @@ const STATUS_ICON: Record<ToolCallView['status'], string> = {
 /** One compact line for a sub-agent's step. */
 function timelineRow(item: Extract<TranscriptItem, { kind: 'tool' }>): string {
   const c = item.call;
-  const summary = c.status === 'error' || c.status === 'denied' ? (c.output ?? '').split('\n')[0] : '';
+  const summary = errorSummary(c);
   return `<div class="step status-${attr(c.status)}" data-id="${attr(item.id)}" data-tool-id="${attr(item.id)}">
     <span class="step-dot"></span><span class="step-title mono" title="${attr(c.title)}">${escapeHtml(c.title)}</span>
     ${summary ? `<span class="step-meta err ellipsis" title="${attr(summary)}">${escapeHtml(summary)}</span>` : ''}
-    <span class="tool-status">${STATUS_ICON[c.status] ?? ''}</span></div>`;
+    ${cancelToolButton(c)}<span class="tool-status">${STATUS_ICON[c.status] ?? ''}</span></div>`;
 }
 
 function renderTool(call: ToolCallView, liveOutput: string, sub?: SubagentView): string {
@@ -3960,11 +4620,15 @@ function renderTool(call: ToolCallView, liveOutput: string, sub?: SubagentView):
   if (call.name === 'run_subagent') return renderSubagent(call, sub);
   if (call.name === 'ask_supervisor') return renderSupervisorQuestion(call);
   const canDiff = call.path && (call.category === 'edit' || call.category === 'delete') && call.status === 'done';
+  // A failed call says why in one line; the full text opens below it.
+  const summary = errorSummary(call);
   const headParts = `
       ${icon(toolIcon(call))}
       <span class="tool-title mono" title="${attr(call.title)}">${escapeHtml(call.title)}</span>
+      ${summary ? `<span class="tool-error ellipsis" title="${attr(summary)}">${escapeHtml(summary)}</span>` : ''}
       ${canDiff ? `<button class="link" data-action="diff" data-path="${attr(call.path!)}">diff</button>` : ''}
       ${call.risk === 'dangerous' ? `<span class="risk">${escapeHtml(t('RISKY'))}</span>` : ''}
+      ${cancelToolButton(call)}
       <span class="tool-status" title="${attr(call.status)}">${STATUS_ICON[call.status] ?? ''}</span>`;
   const head = `<div class="tool-head">${headParts}</div>`;
   const shot = call.image?.startsWith('data:image/') ? `<img class="tool-shot" src="${attr(call.image)}" alt="${attr(t('Screenshot'))}">` : '';
@@ -4033,6 +4697,7 @@ function renderSubagent(call: ToolCallView, sub?: SubagentView): string {
       <span class="sub-name">${escapeHtml(agent)}</span>
       <span class="tool-title" title="${attr(task)}">${escapeHtml(task)}</span>
       ${sub?.model ? `<span class="model-tag" title="${attr(sub.model)}">${escapeHtml(sub.model)}${sub.usage ? ` · ${t('{n} tok', { n: fmt(totalTokens(sub.usage)) })}` : ''}</span>` : ''}
+      ${cancelToolButton(call)}
       <span class="tool-status" title="${attr(call.status)}">${STATUS_ICON[call.status] ?? ''}</span>
     </div>${body}${taskBlock}${report}`;
 }
@@ -4264,6 +4929,7 @@ function onEvent(event: AgentEvent): void {
       renderFilesPanel();
       break;
     case 'phase':
+    case 'wait':
     case 'run_started':
       renderTopbar();
       renderMeta();
@@ -4342,16 +5008,22 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
         swapDraft(before, message.sessionId);
       }
       setSessionId(message.sessionId);
+      // Another session's browser: nothing of the last one stays in the panel.
+      if (message.sessionId !== before) resetBrowser();
       session = message.session;
       document.body.classList.toggle('busy', session.running);
       markRunning();
       config = message.config;
+      // A review belongs to the session and task it started in.
+      if (message.sessionId !== before || message.taskId !== ui.taskId) review = undefined;
       ui.taskId = message.taskId;
       setLocale(config.locale);
       applyAppearance();
       ui.hunks.clear();
       syncFilesFolder();
       renderAll(true);
+      // The Browser tab asks the session shown now for its frames.
+      updateAside();
       if (layout === 'ide') post({ type: 'listSessions' });
       break;
     }
@@ -4378,6 +5050,18 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       renderRadar();
       break;
     }
+    case 'browserState':
+      browserView.state = message.state;
+      if (!message.state.control) browserView.held.clear();
+      renderBrowser();
+      break;
+    case 'browserFrame':
+      if (el.browserPanel && !el.browserPanel.hidden) browserFrame(el.browserPanel, message.data);
+      break;
+    case 'browserServers':
+      browserView.servers = Array.isArray(message.servers) ? message.servers : [];
+      renderBrowserServers();
+      break;
     case 'radar':
       radar = message.radar;
       radarChanged();
@@ -4436,7 +5120,23 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
     case 'saveRefused':
       onSaveRefused(message);
       break;
+    case 'skillPreview':
+      if (galleryPreview?.id === message.id) {
+        galleryPreview.text = message.text;
+        renderGalleryPreview();
+      }
+      break;
+    case 'changeReverted':
+      if (review) {
+        receiveRevert(review, message.path, message.reverted);
+        renderChanges();
+      }
+      break;
     case 'hunks':
+      if (review) {
+        receiveHunks(review, message.path, message.hunks, message.total);
+        renderChanges();
+      }
       if (ui.hunks.has(message.path)) {
         ui.hunks.set(message.path, message.hunks);
         renderChanges();
@@ -4445,6 +5145,8 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
     case 'showSettings':
       ui.view = 'settings';
       if (message.tab) ui.tab = message.tab;
+      if (message.mcp) mcpView = message.mcp;
+      if (message.skills) skillsView = message.skills;
       if (ui.tab === 'skills') post({ type: 'reloadSkills' });
       if (ui.tab === 'accounts') checkAccountsOnce();
       renderView();

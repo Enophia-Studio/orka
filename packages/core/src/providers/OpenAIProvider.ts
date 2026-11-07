@@ -5,16 +5,20 @@ import type {
   ChatCompletionMessageParam,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions';
+import { t } from '../i18n';
 import type { AssistantMessage, ChatMessage, ToolSpec, Usage } from '../types';
 import {
   AbortedError,
   type AIProvider,
   type ChatRequest,
   type ChatResponse,
+  isConnectionError,
   ProviderError,
   type ProviderStreamEvent,
+  retryAfterFrom,
   type StopReason,
 } from './AIProvider';
+import { IMAGE_NOT_SENT, modelTakesImages } from './vision';
 
 export interface OpenAIProviderOptions {
   apiKey: string;
@@ -39,11 +43,13 @@ export class OpenAIProvider implements AIProvider {
   readonly id: string;
   readonly label: string;
   readonly model: string;
+  readonly acceptsImages: boolean;
   private readonly client: OpenAI;
 
   constructor(private readonly options: OpenAIProviderOptions) {
     this.model = options.model || DEFAULT_OPENAI_MODEL;
     this.id = options.providerId ?? PROVIDER_ID;
+    this.acceptsImages = modelTakesImages(this.model);
     // Local servers (Ollama, LM Studio) need no key, but the SDK insists on one.
     this.client = new OpenAI({ apiKey: options.apiKey || 'not-needed', baseURL: options.baseURL || undefined, maxRetries: 4 });
     this.label = options.label ?? (options.baseURL && hostOf(options.baseURL) !== 'api.openai.com' ? 'OpenAI-compatible' : 'OpenAI');
@@ -52,7 +58,7 @@ export class OpenAIProvider implements AIProvider {
   async chat(request: ChatRequest, onEvent: (event: ProviderStreamEvent) => void): Promise<ChatResponse> {
     const params: ChatCompletionCreateParamsStreaming = {
       model: this.model,
-      messages: toOpenAIMessages(request.system, request.messages),
+      messages: toOpenAIMessages(request.system, request.messages, this.acceptsImages),
       ...(request.tools.length ? { tools: request.tools.map(toOpenAITool) } : {}),
       stream: true,
       stream_options: { include_usage: true },
@@ -60,6 +66,9 @@ export class OpenAIProvider implements AIProvider {
       ...(this.options.reasoningEffort ? { reasoning_effort: this.options.reasoningEffort } : {}),
     };
 
+    if (!this.acceptsImages && hasImages(request.messages)) {
+      onEvent({ type: 'notice', message: t('{model} does not accept images, so the attached images were not sent.', { model: this.model }) });
+    }
     let text = '';
     let finishReason: string | null = null;
     let usage: Usage = { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
@@ -67,7 +76,7 @@ export class OpenAIProvider implements AIProvider {
     const calls = new Map<number, { id: string; name: string; args: string }>();
 
     try {
-      const stream = await this.client.chat.completions.create(params, { signal: request.signal });
+      const stream = await this.client.chat.completions.create(params, { signal: request.signal, ...(request.selfRetry ? { maxRetries: 0 } : {}) });
       for await (const chunk of stream as AsyncIterable<ChatCompletionChunk>) {
         if (chunk.model) servedModel = chunk.model;
         if (chunk.usage) {
@@ -143,7 +152,14 @@ function toOpenAITool(tool: ToolSpec): ChatCompletionTool {
   };
 }
 
-export function toOpenAIMessages(system: string, messages: ChatMessage[]): ChatCompletionMessageParam[] {
+/** The newest message brings images (older ones were noticed when they were new). */
+function hasImages(messages: ChatMessage[]): boolean {
+  const last = messages.at(-1);
+  return last?.role === 'user' && last.content.some((b) => b.type === 'image' || (b.type === 'tool_result' && !!b.images?.length));
+}
+
+/** The conversation in OpenAI's format; a model that cannot see gets a line in place of each image. */
+export function toOpenAIMessages(system: string, messages: ChatMessage[], withImages = true): ChatCompletionMessageParam[] {
   const out: ChatCompletionMessageParam[] = [{ role: 'system', content: system }];
   for (const message of messages) {
     if (message.role === 'assistant') {
@@ -186,7 +202,9 @@ export function toOpenAIMessages(system: string, messages: ChatMessage[]): ChatC
       ...message.content.flatMap((b) => (b.type === 'tool_result' && b.images ? b.images : [])),
       ...message.content.filter((b) => b.type === 'image'),
     ];
-    if (images.length) {
+    if (images.length && !withImages) {
+      out.push({ role: 'user', content: [text, ...images.map(() => IMAGE_NOT_SENT)].filter(Boolean).join('\n\n') });
+    } else if (images.length) {
       out.push({
         role: 'user',
         content: [
@@ -222,18 +240,23 @@ function mapApiError(error: unknown): Error {
   if (error instanceof OpenAI.AuthenticationError || error instanceof OpenAI.PermissionDeniedError) {
     return new ProviderError(`OpenAI rejected the API key (${error.status}). ${error.message}`, 'auth', error.status);
   }
+  const retry = error instanceof OpenAI.APIError ? { retryAfterMs: retryAfterFrom(error.headers) } : {};
   if (error instanceof OpenAI.RateLimitError) {
-    return new ProviderError(`OpenAI rate limit reached. ${error.message}`, 'rate_limit', error.status);
+    return new ProviderError(`OpenAI rate limit reached. ${error.message}`, 'rate_limit', error.status, undefined, retry);
   }
   if (error instanceof OpenAI.BadRequestError || error instanceof OpenAI.NotFoundError) {
-    return new ProviderError(`OpenAI rejected the request: ${error.message}`, 'bad_request', error.status);
+    // A model that cannot see often says so only in its error: name the likely cause.
+    const hint = /image/i.test(error.message) ? ' The model may not accept images: send the message again without them.' : '';
+    return new ProviderError(`OpenAI rejected the request: ${error.message}${hint}`, 'bad_request', error.status);
   }
   if (error instanceof OpenAI.APIConnectionError) {
     return new ProviderError(`Could not reach the OpenAI API: ${error.message}`, 'network');
   }
   if (error instanceof OpenAI.APIError) {
-    return new ProviderError(`OpenAI API error: ${error.message}`, 'server', error.status);
+    return new ProviderError(`OpenAI API error: ${error.message}`, 'server', error.status, undefined, retry);
   }
+  // A stream cut mid-answer (connection reset): the caller may try again.
+  if (isConnectionError(error)) return new ProviderError(`The connection to the OpenAI API broke off: ${(error as Error).message}`, 'network');
   return error instanceof Error ? error : new Error(String(error));
 }
 

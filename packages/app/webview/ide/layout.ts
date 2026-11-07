@@ -1,6 +1,6 @@
 // Two layouts for one chat UI. "panel": a single column (VS Code's side bar, the desktop app's
 // classic window). "ide": the desktop app's window with the sessions on the left, the conversation
-// in the middle and, on the right, the task's plan and changes with Files and Radar in tabs next to
+// in the middle and, on the right, the task's plan and changes with Files, Browser and Radar in tabs next to
 // them. A file opened from Files shows in the middle in place of the conversation, with the
 // message box below it. The desktop page sets it on <html>.
 
@@ -71,6 +71,7 @@ export function appSkeleton(): string {
       <div class="aside-tabs" id="aside-tabs" role="tablist" hidden></div>
       <div class="aside-task" id="aside-task" role="tabpanel">${plan}${changes}</div>
       <section class="panel files-panel" id="files-panel" role="tabpanel" hidden></section>
+      <section class="panel browser-panel" id="browser-panel" role="tabpanel" hidden></section>
       <section class="panel radar-panel" id="radar-panel" role="tabpanel" tabindex="-1" hidden></section>
     </aside>`;
 }

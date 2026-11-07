@@ -24,7 +24,7 @@
     "mcp",
     "unity"
   ],
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "12darko",
   "private": true,
   "engines": {
@@ -185,6 +185,16 @@
         "title": "%command.showMcp%",
         "category": "Orka",
         "icon": "$(plug)"
+      },
+      {
+        "command": "orka.showMcpCatalog",
+        "title": "%command.showMcpCatalog%",
+        "category": "Orka"
+      },
+      {
+        "command": "orka.showSkillsGallery",
+        "title": "%command.showSkillsGallery%",
+        "category": "Orka"
       },
       {
         "command": "orka.importMcpFromClaude",
@@ -632,6 +642,40 @@
           "default": true,
           "description": "%config.mcp.enabled%"
         },
+        "orka.mcp.maxResultChars": {
+          "type": "integer",
+          "default": 40000,
+          "minimum": 1000,
+          "maximum": 1000000,
+          "description": "%config.mcp.maxResultChars%"
+        },
+        "orka.mcp.callTimeoutSeconds": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 3600,
+          "description": "%config.mcp.callTimeoutSeconds%"
+        },
+        "orka.mcp.startTimeoutSeconds": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 5,
+          "maximum": 600,
+          "description": "%config.mcp.startTimeoutSeconds%"
+        },
+        "orka.mcp.maxTools": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "%config.mcp.maxTools%"
+        },
+        "orka.mcp.serverLimits": {
+          "type": "object",
+          "scope": "machine",
+          "default": {},
+          "description": "%config.mcp.serverLimits%"
+        },
         "orka.mcpServers": {
           "type": "object",
           "scope": "machine",
@@ -828,6 +872,13 @@
           "default": 60,
           "minimum": 1,
           "description": "%config.maxIterations%"
+        },
+        "orka.maxRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 10,
+          "description": "%config.maxRetries%"
         },
         "orka.commandTimeoutSeconds": {
           "type": "number",

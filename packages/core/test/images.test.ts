@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { NodeHost } from '../src/host/NodeHost';
@@ -8,7 +10,9 @@ import { PermissionManager } from '../src/permissions/PermissionManager';
 import { ClaudeCodeProvider } from '../src/providers/ClaudeCodeProvider';
 import { toClaudeMessages } from '../src/providers/ClaudeProvider';
 import { toGeminiContents } from '../src/providers/GeminiProvider';
-import { toOpenAIMessages } from '../src/providers/OpenAIProvider';
+import { FileTaskStore, IMAGE_NOT_KEPT, type TaskSnapshot } from '../src/persistence/TaskStore';
+import { OpenAIProvider, toOpenAIMessages } from '../src/providers/OpenAIProvider';
+import { IMAGE_NOT_SENT, modelTakesImages } from '../src/providers/vision';
 import type { ChatMessage } from '../src/types';
 import { applyEvent, emptySession } from '../src/ui/transcript';
 import { ScriptedProvider, tempWorkspace, text } from './helpers';
@@ -88,5 +92,74 @@ describe('images', () => {
         provider.dispose();
       }
     });
+  });
+
+  it('a model known to take text alone gets a line in place of each image, and the user a notice', async () => {
+    for (const model of ['deepseek-chat', 'deepseek/deepseek-reasoner', 'o3-mini', 'gpt-3.5-turbo', 'codestral-latest', 'qwen2.5-coder:7b']) assert.equal(modelTakesImages(model), false, model);
+    for (const model of ['gpt-6-astra', 'gpt-4o', 'claude-opus-5-5', 'gemini-3.8-flash', 'llava', 'deepseek-vl2', 'openai/gpt-4.1']) assert.equal(modelTakesImages(model), true, model);
+    const textOnly = toOpenAIMessages('SYS', withImage, false)[1] as { role: string; content: unknown };
+    assert.equal(textOnly.content, `What is wrong in this screenshot?
+
+${IMAGE_NOT_SENT}`);
+
+    const bodies: any[] = [];
+    const server = createServer((req, res) => {
+      let raw = '';
+      req.on('data', (c) => (raw += c));
+      req.on('end', () => {
+        bodies.push(JSON.parse(raw));
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        const chunk = { id: 'c1', object: 'chat.completion.chunk', created: 1, model: 'deepseek-chat', choices: [{ index: 0, delta: { content: 'ok' }, finish_reason: 'stop' }] };
+        res.end(`data: ${JSON.stringify(chunk)}
+
+data: [DONE]
+
+`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      const provider = new OpenAIProvider({ apiKey: 'k', model: 'deepseek-chat', baseURL: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, providerId: 'custom:deepseek' });
+      assert.equal(provider.acceptsImages, false);
+      const notices: string[] = [];
+      await provider.chat({ system: 'SYS', messages: withImage, tools: [] }, (e) => e.type === 'notice' && notices.push(e.message));
+      assert.ok(!JSON.stringify(bodies[0]).includes(PNG), 'the image did not leave the machine');
+      assert.match(notices[0]!, /deepseek-chat does not accept images, so the attached images were not sent/);
+    } finally {
+      server.close();
+    }
+  });
+
+  it('a saved task keeps no image data; the chat keeps the thumbnails', async () => {
+    const ws = tempWorkspace();
+    try {
+      const store = new FileTaskStore(path.join(ws.root, 'tasks'));
+      const messages: ChatMessage[] = [
+        ...withImage,
+        { role: 'assistant', content: [{ type: 'tool_call', id: 't1', name: 'browser', input: { action: 'screenshot' } }] },
+        { role: 'user', content: [{ type: 'tool_result', toolCallId: 't1', content: 'Screenshot taken.', images: [{ type: 'image', mediaType: 'image/jpeg', data: PNG }] }] },
+      ];
+      const snapshot: TaskSnapshot = {
+        version: 1,
+        id: 'task-1',
+        title: 'images',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages,
+        subagentProfiles: [],
+        usageByAgent: [],
+        view: { items: [{ kind: 'user', images: [{ name: 'shot.png', thumb: 'data:image/jpeg;base64,AAAA' }] }] },
+      };
+      await store.save(snapshot);
+      const raw = readFileSync(path.join(ws.root, 'tasks', 'task-1.json'), 'utf8');
+      assert.ok(!raw.includes(PNG));
+      assert.ok(raw.includes('data:image/jpeg;base64,AAAA'), 'the thumbnail stays for the chat');
+      const loaded = (await store.load('task-1'))!;
+      assert.deepEqual(loaded.messages[0].content[1], { type: 'text', text: IMAGE_NOT_KEPT });
+      assert.deepEqual(loaded.messages[2].content[0], { type: 'tool_result', toolCallId: 't1', content: 'Screenshot taken.' });
+      assert.equal(snapshot.messages[0].content[1].type, 'image', 'the running task still has its images');
+    } finally {
+      ws.cleanup();
+    }
   });
 });

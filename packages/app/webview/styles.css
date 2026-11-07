@@ -134,6 +134,8 @@ pre {
 select,
 input[type='text'],
 input[type='number'],
+input[type='password'],
+input[type='search'],
 textarea {
   font-size: var(--fs-12);
   color: var(--vscode-input-foreground);
@@ -157,7 +159,9 @@ select.warn {
 }
 
 input[type='text'],
-input[type='number'] {
+input[type='number'],
+input[type='password'],
+input[type='search'] {
   height: 28px;
   padding: 0 8px;
   width: 100%;
@@ -778,6 +782,10 @@ textarea {
   gap: 6px;
 }
 
+.key-row.wrap {
+  flex-wrap: wrap;
+}
+
 .key {
   flex: 1;
   min-width: 0;
@@ -1146,6 +1154,34 @@ pre:hover .copy {
 .tool-status {
   display: inline-flex;
   flex: none;
+}
+
+/* A failed call's reason in one line next to its title; the full text opens below. */
+.tool-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-11);
+  color: var(--err);
+}
+
+.tool.status-cancelled .tool-error,
+.step.status-cancelled .step-meta.err {
+  color: var(--muted);
+}
+
+/* Stop for one running call; the request goes on. */
+.tool-cancel {
+  flex: none;
+  width: 22px;
+  height: 22px;
+}
+
+.tool-cancel:disabled {
+  opacity: 0.5;
 }
 
 .tool.status-error .tool-title,
@@ -2073,6 +2109,127 @@ input.num.wide {
   background: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground, #c74e39) 16%, transparent);
 }
 
+/* ---------------------------------------------------------------- review mode */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  outline: none;
+}
+
+.review:focus-visible {
+  box-shadow: 0 0 0 1px var(--focus, var(--accent));
+  border-radius: var(--radius-sm);
+}
+
+.review-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.review-file .file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg-strong);
+  cursor: pointer;
+  font-size: var(--fs-12);
+}
+
+.review-file .file:hover {
+  text-decoration: underline;
+}
+
+.review .hunk-body {
+  max-height: 46vh;
+}
+
+.review-whole {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-12);
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.review-actions .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.review kbd {
+  font-family: var(--mono, monospace);
+  font-size: var(--fs-11);
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  opacity: 0.8;
+}
+
+.review-comment {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  font-size: var(--fs-12);
+  padding: 4px 6px;
+  border-left: 2px solid var(--sub-border, var(--border));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.review-comment .icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  margin-top: 2px;
+}
+
+.review-comment-box textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.review-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-12);
+}
+
+.review-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-comments {
+  margin: 0;
+  padding-left: 16px;
+  overflow-wrap: anywhere;
+}
+
 /* ---------------------------------------------------------------- skills */
 
 .tag.sub {
@@ -2131,6 +2288,39 @@ input.num.wide {
   height: 13px;
   margin-right: 4px;
   vertical-align: -2px;
+}
+
+/* ---------------------------------------------------------------- MCP limits */
+
+.mcp-server-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.mcp-server-limits .row:first-of-type {
+  border-top: none;
+}
+
+.mcp-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-bottom: 4px;
+}
+
+.mcp-tools .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* ---------------------------------------------------------------- agent asks the supervisor */
@@ -2302,6 +2492,12 @@ input.num.wide {
   gap: 8px;
   align-items: flex-start;
   line-height: 1.5;
+}
+
+/* A detail's lines (a command, then what it does) keep their breaks; a long command wraps. */
+.dialog-body .muted {
+  white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 
 .dialog.warning .dialog-body > svg {
@@ -2792,4 +2988,119 @@ input.num.wide {
 
 .account-card .key-row {
   flex-wrap: wrap;
+}
+
+/* ---------------------------------------------------------------- MCP catalog (Settings > MCP > Catalog) */
+
+.mcp-view {
+  margin-bottom: 10px;
+}
+
+.catalog-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.catalog-search {
+  display: flex;
+  flex: 1 1 220px;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 8px;
+  color: var(--muted);
+  background: var(--input-bg);
+  border: 1px solid var(--input-border);
+  border-radius: var(--radius-sm);
+}
+
+.catalog-search:focus-within {
+  border-color: var(--accent);
+}
+
+.catalog-search input[type='search'] {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  outline: none;
+}
+
+.catalog-filters select {
+  flex: 0 1 200px;
+  height: 28px;
+}
+
+.catalog-row .skill-head {
+  flex-wrap: wrap;
+}
+
+.catalog-row .tag.ok {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+.catalog-row .tag.warn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 45%, transparent);
+}
+
+.catalog-details {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-radius: var(--radius-sm);
+}
+
+.catalog-details .account-command {
+  background: var(--input-bg);
+}
+
+.catalog-points {
+  margin: 0;
+  padding-left: 18px;
+  font-size: var(--fs-12);
+  line-height: 1.5;
+}
+
+.catalog-form {
+  overflow-y: auto;
+}
+
+.catalog-form input.warn {
+  border-color: var(--warn);
+}
+
+/* ---------------------------------------------------------------- skills gallery (Settings > Skills > Gallery) */
+
+.catalog-row .key-row {
+  gap: 12px;
+}
+
+.skill-preview {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skill-preview-text {
+  flex: 1;
+  min-height: 0;
+  max-height: 60vh;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-12);
+  background: var(--code-bg);
+  border-radius: var(--radius-sm);
 }

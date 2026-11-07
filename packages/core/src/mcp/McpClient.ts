@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import { childEnv, findExecutable, resolveCommand } from '../host/commands';
 import { killTree } from '../host/processes';
 import type { JsonSchema } from '../types';
+import { MCP_LIMIT_DEFAULTS } from './limits';
 import { VERSION } from '../version';
 
 export { resolveCommand } from '../host/commands';
@@ -62,7 +63,8 @@ export type McpState = 'idle' | 'starting' | 'ready' | 'error' | 'closed';
 
 const PROTOCOL_VERSION = '2025-06-18';
 const START_TIMEOUT_MS = 30_000;
-const MAX_RESULT_CHARS = 40_000;
+/** The default cap on one tool result's text (Settings → MCP → Limits changes it). */
+export const MAX_RESULT_CHARS = MCP_LIMIT_DEFAULTS.maxResultChars;
 
 export class McpClient {
   state: McpState = 'idle';
@@ -77,6 +79,7 @@ export class McpClient {
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   private starting?: Promise<void>;
+  private startTimeoutMs = START_TIMEOUT_MS;
 
   constructor(
     readonly name: string,
@@ -84,11 +87,15 @@ export class McpClient {
     private readonly clientInfo = { name: 'orka', version: VERSION },
   ) {}
 
-  /** Start the server (once), do the handshake and load its tool list. */
-  start(timeoutMs = START_TIMEOUT_MS): Promise<void> {
+  /**
+   * Start the server (once), do the handshake and load its tool list. The timeout given is kept,
+   * so a restart on demand (a tool call after a crash) waits as long as the first start.
+   */
+  start(timeoutMs?: number): Promise<void> {
+    if (timeoutMs !== undefined) this.startTimeoutMs = timeoutMs;
     if (this.state === 'ready') return Promise.resolve();
     if (this.starting) return this.starting;
-    this.starting = this.doStart(timeoutMs).finally(() => (this.starting = undefined));
+    this.starting = this.doStart(this.startTimeoutMs).finally(() => (this.starting = undefined));
     return this.starting;
   }
 
@@ -142,13 +149,14 @@ export class McpClient {
     return tools;
   }
 
-  async callTool(name: string, args: Record<string, unknown>, signal: AbortSignal, timeoutMs: number): Promise<McpCallResult> {
+  /** Call a tool; the text of its result is cut to maxChars, with a line that tells the model so. */
+  async callTool(name: string, args: Record<string, unknown>, signal: AbortSignal, timeoutMs: number, maxChars = MAX_RESULT_CHARS): Promise<McpCallResult> {
     await this.start();
     const onAbort = () => this.notify('notifications/cancelled', { requestId: this.nextId - 1, reason: 'The user stopped the agent.' });
     signal.addEventListener('abort', onAbort, { once: true });
     try {
       const result = await this.request('tools/call', { name, arguments: args }, timeoutMs, signal);
-      return { content: renderContent(result), isError: !!result?.isError };
+      return { content: renderContent(result, maxChars), isError: !!result?.isError };
     } finally {
       signal.removeEventListener('abort', onAbort);
     }
@@ -336,8 +344,8 @@ export class McpClient {
   }
 }
 
-/** MCP tool result content as text for the model. */
-function renderContent(result: any): string {
+/** MCP tool result content as text for the model, at most maxChars of it. */
+function renderContent(result: any, maxChars: number): string {
   const parts: string[] = [];
   for (const item of result?.content ?? []) {
     if (item?.type === 'text') parts.push(String(item.text ?? ''));
@@ -348,7 +356,13 @@ function renderContent(result: any): string {
   }
   if (!parts.length && result?.structuredContent !== undefined) parts.push(JSON.stringify(result.structuredContent, null, 2));
   const text = parts.join('\n').trim() || '(no output)';
-  return text.length > MAX_RESULT_CHARS ? `${text.slice(0, MAX_RESULT_CHARS)}\n… [${text.length - MAX_RESULT_CHARS} more chars]` : text;
+  return truncateResult(text, maxChars);
+}
+
+/** A result over the limit: its start, and a line that says how much was left out and why. */
+export function truncateResult(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n… [Orka cut this result at the MCP limit of ${maxChars} characters; ${text.length - maxChars} more characters were not shown. Ask the tool for less: a narrower query, a filter or one page at a time.]`;
 }
 
 function lastLines(text: string): string {

@@ -74,6 +74,11 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
         const body = JSON.parse(raw);
         requests.push({ body, headers: req.headers });
         const next = script.shift();
+        // A step { status, headers, body } answers with that HTTP error (a 529 overloaded, a 429).
+        if (next && typeof next === 'object') {
+          res.writeHead(next.status, { 'content-type': 'application/json', ...next.headers }).end(JSON.stringify(next.body));
+          return;
+        }
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         // A step may answer later (a request that is still running meanwhile), or stream its answer itself.
         void Promise.resolve(next ? next(body) : reply('(script ended)')).then((answer) => (typeof answer === 'function' ? answer(res) : res.end(answer)));
@@ -669,6 +674,53 @@ globalThis.fetch = (input, init) => {
     assert.equal(readFileSync(path.join(work, 'src', 'calc.ts'), 'utf8'), after);
   });
 
+  it('reviews the changes part by part with the keyboard and puts the comments into the message box, unsent', async () => {
+    mkdirSync(path.join(work, 'src'));
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+    const before = `${lines.join('\n')}\n`;
+    const after = `${lines.map((l, i) => (i === 1 ? 'LINE 2' : i === 17 ? 'LINE 18' : l)).join('\n')}\n`;
+    writeFileSync(path.join(work, 'src', 'list.txt'), before);
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    script = [() => toolUse('toolu_w', 'write_file', { path: 'src/list.txt', content: after }), () => reply('Upper-cased two lines.'), () => reply('Nothing to build.')];
+    await ask('Upper-case lines 2 and 18', 'Upper-cased two lines.');
+    const sentBefore = requests.length;
+    await showChanges();
+
+    await browser.clickSelector('[data-action="review-start"]');
+    await until(() => browser.evaluate('!!document.querySelector(".review .hunk-body")'), 'the first part');
+    const panel = () => browser.evaluate('document.querySelector("#changes-panel").textContent');
+    assert.match(await panel(), /File 1 of 1/);
+    assert.match(await panel(), /Part 1 of 2/);
+    const key = (k, init = {}) =>
+      browser.evaluate(`(document.activeElement && document.querySelector('#changes-panel').contains(document.activeElement) ? document.activeElement : document.querySelector('.review')).dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(k)}, bubbles: true, cancelable: true, ...${JSON.stringify(init)} }))`);
+    // k keeps the first part; the second one takes its place.
+    await key('k');
+    await until(async () => /Part 1 of 1/.test(await panel()), 'the next part');
+    assert.match(await browser.evaluate('document.querySelector(".review .hunk-body").textContent'), /LINE 18/);
+    // c opens a comment box; Ctrl+Enter adds the comment.
+    await key('c');
+    await until(() => browser.evaluate('document.activeElement?.id === "review-comment"'), 'the comment box');
+    await browser.evaluate(`document.getElementById('review-comment').value = 'Keep line 18 as it was, it is a heading.'`);
+    await key('Enter', { ctrlKey: true });
+    await until(async () => /it is a heading/.test(await panel()), 'the comment');
+    // r reverts the second part: the file keeps only the first change.
+    await key('r');
+    await until(async () => /Review finished/.test(await panel()), 'the summary');
+    assert.equal(readFileSync(path.join(work, 'src', 'list.txt'), 'utf8'), after.replace('LINE 18', 'line 18'));
+    assert.match(await panel(), /1 kept/);
+    assert.match(await panel(), /1 reverted/);
+    assert.match(await panel(), /1 comment/);
+
+    await browser.evaluate('document.querySelector(".review .btn[data-action=review-feedback]").click()');
+    const draft = await browser.evaluate('document.getElementById("input").value');
+    assert.match(draft, /^Feedback on your changes:\n- src\/list\.txt \(@@ [^)]+\): Keep line 18 as it was, it is a heading\.\nI reverted: src\/list\.txt \(@@ [^)]+\)\.\nI kept 1 part\.$/);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(requests.length, sentBefore, 'nothing was sent to the agent');
+    assert.equal(await browser.evaluate('!!document.querySelector(".review")'), false, 'the review closed');
+  });
+
   it('keeps a file the user edited after the agent: Revert all, Go back, then undoes only the agent part', async () => {
     const notes = path.join(work, 'notes', 'hello.txt');
     mkdirSync(path.join(work, 'notes'));
@@ -1064,6 +1116,40 @@ globalThis.fetch = (input, init) => {
   }
   const fakeClaudeScript = path.join(here, '..', '..', 'core', 'test', 'fixtures', 'fake-claude.mjs');
 
+  it('tries again after an overloaded API and a stream cut mid-answer, saying why it waits, and stops one command from its card', async () => {
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    const cutOff = sse([
+      start('msg_cut'),
+      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Half an answ' } }],
+      ['error', { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }],
+    ]);
+    let finish;
+    script = [
+      { status: 529, headers: { 'retry-after': '2' }, body: { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } } },
+      () => cutOff,
+      () => toolUse('toolu_long', 'run_command', { command: 'node -e "setTimeout(() => {}, 60000)"' }),
+      (body) => new Promise((resolve) => (finish = () => resolve(reply(`Seen: ${JSON.stringify(body.messages.at(-1).content).includes('Cancelled by the user') ? 'stopped' : 'not stopped'}`)))),
+    ];
+    await browser.clickSelector('#input');
+    await browser.type('Run the long check');
+    await browser.clickSelector('#send');
+    // The 529 asked for 2 s: the status line counts it down.
+    await until(() => browser.evaluate('document.querySelector(".session-head .phase-label")?.textContent ?? ""').then((t) => /Retrying in \d+s \(attempt 1\/3\)/.test(t)), 'the retry countdown', 10_000);
+    // Then the command runs; its card offers its own Stop, and the status line names it.
+    await until(() => browser.evaluate('!!document.querySelector(".tool-cancel")'), 'the Stop on the command', 20_000);
+    assert.match(await browser.evaluate('document.querySelector(".session-head .phase-label")?.textContent ?? ""'), /Running run_command/);
+    assert.ok(!(await text()).includes('Half an answ'), 'the cut-off text was dropped, not left above the retried answer');
+    await browser.clickSelector('.tool-cancel');
+    await until(() => requests.length === 4, 'the next turn after the stopped command', 15_000);
+    assert.equal(await browser.evaluate('document.body.classList.contains("busy")'), true, 'the request goes on');
+    finish();
+    await until(async () => (await text()).includes('Seen: stopped'), 'the agent heard that the user stopped the command');
+    assert.equal(requests.length, 4, 'one 529, one cut stream, the tool turn, the answer');
+  });
+
   it('shows a Stop button that says so while the agent works, and Escape stops it too', async () => {
     const url = await launch();
     await browser.navigate(url);
@@ -1204,6 +1290,130 @@ globalThis.fetch = (input, init) => {
     }
   });
 
+  it('adds an MCP server from the bundled catalog only after the consent dialog, and never shows its key again', async () => {
+    const key = 'BSA-e2e-secret-key';
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    await browser.clickSelector('[data-action="open-settings"]');
+    await browser.clickSelector('[data-action="tab"][data-tab="mcp"]');
+    await browser.clickSelector('[data-action="mcp-view"][data-view="catalog"]');
+    await until(() => browser.evaluate('!!document.getElementById("mcp-catalog-search")'), 'the catalog');
+    // Searching redraws only the list: the box keeps its focus.
+    await browser.evaluate(`(() => { const box = document.getElementById('mcp-catalog-search'); box.focus(); box.value = 'brave'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    assert.deepEqual(await browser.evaluate('[...document.querySelectorAll(".catalog-row")].map((r) => r.dataset.entry)'), ['brave-search']);
+    assert.equal(await browser.evaluate('document.activeElement.id'), 'mcp-catalog-search');
+
+    const fill = async () => {
+      await browser.clickSelector('[data-action="catalog-add"][data-id="brave-search"]');
+      await until(() => browser.evaluate('!!document.querySelector(".catalog-form [data-catalog-field=BRAVE_API_KEY]")'), 'the Add form');
+      assert.equal(await browser.evaluate('document.querySelector("[data-catalog-field=BRAVE_API_KEY]").type'), 'password');
+      await browser.evaluate(`document.querySelector('[data-catalog-field=BRAVE_API_KEY]').value = ${JSON.stringify(key)}`);
+      await browser.clickSelector('[data-action="catalog-form-submit"]');
+      await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog[role=alertdialog]")'), 'the consent dialog');
+    };
+    await fill();
+    const consent = await browser.evaluate('document.querySelector(".modal-backdrop .dialog").textContent');
+    assert.match(consent, /npx -y @brave\/brave-search-mcp-server --transport stdio/, 'the exact command');
+    assert.match(consent, /downloads this third-party server/);
+    assert.ok(!consent.includes(key), 'the key is not in the dialog');
+    assert.equal(await browser.evaluate('document.querySelectorAll("[data-catalog-field]").length'), 0, 'the form and its values are gone');
+    // Cancel: nothing written.
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-cancel"]');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(settingsFile().mcpServers, undefined);
+
+    await fill();
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-action"]');
+    await until(() => settingsFile().mcpServers?.['brave-search'], 'the server in the settings');
+    assert.deepEqual(settingsFile().mcpServers['brave-search'], {
+      command: 'npx',
+      args: ['-y', '@brave/brave-search-mcp-server', '--transport', 'stdio'],
+      env: { BRAVE_API_KEY: key },
+    });
+    await until(() => browser.evaluate('!!document.querySelector(".catalog-row[data-entry=brave-search] .pill.ok")'), 'shown as added');
+    assert.ok(!(await browser.evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(key)})`)), 'the key is never on the page');
+  });
+
+  it("limits an MCP server's tools from Settings → MCP → Limits, and the next request gets only the allowed ones", async () => {
+    const fakeMcp = path.join(here, '..', '..', 'core', 'test', 'fixtures', 'fake-mcp.mjs');
+    addSettings({ mcpServers: { unity: { command: process.execPath, args: [fakeMcp] } } });
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    script = [() => reply('Hello.')];
+    await ask('hi', 'Hello.');
+    const toolNames = (i) => requests[i].body.tools.map((tool) => tool.name).filter((name) => name.startsWith('mcp__'));
+    assert.deepEqual(toolNames(0), ['mcp__unity__get_scene', 'mcp__unity__delete_object']);
+
+    await browser.clickSelector('[data-action="open-settings"]');
+    await browser.clickSelector('[data-action="tab"][data-tab="mcp"]');
+    await until(() => browser.evaluate('!!document.querySelector(".mcp-limits [data-setting=\\"mcp.maxTools\\"]")'), 'the global limits');
+    await browser.clickSelector('[data-action="mcp-limits"][data-name="unity"]');
+    await until(() => browser.evaluate('!!document.querySelector("[data-mcp-tool=delete_object]")'), "the server's tools");
+    await browser.evaluate(`(() => {
+      document.querySelector('[data-mcp-tool=delete_object]').checked = false;
+      document.querySelector('[data-mcp-limit=maxResultChars]').value = '2000';
+    })()`);
+    await browser.clickSelector('[data-action="mcp-limits-save"][data-name="unity"]');
+    await until(() => settingsFile()['mcp.serverLimits']?.unity, 'the limits in the settings');
+    assert.deepEqual(settingsFile()['mcp.serverLimits'], { unity: { maxResultChars: 2000, allowedTools: ['get_scene'] } });
+    await until(async () => /1 of 2 tools/.test(await text()), 'the tool count');
+
+    // A task keeps the tools it started with: the limits apply from the next one.
+    await browser.clickSelector('[data-action="close-settings"]');
+    await newSessionIn(work);
+    await until(async () => (await text()).includes('What should we build?'), 'a new session');
+    script = [() => reply('Hello again.')];
+    await ask('hi again', 'Hello again.');
+    assert.deepEqual(toolNames(1), ['mcp__unity__get_scene']);
+  });
+
+  it('adds a skill from the gallery to <Orka home>/skills, previews one, asks before a download, and removes it after asking', async () => {
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    await browser.clickSelector('[data-action="open-settings"]');
+    await browser.clickSelector('[data-action="tab"][data-tab="skills"]');
+    await browser.clickSelector('[data-action="skills-view"][data-view="gallery"]');
+    await until(() => browser.evaluate('!!document.getElementById("skill-gallery-search")'), 'the gallery');
+    // Searching redraws only the list: the box keeps its focus.
+    await browser.evaluate(`(() => { const box = document.getElementById('skill-gallery-search'); box.focus(); box.value = 'godot'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    assert.deepEqual(await browser.evaluate('[...document.querySelectorAll(".catalog-row")].map((r) => r.dataset.entry)'), ['godot', 'godot-gdscript-patterns']);
+    assert.equal(await browser.evaluate('document.activeElement.id'), 'skill-gallery-search');
+
+    // The preview shows the skill's text as it comes with Orka.
+    await browser.clickSelector('[data-action="gallery-preview"][data-id="godot"]');
+    await until(() => browser.evaluate('(document.querySelector(".skill-preview-text") || {}).textContent || ""').then((t) => t.includes('# Godot')), 'the preview');
+    await browser.clickSelector('.skill-preview .btn[data-action="gallery-preview-close"]');
+
+    // Enable copies it into the user's skills folder, with its licence.
+    const dir = path.join(home, 'skills', 'godot');
+    await browser.clickSelector('[data-action="gallery-install"][data-id="godot"]');
+    await until(() => existsSync(path.join(dir, '.orka-gallery.json')), 'the skill in the skills folder');
+    for (const file of ['SKILL.md', 'LICENSE', 'NOTICE']) assert.ok(existsSync(path.join(dir, file)), file);
+    await until(() => browser.evaluate('!!document.querySelector(".catalog-row[data-entry=godot] .pill.ok")'), 'shown as installed');
+
+    // A download asks first, with the exact URLs; Cancel fetches nothing.
+    await browser.evaluate(`(() => { const box = document.getElementById('skill-gallery-search'); box.value = 'ugui'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await browser.clickSelector('[data-action="gallery-install"][data-id="ui-ugui"]');
+    await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog[role=alertdialog]")'), 'the consent dialog');
+    const consent = await browser.evaluate('document.querySelector(".modal-backdrop .dialog").textContent');
+    assert.match(consent, /https:\/\/raw\.githubusercontent\.com\/Unity-Technologies\/skills\/60f95e6d4beaeacf4dfdff7829ec9b35008a0be0\/skills\/ui-ugui\/SKILL\.md/);
+    assert.match(consent, /Unity Companion License/);
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-cancel"]');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!existsSync(path.join(home, 'skills', 'ui-ugui')));
+
+    // My skills shows where it came from; Remove asks, then deletes the folder.
+    await browser.clickSelector('[data-action="skills-view"][data-view="mine"]');
+    await until(() => browser.evaluate('!!document.querySelector("[data-action=gallery-remove][data-name=godot]")'), 'the installed skill in My skills');
+    await browser.clickSelector('[data-action="gallery-remove"][data-name="godot"]');
+    await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog[role=alertdialog]")'), 'the remove dialog');
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-action"]');
+    await until(() => !existsSync(dir), 'the folder removed');
+  });
+
   it("offers the agent's own model and thought level in the message box menu, and shows how full the context is", async () => {
     const log = path.join(home, 'fake-acp.log');
     addSettings({ ...fakeAgentSettings, provider: 'agent:custom:fake', 'agentClis.enabled': ['custom:fake'] });
@@ -1264,6 +1474,85 @@ globalThis.fetch = (input, init) => {
       methods.some((m) => JSON.stringify(m).includes('session/set_config_option') && JSON.stringify(m).includes('"pro"')),
       'the model choice reached the agent',
     );
+  });
+
+  it("shows the agent's browser live in the Browser tab, and hands the page to the user on Take over", async () => {
+    // A local dev server whose page reports what reaches it.
+    const hits = [];
+    const page = `<!doctype html><title>Local app</title><body style="margin:0">
+<button id="all" style="position:fixed;inset:0;width:100%;height:100%;font-size:40px">Local app</button>
+<script>
+  const report = (what) => fetch('/hit?' + new URLSearchParams(what));
+  document.getElementById('all').addEventListener('mousedown', (e) => report({ kind: 'click', x: e.clientX, y: e.clientY }));
+  document.getElementById('all').addEventListener('mouseup', (e) => report({ kind: 'up', x: e.clientX, y: e.clientY, buttons: e.buttons }));
+  addEventListener('keydown', (e) => report({ kind: 'key', key: e.key }));
+</script>`;
+    const dev = http.createServer((req, res) => {
+      if (req.url.startsWith('/hit?')) hits.push(Object.fromEntries(new URL(req.url, 'http://x').searchParams));
+      res.writeHead(200, { 'content-type': 'text/html' }).end(req.url.startsWith('/hit?') ? '' : page);
+    });
+    await new Promise((r) => dev.listen(0, '127.0.0.1', r));
+    const devUrl = `http://localhost:${dev.address().port}/`;
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      await browser.evaluate(`window.cspViolations = []; document.addEventListener('securitypolicyviolation', (e) => window.cspViolations.push(e.violatedDirective + ' ' + e.blockedURI))`);
+      await browser.clickSelector('.topbar .aside-btn');
+      await until(() => browser.evaluate('!!document.querySelector("#aside-tab-browser")'), 'the Browser tab');
+      await browser.clickSelector('#aside-tab-browser');
+      await until(() => browser.evaluate('!!document.querySelector("#browser-panel:not([hidden]) #browser-url")'), 'the Browser panel');
+      assert.match(await browser.evaluate('document.querySelector("#browser-empty").textContent'), /No page is open/);
+      assert.equal(await browser.evaluate('document.querySelector("[data-action=browser-control]").disabled'), true, 'nothing to take over yet');
+
+      // The user types the address: it opens without an approval, and its frames come in.
+      await browser.evaluate(`document.getElementById('browser-url').value = ${JSON.stringify(devUrl.replace('http://', ''))}`);
+      await browser.clickSelector('[data-action="browser-go"]');
+      await until(() => browser.evaluate('(() => { const f = document.getElementById("browser-frame"); return !f.hidden && f.src.startsWith("data:image/jpeg;base64,") && f.naturalWidth === 1280; })()'), 'a frame of the page', 45_000);
+      // The state with the address can arrive just after the first frame.
+      await until(async () => (await browser.evaluate('document.getElementById("browser-url").value')) === devUrl, 'the full address in the field');
+
+      // Take over: a click on the frame's middle reaches the middle of the page.
+      await browser.clickSelector('[data-action="browser-control"]');
+      await until(() => browser.evaluate('document.querySelector("[data-action=browser-control]").getAttribute("aria-pressed") === "true"'), 'taken over');
+      assert.equal(await browser.evaluate('document.activeElement.id'), 'browser-screen', 'the page has the keyboard');
+      await browser.clickSelector('#browser-frame');
+      await until(() => hits.find((h) => h.kind === 'click'), 'the click on the page');
+      const click = hits.find((h) => h.kind === 'click');
+      assert.ok(Math.abs(Number(click.x) - 640) <= 12 && Math.abs(Number(click.y) - 400) <= 12, `scaled to the page: ${click.x},${click.y}`);
+      await browser.press('Enter');
+      await until(() => hits.find((h) => h.kind === 'key' && h.key === 'Enter'), 'the key on the page');
+
+      // Meanwhile the agent may look, not act: its click is refused with a clear message.
+      script = [() => toolUse('toolu_b', 'browser', { action: 'click', x: 10, y: 10 }), () => reply('Waiting for you.')];
+      await browser.clickSelector('#input');
+      await browser.type('Click the button');
+      await browser.clickSelector('#send');
+      await until(async () => (await text()).includes('Waiting for you.'), 'the reply');
+      assert.match(JSON.stringify(requests.at(-1).body.messages), /The user has taken over the browser/);
+      assert.equal(hits.filter((h) => h.kind === 'click').length, 1, "the agent's click never reached the page");
+
+      // A button pressed on the page and released outside the frame (here over the address bar) is
+      // released in the page too, at the frame's nearest edge.
+      hits.length = 0;
+      await browser.evaluate(`(() => {
+        const r = document.getElementById('browser-frame').getBoundingClientRect();
+        const at = (y) => ({ bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: y, button: 0 });
+        document.getElementById('browser-frame').dispatchEvent(new MouseEvent('mousedown', at(r.top + r.height / 2)));
+        document.getElementById('browser-url').dispatchEvent(new MouseEvent('mouseup', at(r.top - 30)));
+        return true;
+      })()`);
+      await until(() => hits.find((h) => h.kind === 'up'), 'the release on the page');
+      const up = hits.find((h) => h.kind === 'up');
+      assert.ok(Number(up.y) <= 2 && Math.abs(Number(up.x) - 640) <= 12, `at the top edge: ${up.x},${up.y}`);
+      assert.equal(up.buttons, '0');
+
+      await browser.clickSelector('[data-action="browser-control"]');
+      await until(() => browser.evaluate('document.querySelector("[data-action=browser-control]").getAttribute("aria-pressed") === "false"'), 'given back');
+      assert.deepEqual(await browser.evaluate('window.cspViolations'), []);
+    } finally {
+      dev.close();
+    }
   });
 
   it('only lets its own window in', async () => {

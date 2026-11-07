@@ -17,8 +17,45 @@ export interface Screenshot {
   thumb: string;
 }
 
+/** One frame of the live view (the desktop Browser panel): a JPEG, base64, and the page size it shows in CSS pixels. */
+export interface ScreencastFrame {
+  data: string;
+  width: number;
+  height: number;
+}
+
+/** A mouse event from the user, in the page's CSS pixels (the Browser panel's Take over). */
+export interface UserMouseEvent {
+  type: 'mouseMoved' | 'mousePressed' | 'mouseReleased' | 'mouseWheel';
+  x: number;
+  y: number;
+  button?: 'none' | 'left' | 'middle' | 'right';
+  clickCount?: number;
+  deltaX?: number;
+  deltaY?: number;
+  /** Alt 1, Ctrl 2, Meta 4, Shift 8 (as the DevTools protocol counts them). */
+  modifiers?: number;
+}
+
+/** A key event from the user. text: what a printable key types (none for Shift, arrows, F-keys). */
+export interface UserKeyEvent {
+  type: 'keyDown' | 'keyUp';
+  key: string;
+  code: string;
+  keyCode: number;
+  text?: string;
+  modifiers?: number;
+}
+
 const WIDTH = 1280;
 const HEIGHT = 800;
+/** Each mouse button's bit in the DevTools protocol's (and the page's) `buttons` mask. */
+const MOUSE_BUTTON_BITS: Record<string, number> = { left: 1, right: 2, middle: 4 };
+
+/** The button a move reports while buttons are held (left first, as a real mouse drag does). */
+function heldButton(buttons: number): 'left' | 'right' | 'middle' | 'none' {
+  return buttons & 1 ? 'left' : buttons & 2 ? 'right' : buttons & 4 ? 'middle' : 'none';
+}
 /** A cold start on a busy or slow machine (CI, antivirus scans) can take well over 20 seconds. */
 const START_TIMEOUT_MS = 45_000;
 const COMMAND_TIMEOUT_MS = 30_000;
@@ -46,7 +83,10 @@ export function findBrowser(explicit?: string): string | undefined {
   return candidates.find((c) => c && existsSync(c));
 }
 
-/** One browser per host (workspace), started on first use. */
+/**
+ * One browser per host (workspace), started on first use. The object stays for the host's life (a
+ * closed browser starts again on its next use), so the Browser panel and the agent always share it.
+ */
 const browsers = new WeakMap<object, HeadlessBrowser>();
 
 export function browserFor(host: { browserPath?: string }): HeadlessBrowser {
@@ -60,8 +100,10 @@ export function browserFor(host: { browserPath?: string }): HeadlessBrowser {
 
 export function closeBrowser(host: object): void {
   browsers.get(host)?.close();
-  browsers.delete(host);
 }
+
+/** The live view's frames: at most one every this many ms (each is acknowledged only then, so the browser waits). */
+const FRAME_INTERVAL_MS = 120;
 
 export class HeadlessBrowser {
   private proc?: ChildProcess;
@@ -75,8 +117,72 @@ export class HeadlessBrowser {
   /** Console messages and page errors since the last read. */
   private consoleLog: string[] = [];
   url = 'about:blank';
+  /** The live view wanted (kept across a close: it starts again with the browser). */
+  private cast?: { onFrame: (frame: ScreencastFrame) => void; frames: number; ackTimer?: NodeJS.Timeout; firstTimer?: NodeJS.Timeout };
+  private readonly changeListeners = new Set<() => void>();
+  /**
+   * The user took the page over in the Browser panel: the agent's actions that would change it are
+   * refused until the user gives it back.
+   */
+  private held = false;
+  /** The user's mouse buttons held down (left 1, right 2, middle 4, as the page's MouseEvent.buttons). */
+  private buttons = 0;
+  /** Where the user's mouse last was on the page. */
+  private lastMouse = { x: 0, y: 0 };
 
-  constructor(private readonly executable?: string) {}
+  constructor(private readonly executable?: string) {
+    this.events.add((method, params) => {
+      if (method === 'Runtime.consoleAPICalled' && ['error', 'warning', 'log'].includes(params.type)) {
+        const text = (params.args ?? []).map((a: any) => a.value ?? a.description ?? '').join(' ');
+        this.consoleLog.push(`[${params.type}] ${text}`.slice(0, 500));
+      } else if (method === 'Runtime.exceptionThrown') {
+        const d = params.exceptionDetails;
+        this.consoleLog.push(`[exception] ${d?.exception?.description ?? d?.text ?? 'error'}`.slice(0, 800));
+      } else if (method === 'Page.frameNavigated' && !params.frame?.parentId) {
+        this.url = params.frame?.url ?? this.url;
+        this.changed();
+      } else if (method === 'Page.navigatedWithinDocument' && typeof params.url === 'string') {
+        this.url = params.url;
+        this.changed();
+      } else if (method === 'Page.screencastFrame') {
+        this.onFrame(params);
+      }
+      this.consoleLog = this.consoleLog.slice(-60);
+    });
+  }
+
+  /** The page's size in CSS pixels (what the agent's screenshots and clicks use). */
+  get viewport(): { width: number; height: number } {
+    return { width: WIDTH, height: HEIGHT };
+  }
+
+  get userControl(): boolean {
+    return this.held;
+  }
+
+  set userControl(value: boolean) {
+    if (this.held === value) return;
+    this.held = value;
+    // Given back with a button still down (released where the panel could not see it): let it go.
+    if (!value) void this.releaseButtons().catch(() => undefined);
+    this.changed();
+  }
+
+  /** Called when the browser starts or closes, the page navigates, or the user takes or gives back control. */
+  onChange(listener: () => void): () => void {
+    this.changeListeners.add(listener);
+    return () => this.changeListeners.delete(listener);
+  }
+
+  private changed(): void {
+    for (const listener of [...this.changeListeners]) {
+      try {
+        listener();
+      } catch {
+        /* a listener's failure is its own */
+      }
+    }
+  }
 
   get running(): boolean {
     return !!this.socket && this.socket.readyState === WebSocket.OPEN;
@@ -130,7 +236,14 @@ export class HeadlessBrowser {
       this.socket!.addEventListener('error', () => reject(new Error('Could not connect to the browser.')), { once: true });
     });
     this.socket.addEventListener('message', (event) => this.onMessage(String(event.data)));
-    this.socket.addEventListener('close', () => this.failAll('The browser connection closed.'));
+    const socket = this.socket;
+    socket.addEventListener('close', () => {
+      this.failAll('The browser connection closed.');
+      // The browser went away on its own (a crash, out of memory, killed): clean up as close() does,
+      // so the user's control ends with it and the agent's next 'open' starts a new one.
+      if (this.socket === socket) this.close();
+      else this.changed();
+    });
     const { targetInfos } = await this.send('Target.getTargets');
     let target = (targetInfos as Array<{ targetId: string; type: string }>).find((t) => t.type === 'page')?.targetId;
     target ??= (await this.send('Target.createTarget', { url: 'about:blank' })).targetId;
@@ -138,18 +251,127 @@ export class HeadlessBrowser {
     await this.page('Page.enable');
     await this.page('Runtime.enable');
     await this.page('Emulation.setDeviceMetricsOverride', { width: WIDTH, height: HEIGHT, deviceScaleFactor: 1, mobile: false });
-    this.events.add((method, params) => {
-      if (method === 'Runtime.consoleAPICalled' && ['error', 'warning', 'log'].includes(params.type)) {
-        const text = (params.args ?? []).map((a: any) => a.value ?? a.description ?? '').join(' ');
-        this.consoleLog.push(`[${params.type}] ${text}`.slice(0, 500));
-      } else if (method === 'Runtime.exceptionThrown') {
-        const d = params.exceptionDetails;
-        this.consoleLog.push(`[exception] ${d?.exception?.description ?? d?.text ?? 'error'}`.slice(0, 800));
-      } else if (method === 'Page.frameNavigated' && !params.frame?.parentId) {
-        this.url = params.frame?.url ?? this.url;
-      }
-      this.consoleLog = this.consoleLog.slice(-60);
+    this.changed();
+    if (this.cast) await this.beginCast();
+  }
+
+  /**
+   * Start the live view: JPEG frames of the page as it changes, at most one every
+   * FRAME_INTERVAL_MS. Nothing starts the browser for it; a browser that starts later streams then.
+   * Frames are handed over in memory only.
+   */
+  async startScreencast(onFrame: (frame: ScreencastFrame) => void): Promise<void> {
+    this.stopScreencast();
+    this.cast = { onFrame, frames: 0 };
+    if (this.running && this.sessionId) await this.beginCast();
+  }
+
+  stopScreencast(): void {
+    const cast = this.cast;
+    if (!cast) return;
+    this.cast = undefined;
+    clearTimeout(cast.ackTimer);
+    clearTimeout(cast.firstTimer);
+    if (this.running && this.sessionId) void this.page('Page.stopScreencast').catch(() => undefined);
+  }
+
+  get casting(): boolean {
+    return !!this.cast;
+  }
+
+  private async beginCast(): Promise<void> {
+    const cast = this.cast;
+    if (!cast) return;
+    await this.page('Page.startScreencast', { format: 'jpeg', quality: 60, maxWidth: WIDTH, maxHeight: HEIGHT, everyNthFrame: 1 });
+    // A page that does not repaint sends no frame: the view gets the page as it is now.
+    clearTimeout(cast.firstTimer);
+    cast.firstTimer = setTimeout(() => {
+      if (this.cast !== cast || cast.frames) return;
+      void this.page('Page.captureScreenshot', { format: 'jpeg', quality: 60 })
+        .then((shot) => {
+          if (this.cast === cast && !cast.frames) cast.onFrame({ data: shot.data, width: WIDTH, height: HEIGHT });
+        })
+        .catch(() => undefined);
+    }, 700);
+    cast.firstTimer.unref?.();
+  }
+
+  private onFrame(params: any): void {
+    const ack = () => void this.page('Page.screencastFrameAck', { sessionId: params.sessionId }).catch(() => undefined);
+    const cast = this.cast;
+    if (!cast) {
+      ack();
+      return;
+    }
+    cast.frames++;
+    const meta = params.metadata ?? {};
+    cast.onFrame({ data: String(params.data ?? ''), width: Number(meta.deviceWidth) || WIDTH, height: Number(meta.deviceHeight) || HEIGHT });
+    // The browser sends the next frame only once this one is acknowledged: that sets the pace.
+    clearTimeout(cast.ackTimer);
+    cast.ackTimer = setTimeout(ack, FRAME_INTERVAL_MS);
+    cast.ackTimer.unref?.();
+  }
+
+  /** The user's own mouse event (Take over); nothing happens while the browser is not running. */
+  async userMouse(event: UserMouseEvent): Promise<void> {
+    if (!this.running) return;
+    // The page sees which buttons are held on every event, so a move with one down is a drag
+    // (text selection, sliders, drag and drop), as with a real mouse.
+    if (event.type !== 'mouseWheel') this.lastMouse = { x: event.x, y: event.y };
+    const bit = MOUSE_BUTTON_BITS[event.button ?? 'none'] ?? 0;
+    if (event.type === 'mousePressed') this.buttons |= bit;
+    else if (event.type === 'mouseReleased') this.buttons &= ~bit;
+    const button = event.type === 'mouseMoved' ? heldButton(this.buttons) : event.button;
+    await this.page('Input.dispatchMouseEvent', { ...event, ...(button ? { button } : {}), buttons: this.buttons });
+  }
+
+  private async releaseButtons(): Promise<void> {
+    for (const [button, bit] of Object.entries(MOUSE_BUTTON_BITS)) {
+      if (this.buttons & bit) await this.userMouse({ type: 'mouseReleased', ...this.lastMouse, button: button as 'left' | 'right' | 'middle', clickCount: 1 });
+    }
+  }
+
+  /** The user's mouse buttons still held down, as the page sees them. */
+  get heldButtons(): number {
+    return this.buttons;
+  }
+
+  /** The user's own key event (Take over). */
+  async userKey(event: UserKeyEvent): Promise<void> {
+    if (!this.running) return;
+    const { type, key, code, keyCode, text, modifiers } = event;
+    await this.page('Input.dispatchKeyEvent', {
+      // A key that types nothing goes as a raw key, so the page does not get a stray character.
+      type: type === 'keyDown' && !text ? 'rawKeyDown' : type,
+      key,
+      code,
+      windowsVirtualKeyCode: keyCode,
+      nativeVirtualKeyCode: keyCode,
+      modifiers: modifiers ?? 0,
+      ...(type === 'keyDown' && text ? { text, unmodifiedText: text } : {}),
     });
+  }
+
+  /** Back, forward or reload, as the browser's own buttons do; false when there is nothing to go to. */
+  async history(action: 'back' | 'forward' | 'reload'): Promise<boolean> {
+    if (!this.running) return false;
+    if (action === 'reload') {
+      await this.page('Page.reload');
+      return true;
+    }
+    const { currentIndex, entries } = await this.page('Page.getNavigationHistory');
+    const entry = Array.isArray(entries) ? entries[currentIndex + (action === 'back' ? -1 : 1)] : undefined;
+    if (!entry) return false;
+    await this.page('Page.navigateToHistoryEntry', { entryId: entry.id });
+    return true;
+  }
+
+  /** Whether the page has somewhere to go back or forward to. */
+  async navigation(): Promise<{ canBack: boolean; canForward: boolean }> {
+    if (!this.running) return { canBack: false, canForward: false };
+    const { currentIndex, entries } = await this.page('Page.getNavigationHistory');
+    const count = Array.isArray(entries) ? entries.length : 0;
+    return { canBack: currentIndex > 0, canForward: currentIndex < count - 1 };
   }
 
   async navigate(url: string): Promise<void> {
@@ -229,8 +451,19 @@ export class HeadlessBrowser {
       /* already closed */
     }
     this.socket = undefined;
+    this.sessionId = undefined;
     killTree(this.proc?.pid);
     this.proc = undefined;
+    this.url = 'about:blank';
+    // The live view stays wanted (it starts with the browser's next start); the user's control ends with the page.
+    if (this.cast) {
+      clearTimeout(this.cast.ackTimer);
+      clearTimeout(this.cast.firstTimer);
+      this.cast.frames = 0;
+    }
+    this.held = false;
+    this.buttons = 0;
+    this.changed();
     if (this.profileDir) {
       const dir = this.profileDir;
       this.profileDir = undefined;

@@ -25,17 +25,22 @@ export function hunksHtml(change: Pick<FileChange, 'absPath' | 'relPath'>, hunks
   return `<div class="hunks">${hunks
     .map((h, i) => {
       const header = options.withHeader ? ` data-header="${attr(h.header)}"` : '';
-      const code = options.highlight ? highlighted(change.relPath, h, options.highlight) : [];
       return `<div class="hunk">
       <div class="hunk-head"><span class="mono muted">${escapeHtml(h.header)}</span><span class="spacer"></span>
         <button class="link" data-action="keep-hunk" data-path="${attr(change.absPath)}" data-index="${i}"${header} title="${attr(t('Keep this change'))}">${icon('check')}${escapeHtml(t('Keep'))}</button>
         <button class="link" data-action="revert-hunk" data-path="${attr(change.absPath)}" data-index="${i}"${header} title="${attr(t('Undo only this part of the change'))}">${icon('undo')}${escapeHtml(t('Revert part'))}</button></div>
-      <pre class="hunk-body mono">${h.lines
-        .map((l, j) => `<span class="hl ${l.type === '+' ? 'add' : l.type === '-' ? 'del' : ''}">${escapeHtml(l.type)}${code[j] ?? escapeHtml(l.text)}</span>`)
-        .join('\n')}${h.hidden ? `\n<span class="muted">${escapeHtml(t('… {n} more lines', { n: h.hidden }))}</span>` : ''}</pre>
+      ${hunkBodyHtml(change.relPath, h, options.highlight)}
     </div>`;
     })
     .join('')}</div>`;
+}
+
+/** A hunk's lines: + and - lines marked, highlighted when a highlighter is given, escaped otherwise. */
+export function hunkBodyHtml(relPath: string, h: HunkView, highlight?: Highlighter): string {
+  const code = highlight ? highlighted(relPath, h, highlight) : [];
+  return `<pre class="hunk-body mono">${h.lines
+    .map((l, j) => `<span class="hl ${l.type === '+' ? 'add' : l.type === '-' ? 'del' : ''}">${escapeHtml(l.type)}${code[j] ?? escapeHtml(l.text)}</span>`)
+    .join('\n')}${h.hidden ? `\n<span class="muted">${escapeHtml(t('… {n} more lines', { n: h.hidden }))}</span>` : ''}</pre>`;
 }
 
 /**

@@ -1,5 +1,6 @@
 import {
   type AgentEvent,
+  browserFor,
   type AgentOption,
   type AIProvider,
   type ApprovalRequest,
@@ -38,10 +39,12 @@ import {
   tn,
   type Tool,
   userRequests,
+  type WaitStatus,
 } from '@orka/core';
 import { createHash } from 'node:crypto';
 import { promises as fs, realpathSync, statSync } from 'node:fs';
 import * as path from 'node:path';
+import { BrowserPanel } from './browserPanel';
 import type { ConfigView, EditorSelection, HunkView, ImageAttachment, SessionMessage, SessionPost, ToWebview } from './protocol';
 import type { RunGate } from './runGate';
 import { readChoice, type SessionChoice } from './sessionModel';
@@ -84,7 +87,7 @@ export interface SessionContext {
   /** The agent CLI that runs the main agent's turns in this folder, when the main agent is one. */
   externalAgent(root: string): ExternalAgentRuntime | undefined;
   /** Tools of the MCP servers this session may use (started on demand). */
-  mcpTools(session: SessionController): Promise<Tool[]>;
+  mcpTools(session: SessionController): Promise<{ tools: Tool[]; notices: string[] }>;
   /** Every loaded skill, disabled ones too (a skill the user names is used as named). */
   skills(): readonly Skill[];
   activeSkills(): Skill[];
@@ -142,6 +145,8 @@ export class SessionController {
   readonly permissions: PermissionManager;
   /** The desktop app's Files tree and editor (VS Code has its own editor). */
   readonly files?: WorkspaceFiles;
+  /** The desktop Browser panel: the agent's browser of this session, live, and the user's Take over. */
+  readonly browserPanel?: BrowserPanel;
   private task = { id: newTaskId(), createdAt: new Date().toISOString() };
   private session: SessionView = emptySession();
   private readonly pendingApprovals = new Map<string, (response: ApprovalResponse) => void>();
@@ -200,6 +205,15 @@ export class SessionController {
     });
     this.root = this.host.workspaceRoot;
     this.files = shell.kind === 'desktop' ? new WorkspaceFiles(this.root) : undefined;
+    this.browserPanel =
+      shell.kind === 'desktop'
+        ? new BrowserPanel({
+            browser: browserFor(this.host),
+            post: (message) => this.post(message),
+            active: () => this.ctx.isActive(this),
+            processes: () => [...this.host.processes.values()].map((p) => ({ name: p.name, output: p.output, running: p.running })),
+          })
+        : undefined;
     const storage = shell.storage(folder);
     this.snapshots = new ShadowGit(folder, storage.snapshots);
     this.store = new FileTaskStore(storage.tasks);
@@ -258,6 +272,11 @@ export class SessionController {
     return this.pendingApprovals.size;
   }
 
+  /** Why the running request waits (the session list says it). */
+  get wait(): WaitStatus | undefined {
+    return this.isRunning ? this.session.wait : undefined;
+  }
+
   /** Changes waiting for Keep or Revert, or an open hand-off: closing the session would put them out of sight. */
   get hasPendingWork(): boolean {
     return this.session.changes.length > 0 || !!this.handoff;
@@ -309,6 +328,9 @@ export class SessionController {
       case 'stop':
         this.stop();
         break;
+      case 'cancelTool':
+        if (typeof message.id === 'string') this.orchestrator.cancelTool(message.id);
+        break;
       case 'rewind':
         await this.rewind(message.id);
         break;
@@ -328,7 +350,8 @@ export class SessionController {
         this.orchestrator.changes.accept(message.path);
         break;
       case 'revertChange':
-        await this.revert(message.path);
+        // The page hears whether the file was reverted (its review counts only what happened).
+        this.post({ type: 'changeReverted', path: message.path, reverted: await this.revert(message.path) });
         break;
       case 'getHunks':
         await this.postHunks(message.path);
@@ -371,6 +394,14 @@ export class SessionController {
         break;
       case 'useModelAsDefault':
         await this.ctx.useModelAsDefault(this);
+        break;
+      case 'browserView':
+      case 'browserOpen':
+      case 'browserNav':
+      case 'browserControl':
+      case 'browserInput':
+      case 'browserServers':
+        await this.browserPanel?.handle(message);
         break;
     }
   }
@@ -716,22 +747,24 @@ export class SessionController {
   /**
    * Revert one file. A file the user edited after the agent is never reverted as a whole (that would
    * throw their edit away): only the agent's part is undone, when it can be told apart cleanly.
+   * True when something was reverted.
    */
-  private async revert(absPath: string): Promise<void> {
+  private async revert(absPath: string): Promise<boolean> {
     const orchestrator = this.orchestrator;
     const rel = this.relPath(absPath);
-    if (this.workingNearby()) return;
+    if (this.workingNearby()) return false;
     if (!orchestrator.changes.isUserEdited(absPath)) {
-      if (await orchestrator.changes.revert(absPath)) orchestrator.addNote(`The user reverted your changes to ${rel}.`);
-      return;
+      const reverted = await orchestrator.changes.revert(absPath);
+      if (reverted) orchestrator.addNote(`The user reverted your changes to ${rel}.`);
+      return reverted;
     }
     const undo = t("Undo only the agent's part");
     const choice = await this.ctx.shell.message('warning', t('You edited {file} after the agent.', { file: rel }), { modal: true }, undo);
-    if (choice !== undo || this.workingNearby()) return;
+    if (choice !== undo || this.workingNearby()) return false;
     const result = await orchestrator.changes.revertAgentPart(absPath);
     if (result === 'reverted') {
       orchestrator.addNote(`The user undid your changes to ${rel} and kept their own edits. Re-read the file before editing it again.`);
-      return;
+      return true;
     }
     const reasons: Record<Exclude<typeof result, 'reverted'>, string> = {
       conflict: t("Could not separate your edits from the agent's in {file} (they are on the same or neighbouring lines); nothing was changed.", { file: rel }),
@@ -742,6 +775,7 @@ export class SessionController {
       notApplicable: t('The agent created or deleted {file}, so its part cannot be undone apart from your edits; nothing was changed.', { file: rel }),
     };
     this.publishNotice('warning', reasons[result]);
+    return false;
   }
 
   /** Hunks of one changed file for the Changes panel. */
@@ -752,7 +786,8 @@ export class SessionController {
       lines: h.lines.slice(0, MAX_HUNK_LINES).map((l) => ({ type: l.type, text: lineText(l.text) })),
       hidden: Math.max(0, h.lines.length - MAX_HUNK_LINES),
     }));
-    this.post({ type: 'hunks', path: absPath, hunks: views });
+    // total: the page tells a part that went (kept or reverted) from one that stayed, also past the parts sent.
+    this.post({ type: 'hunks', path: absPath, hunks: views, total: hunks.length });
   }
 
   /** Keep one part of a change (the rest stays reviewable). */
@@ -772,7 +807,9 @@ export class SessionController {
    */
   async revertHunk(absPath: string, index: number, header?: string): Promise<void> {
     const orchestrator = this.orchestrator;
-    if (!Number.isInteger(index) || index < 0 || this.workingNearby()) return;
+    if (!Number.isInteger(index) || index < 0) return;
+    // Nothing is undone while another session works nearby; the page still hears that the part stayed.
+    if (this.workingNearby()) return this.postHunks(absPath);
     const hunk = (await orchestrator.changes.hunks(absPath))[index];
     if (hunk && isShown(hunk, header) && (await orchestrator.changes.hunkTouchesUserEdit(absPath, index))) {
       void this.ctx.shell.message('warning', t('This part includes lines you edited; it was left as is.'));
@@ -1197,7 +1234,7 @@ export class SessionController {
       this.publishNotice('info', t('The provider hit a usage limit. You can continue this task in {agent} for free.', { agent: agent.label }), `handoff:${agent.id}`);
     }
     // The session list follows its state, its task and title (the first message comes after run_started).
-    if (event.type === 'run_started' || event.type === 'run_finished' || event.type === 'user_message' || event.type === 'reset') this.ctx.changed(this);
+    if (event.type === 'run_started' || event.type === 'run_finished' || event.type === 'user_message' || event.type === 'reset' || event.type === 'wait') this.ctx.changed(this);
     if (event.type === 'run_finished') {
       // Any approval still open belongs to a finished run.
       this.denyApprovals();
@@ -1229,6 +1266,8 @@ export class SessionController {
     // A hand-off belongs to the workspace and change list being dropped.
     this.handoff = undefined;
     this.orchestrator.dispose();
+    // Its browser closes with its processes; the panel lets go of it first.
+    this.browserPanel?.dispose();
     this.host.stopAllProcesses();
     this.denyApprovals();
     // Its stopped run may take a moment to end: its place and folder are free at once.

@@ -106,6 +106,29 @@ describe('ClaudeProvider (via the official SDK against a fake server)', () => {
     assert.equal(body.fallbacks, undefined);
     assert.equal(body.thinking, undefined, 'haiku 4.5 does not take adaptive thinking');
   });
+
+  it('a tool input that is not valid JSON is retried as such, even when it holds words like "terminated"', async () => {
+    const BAD_STREAM = sse([
+      ['message_start', { type: 'message_start', message: { id: 'msg_0', type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } }],
+      ['content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_0', name: 'read_file', input: {} } }],
+      ['content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"path" "fetch failed: network error, terminated"}' } }],
+      ['content_block_stop', { type: 'content_block_stop', index: 0 }],
+      ['message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 5 } }],
+      ['message_stop', { type: 'message_stop' }],
+    ]);
+    let served = 0;
+    const flaky = await fakeServer(() => (served++ === 0 ? BAD_STREAM : CLAUDE_STREAM));
+    try {
+      const provider = new ClaudeProvider({ apiKey: 'k', baseURL: flaky.url });
+      const events: ProviderStreamEvent[] = [];
+      const res = await provider.chat({ system: 's', messages: [{ role: 'user', content: [{ type: 'text', text: 'x' }] }], tools: TOOLS, selfRetry: true }, (e) => events.push(e));
+      assert.equal(flaky.requests.length, 2, 'the turn was redone at once, not reported as a broken connection');
+      assert.ok(events.some((e) => e.type === 'notice' && /malformed tool input/.test(e.message)));
+      assert.equal(res.stopReason, 'tool_use');
+    } finally {
+      flaky.server.close();
+    }
+  });
 });
 
 const OPENAI_STREAM = sse([

@@ -268,6 +268,10 @@ describe('orka CLI', { skip: !existsSync(ORKA) && 'build the CLI first (npm run 
     for (const name of ['@anthropic-ai/sdk', 'openai', '@google/genai']) assert.match(notices, new RegExp(`^${name} \\d+\\.\\d+\\.\\d+ \\(`, 'm'));
     assert.match(notices, /Apache License/);
     assert.doesNotMatch(notices, /^@orka\//m);
+    // The skills gallery's third-party skills (in dist/skills/gallery), with their NOTICE and licence.
+    assert.match(notices, /^Skill "systematic-debugging" \(skills\/gallery\/systematic-debugging\)\n\n[^\n]*\n\nSource: https:\/\/github\.com\/obra\/superpowers\/tree\/[0-9a-f]{40}\/[\s\S]*Copyright \(c\) 2025 Jesse Vincent[\s\S]*MIT License/m);
+    assert.match(notices, /^Skill "frontend-design" [\s\S]*Copyright \(c\) Anthropic, PBC[\s\S]*Apache License/m);
+    assert.doesNotMatch(notices, /^Skill "godot"/m, "Orka's own skills are under Orka's licence");
   });
 });
 

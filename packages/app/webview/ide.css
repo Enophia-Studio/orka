@@ -368,6 +368,11 @@
   color: var(--muted);
 }
 
+/* What a running session waits for (a retry counts down). */
+.side-wait {
+  max-width: 55%;
+}
+
 /* Section headings fold their section away. */
 .side-fold {
   flex: 1;
@@ -2042,4 +2047,129 @@
   .run-dot {
     animation: none;
   }
+}
+
+/* ---------------------------------------------------------------- Browser tab */
+
+/* Four tabs fit the side panel's width; a narrow one scrolls them instead of wrapping. */
+.aside-tabs {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.aside-tabs button {
+  flex-shrink: 0;
+  white-space: nowrap;
+  padding: 0 8px;
+}
+
+/* The Browser tab widens the side panel: a page needs more room than a list. */
+:root[data-layout='ide'] .aside.wide {
+  width: clamp(var(--aside-w), 40vw, 680px);
+}
+
+.browser-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+:root[data-layout='ide'] .aside .browser-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 10px;
+  font-size: var(--fs-13);
+}
+
+:root[data-layout='ide'] .aside .browser-panel[hidden] {
+  display: none;
+}
+
+.browser-bar,
+.browser-tools,
+.browser-servers {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.browser-tools,
+.browser-servers {
+  flex-wrap: wrap;
+}
+
+.browser-bar input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  font-size: var(--fs-12-5);
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.browser-bar input:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.browser-tools .btn .icon {
+  width: 13px;
+  height: 13px;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+
+.browser-servers .chip {
+  cursor: pointer;
+  padding-right: 8px;
+  color: var(--fg);
+}
+
+.browser-error {
+  color: var(--err);
+  font-size: var(--fs-12-5);
+  overflow-wrap: anywhere;
+}
+
+.browser-screen {
+  position: relative;
+  min-height: 120px;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.browser-screen.control {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+  cursor: default;
+}
+
+.browser-screen:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.browser-screen img {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+}
+
+.browser-empty {
+  padding: 24px 14px;
+  text-align: center;
+  font-size: var(--fs-12-5);
+}
+
+.browser-note {
+  margin: 0;
+  font-size: var(--fs-12);
 }

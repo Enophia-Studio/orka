@@ -11,9 +11,10 @@ const LAUNCH_CODE_TTL_MS = 3 * 60_000;
 /**
  * Replies with file contents and listings (the editor's). A page that reloads asks for them again,
  * so they are never kept for it: up to 2 MB each would sit in the backlog. A request to show a
- * session answers a click in the page; a page that loads later must not switch on its own.
+ * session answers a click in the page; a page that loads later must not switch on its own. The
+ * Browser panel's frames and state are live only: a page that loads asks for them again.
  */
-const NOT_KEPT = new Set<ToWebview['type']>(['dirEntries', 'fileContent', 'fileSaved', 'saveRefused', 'showSession']);
+const NOT_KEPT = new Set<ToWebview['type']>(['dirEntries', 'fileContent', 'fileSaved', 'saveRefused', 'showSession', 'skillPreview', 'browserState', 'browserFrame', 'browserServers']);
 const STATIC: Record<string, string> = {
   '/webview.js': 'text/javascript; charset=utf-8',
   '/webview.css': 'text/css; charset=utf-8',

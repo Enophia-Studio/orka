@@ -14,8 +14,10 @@ import {
   type AIProvider,
   type ChatRequest,
   type ChatResponse,
+  isConnectionError,
   ProviderError,
   type ProviderStreamEvent,
+  retryAfterFrom,
   type StopReason,
 } from './AIProvider';
 
@@ -36,6 +38,11 @@ export const DEFAULT_CLAUDE_MODEL = 'claude-opus-5-5';
 const PROVIDER_ID = 'claude';
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 const MAX_INVALID_JSON_RETRIES = 2;
+
+/** The SDK's error for a streamed tool input that is not valid JSON (with eager input streaming). */
+export function isToolInputParseError(error: unknown): boolean {
+  return error instanceof Anthropic.AnthropicError && !(error instanceof Anthropic.APIError) && error.message.startsWith('Unable to parse tool parameter JSON');
+}
 
 /** Models that take adaptive thinking + `output_config.effort` (Claude 4.6 and newer). */
 function supportsAdaptiveThinking(model: string): boolean {
@@ -62,14 +69,21 @@ export class ClaudeProvider implements AIProvider {
     const params = this.buildParams(request);
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.streamOnce(params, request.signal, onEvent);
+        return await this.streamOnce(params, request.signal, onEvent, request.selfRetry);
       } catch (error) {
         if (error instanceof Anthropic.APIUserAbortError || request.signal?.aborted) throw new AbortedError();
         // With eager input streaming the SDK raises a plain AnthropicError when a tool input is
         // not parseable JSON. That (and only that) is worth re-issuing; API errors are mapped.
         if (error instanceof Anthropic.APIError) throw mapApiError(error);
+        // The parse error quotes the model's own tool input, which may hold words such as
+        // "terminated", so it is told apart before the connection test.
+        const badToolInput = isToolInputParseError(error);
+        // A stream cut mid-answer (connection reset): the caller may try again.
+        if (!badToolInput && isConnectionError(error)) throw new ProviderError(`The connection to the Claude API broke off: ${(error as Error).message}`, 'network');
         if (error instanceof Anthropic.AnthropicError && attempt < MAX_INVALID_JSON_RETRIES) {
           onEvent({ type: 'notice', message: t('Model produced malformed tool input; retrying the turn.') });
+          // What this attempt streamed is replaced by the next one.
+          onEvent({ type: 'restart' });
           continue;
         }
         throw error instanceof Error ? new ProviderError(error.message, 'other') : error;
@@ -104,8 +118,9 @@ export class ClaudeProvider implements AIProvider {
     params: MessageCreateParamsStreaming,
     signal: AbortSignal | undefined,
     onEvent: (event: ProviderStreamEvent) => void,
+    selfRetry?: boolean,
   ): Promise<ChatResponse> {
-    const stream = this.client.beta.messages.stream(params, { signal });
+    const stream = this.client.beta.messages.stream(params, { signal, ...(selfRetry ? { maxRetries: 0 } : {}) });
     for await (const event of stream) {
       if (event.type === 'content_block_start') {
         const block = event.content_block;
@@ -226,8 +241,9 @@ function mapApiError(error: InstanceType<typeof Anthropic.APIError>): ProviderEr
   if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) {
     return new ProviderError(`Claude rejected the API key (${error.status}). ${error.message}`, 'auth', error.status);
   }
+  const retry = { retryAfterMs: retryAfterFrom(error.headers) };
   if (error instanceof Anthropic.RateLimitError) {
-    return new ProviderError(`Claude rate limit reached. ${error.message}`, 'rate_limit', error.status);
+    return new ProviderError(`Claude rate limit reached. ${error.message}`, 'rate_limit', error.status, undefined, retry);
   }
   if (error instanceof Anthropic.BadRequestError || error instanceof Anthropic.NotFoundError) {
     return new ProviderError(`Claude rejected the request: ${error.message}`, 'bad_request', error.status);
@@ -235,5 +251,6 @@ function mapApiError(error: InstanceType<typeof Anthropic.APIError>): ProviderEr
   if (error instanceof Anthropic.APIConnectionError) {
     return new ProviderError(`Could not reach the Claude API: ${error.message}`, 'network');
   }
-  return new ProviderError(`Claude API error: ${error.message}`, 'server', error.status);
+  // 5xx, 529 overloaded, an error event mid-stream (no status), 408/409: worth another try.
+  return new ProviderError(`Claude API error: ${error.message}`, 'server', error.status, undefined, retry);
 }

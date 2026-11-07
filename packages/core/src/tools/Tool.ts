@@ -41,6 +41,8 @@ export interface Tool<Input = any> {
   name: string;
   /** Changes nothing (MCP tools marked read-only); read-only sub-agents may use it. */
   readOnly?: boolean;
+  /** Cuts its own result to a limit the user sets (MCP tools): the agent's general cut is not applied again. */
+  capsOwnResult?: boolean;
   description: string;
   inputSchema: JsonSchema;
   /** Describe the concrete action (and its risk) before it runs - drives permissions and UI. */

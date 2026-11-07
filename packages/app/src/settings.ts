@@ -1,9 +1,16 @@
 import {
   type ClaudeEffort,
+  DEFAULT_MAX_RETRIES,
   DEFAULT_SUBAGENTS,
   isPrice,
+  MAX_RETRIES_LIMIT,
   readHooks,
+  MCP_LIMIT_RANGES,
+  type McpLimits,
   type McpServerConfig,
+  type McpServerLimits,
+  readMcpLimits,
+  readMcpServerLimits,
   type OrchestratorSettings,
   type PermissionMode,
   type PermissionOverrides,
@@ -113,7 +120,7 @@ export interface AppSettings {
   pricing: PriceTable;
   skills: { enabled: boolean; disabled: string[] };
   /** MCP servers from the settings (the workspace .mcp.json is read separately). */
-  mcp: { enabled: boolean; servers: Record<string, McpServerConfig> };
+  mcp: { enabled: boolean; servers: Record<string, McpServerConfig>; limits: McpLimits; serverLimits: Record<string, McpServerLimits> };
   /** Snapshot the workspace around terminal commands so their file changes can be reverted. */
   trackCommandChanges: boolean;
   /** Highlight AI changes in the editor with Keep / Revert code lenses (VS Code). */
@@ -233,6 +240,7 @@ export function readSettings(c: SettingsStore): AppSettings {
     },
     orchestrator: {
       maxIterations: Math.max(1, c.get<number>('maxIterations', 60)),
+      maxRetries: retriesSetting(c.get<unknown>('maxRetries', DEFAULT_MAX_RETRIES)),
       autoVerify: c.get<boolean>('autoVerify', true),
       commandTimeoutMs: Math.max(5, c.get<number>('commandTimeoutSeconds', 180)) * 1000,
       customInstructions: c.get<string>('customInstructions', ''),
@@ -257,7 +265,17 @@ export function readSettings(c: SettingsStore): AppSettings {
     inlineReview: c.get<boolean>('inlineReview', true),
     browserPath: c.get<string>('browser.path', '').trim() || undefined,
     hooksFromWorkspace: c.scopeOf?.('hooks') === 'workspace',
-    mcp: { enabled: c.get<boolean>('mcp.enabled', true), servers: readMcpServers(c.get<Record<string, unknown>>('mcpServers', {})) },
+    mcp: {
+      enabled: c.get<boolean>('mcp.enabled', true),
+      servers: readMcpServers(c.get<Record<string, unknown>>('mcpServers', {})),
+      limits: readMcpLimits({
+        maxResultChars: c.get<unknown>('mcp.maxResultChars', undefined),
+        callTimeoutSeconds: c.get<unknown>('mcp.callTimeoutSeconds', undefined),
+        startTimeoutSeconds: c.get<unknown>('mcp.startTimeoutSeconds', undefined),
+        maxTools: c.get<unknown>('mcp.maxTools', undefined),
+      }),
+      serverLimits: readMcpServerLimits(c.get<unknown>('mcp.serverLimits', {})),
+    },
     checkUpdates: c.get<boolean>('updates.check', true) !== false,
     agentClis,
     desktop: {
@@ -363,6 +381,11 @@ const MODEL_ID = /^[\w.:/@-]{1,160}$/;
 
 const int = (min: number, max: number) => (v: unknown) => Number.isInteger(v) && (v as number) >= min && (v as number) <= max;
 
+/** The retry setting as a whole number in range; a value that is not a number (hand-edited) is the default. */
+export function retriesSetting(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(MAX_RETRIES_LIMIT, Math.max(0, Math.floor(value))) : DEFAULT_MAX_RETRIES;
+}
+
 /** Sessions running at once by default, and the most the setting allows. */
 export const DEFAULT_MAX_RUNNING = 3;
 export const MAX_RUNNING_LIMIT = 8;
@@ -387,6 +410,7 @@ export const WEBVIEW_SETTINGS: Record<string, (value: unknown) => boolean> = {
   trackCommandChanges: (v) => typeof v === 'boolean',
   inlineReview: (v) => typeof v === 'boolean',
   maxIterations: int(1, 500),
+  maxRetries: int(0, MAX_RETRIES_LIMIT),
   commandTimeoutSeconds: int(5, 3600),
   shell: (v) => SHELL_CHOICES.includes(v as string),
   customInstructions: (v) => typeof v === 'string' && (v as string).length < 20_000,
@@ -404,6 +428,10 @@ export const WEBVIEW_SETTINGS: Record<string, (value: unknown) => boolean> = {
   'skills.enabled': (v) => typeof v === 'boolean',
   'memory.learn': (v) => typeof v === 'boolean',
   'mcp.enabled': (v) => typeof v === 'boolean',
+  'mcp.maxResultChars': int(...MCP_LIMIT_RANGES.maxResultChars),
+  'mcp.callTimeoutSeconds': int(...MCP_LIMIT_RANGES.callTimeoutSeconds),
+  'mcp.startTimeoutSeconds': int(...MCP_LIMIT_RANGES.startTimeoutSeconds),
+  'mcp.maxTools': int(...MCP_LIMIT_RANGES.maxTools),
   'claude.effort': (v) => ['low', 'medium', 'high', 'xhigh', 'max'].includes(v as string),
   'claude.refusalFallback': (v) => typeof v === 'boolean',
   'openai.baseUrl': (v) => typeof v === 'string' && /^https?:\/\/\S+$/.test(v as string),
@@ -445,6 +473,7 @@ export const MACHINE_SETTINGS = new Set([
   'accounts.claudeProfile',
   'browser.path',
   'mcpServers',
+  'mcp.serverLimits',
   'customProviders',
   'openai.baseUrl',
   'permissions.fileEdit',
@@ -457,6 +486,10 @@ export const MACHINE_SETTINGS = new Set([
 /** Settings that describe the user rather than a project; written globally unless already set elsewhere. */
 export const USER_LEVEL_SETTINGS = new Set([
   'mcp.enabled',
+  'mcp.maxResultChars',
+  'mcp.callTimeoutSeconds',
+  'mcp.startTimeoutSeconds',
+  'mcp.maxTools',
   'claudeCode.enabled',
   'claudeCode.autoUpdate',
   'language',
