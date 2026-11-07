@@ -25,7 +25,7 @@ import type {
   ToWebview,
 } from '../src/protocol';
 import { forShownSession, post, saveUiState, setSessionId, shownSessionId, uiState } from './core/bridge';
-import { attr, escapeHtml, icon, markdownBlocks, renderMarkdown } from './core/dom';
+import { attr, escapeHtml, icon, markdownBlocks, renderFinishedMarkdown, renderMarkdown } from './core/dom';
 import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
 import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAccountHtml, type AddAccountState } from './features/accounts';
@@ -3824,12 +3824,14 @@ function itemHtml(item: TranscriptItem, nested: boolean): string {
       return `<div class="msg user" data-id="${attr(item.id)}"><div class="bubble">${escapeHtml(item.text)}</div>${chips.length ? `<div class="chips sent">${chips.join('')}</div>` : ''}${rewind}</div>`;
     }
     case 'assistant': {
-      if (nested) return item.text.trim() ? `<div class="step-note" data-id="${attr(item.id)}">${renderMarkdown(item.text)}</div>` : '';
+      // A finished answer's HTML is kept for the next time it is drawn (another session shown, a full redraw).
+      const markdown = item.streaming ? renderMarkdown : renderFinishedMarkdown;
+      if (nested) return item.text.trim() ? `<div class="step-note" data-id="${attr(item.id)}">${markdown(item.text)}</div>` : '';
       const reasoning = item.reasoning.trim()
-        ? `<details class="reasoning"${item.streaming && !item.text ? ' open' : ''}><summary>${escapeHtml(t('Thinking'))}</summary><div class="reasoning-body">${renderMarkdown(item.reasoning)}</div></details>`
+        ? `<details class="reasoning"${item.streaming && !item.text ? ' open' : ''}><summary>${escapeHtml(t('Thinking'))}</summary><div class="reasoning-body">${markdown(item.reasoning)}</div></details>`
         : '';
       const body = item.text
-        ? `<div class="markdown">${renderMarkdown(item.text)}</div>`
+        ? `<div class="markdown">${markdown(item.text)}</div>`
         : item.streaming && !item.reasoning
           ? '<div class="typing"><span></span><span></span><span></span></div>'
           : '';
@@ -4129,16 +4131,22 @@ function scrollToBottom(): void {
   el.transcript.scrollTop = el.transcript.scrollHeight;
 }
 
-function renderTranscript(): void {
-  const stick = nearBottom();
+/**
+ * The transcript stays at its end if it was there. `toBottom`: the caller scrolls it to its end
+ * once the page is drawn (a session shown anew), so where the old one was is not asked: that would
+ * lay out the old transcript just before it goes.
+ */
+function renderTranscript(toBottom = false): void {
+  const stick = !toBottom && nearBottom();
   el.transcript.innerHTML = '';
   renderStarters();
   if (!session.items.length) {
     el.transcript.innerHTML = renderEmptyState();
-    updateToBottom();
+    if (!toBottom) updateToBottom();
     return;
   }
   for (const item of session.items) el.transcript.appendChild(nodeFor(item));
+  if (toBottom) return;
   if (stick) scrollToBottom();
   updateToBottom();
 }
@@ -4149,13 +4157,18 @@ if (layout === 'ide') {
   if (toBottom) toBottom.innerHTML = icon('arrowDown');
 }
 
-function renderAll(): void {
+/** `toBottom`: the transcript ends scrolled to its end (a session shown anew), laid out once. */
+function renderAll(toBottom = false): void {
   renderStatic();
   renderChrome();
   renderView();
-  renderTranscript();
+  renderTranscript(toBottom);
   renderSidebar();
   renderRadar();
+  if (toBottom) {
+    scrollToBottom();
+    updateToBottom();
+  }
 }
 
 /** Keep what the user typed/toggled (approval notes, open <details>) across a re-render. */
@@ -4336,8 +4349,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       applyAppearance();
       ui.hunks.clear();
       syncFilesFolder();
-      renderAll();
-      scrollToBottom();
+      renderAll(true);
       if (layout === 'ide') post({ type: 'listSessions' });
       break;
     }

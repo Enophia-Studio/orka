@@ -18,6 +18,35 @@ export function renderMarkdown(text: string): string {
   }
 }
 
+/** Finished texts rendered lately, newest last, and how many characters they hold together. */
+const renderedTexts = new Map<string, string>();
+let renderedSize = 0;
+const RENDERED_MAX_CHARS = 4_000_000;
+
+/**
+ * renderMarkdown for text that no longer changes (a finished answer): a session shown again, or
+ * redrawn whole, renders the same answers again, so the last few megabytes of them are kept.
+ */
+export function renderFinishedMarkdown(text: string): string {
+  const known = renderedTexts.get(text);
+  if (known !== undefined) {
+    renderedTexts.delete(text);
+    renderedTexts.set(text, known);
+    return known;
+  }
+  const html = renderMarkdown(text);
+  const size = text.length + html.length;
+  if (size > RENDERED_MAX_CHARS / 8) return html;
+  renderedTexts.set(text, html);
+  renderedSize += size;
+  for (const [oldest, oldHtml] of renderedTexts) {
+    if (renderedSize <= RENDERED_MAX_CHARS) break;
+    renderedTexts.delete(oldest);
+    renderedSize -= oldest.length + oldHtml.length;
+  }
+  return html;
+}
+
 /** One top-level block of Markdown text: its source, its kind ('space' for blank lines) and its HTML. */
 export interface MarkdownBlock {
   raw: string;

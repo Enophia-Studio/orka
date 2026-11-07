@@ -1,7 +1,8 @@
 // Markdown split into blocks for a streaming answer: the blocks together are the whole answer.
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { markdownBlocks, renderMarkdown } from '../webview/core/dom';
+import { marked } from 'marked';
+import { markdownBlocks, renderFinishedMarkdown, renderMarkdown } from '../webview/core/dom';
 
 const SAMPLE = [
   '# Plan',
@@ -47,5 +48,36 @@ describe('markdown blocks', () => {
   it('keeps raw HTML escaped in each block', () => {
     const html = markdownBlocks('<script>alert(1)</script>\n\ntext')!.map((b) => b.html()).join('');
     assert.doesNotMatch(html, /<script>/);
+  });
+});
+
+describe('finished Markdown', () => {
+  it('is rendered once and kept, within a size budget', () => {
+    let parsed = 0;
+    marked.use({
+      hooks: {
+        preprocess: (text: string) => {
+          parsed++;
+          return text;
+        },
+      },
+    });
+    const answer = 'A finished **answer** with `code`.';
+    const html = renderFinishedMarkdown(answer);
+    assert.equal(html, renderMarkdown(answer));
+    parsed = 0;
+    assert.equal(renderFinishedMarkdown(answer), html);
+    assert.equal(parsed, 0, 'drawn again without rendering it again');
+    // Many other answers later, the oldest ones make way.
+    for (let i = 0; i < 400; i++) renderFinishedMarkdown(`${'x'.repeat(10_000)} ${i}`);
+    parsed = 0;
+    renderFinishedMarkdown(answer);
+    assert.equal(parsed, 1, 'rendered again once it made way');
+    // A very long text is not kept at all.
+    const huge = 'y'.repeat(600_000);
+    renderFinishedMarkdown(huge);
+    parsed = 0;
+    renderFinishedMarkdown(huge);
+    assert.equal(parsed, 1);
   });
 });
