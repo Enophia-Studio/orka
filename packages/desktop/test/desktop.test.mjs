@@ -674,6 +674,53 @@ globalThis.fetch = (input, init) => {
     assert.equal(readFileSync(path.join(work, 'src', 'calc.ts'), 'utf8'), after);
   });
 
+  it('reviews the changes part by part with the keyboard and puts the comments into the message box, unsent', async () => {
+    mkdirSync(path.join(work, 'src'));
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+    const before = `${lines.join('\n')}\n`;
+    const after = `${lines.map((l, i) => (i === 1 ? 'LINE 2' : i === 17 ? 'LINE 18' : l)).join('\n')}\n`;
+    writeFileSync(path.join(work, 'src', 'list.txt'), before);
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    script = [() => toolUse('toolu_w', 'write_file', { path: 'src/list.txt', content: after }), () => reply('Upper-cased two lines.'), () => reply('Nothing to build.')];
+    await ask('Upper-case lines 2 and 18', 'Upper-cased two lines.');
+    const sentBefore = requests.length;
+    await showChanges();
+
+    await browser.clickSelector('[data-action="review-start"]');
+    await until(() => browser.evaluate('!!document.querySelector(".review .hunk-body")'), 'the first part');
+    const panel = () => browser.evaluate('document.querySelector("#changes-panel").textContent');
+    assert.match(await panel(), /File 1 of 1/);
+    assert.match(await panel(), /Part 1 of 2/);
+    const key = (k, init = {}) =>
+      browser.evaluate(`(document.activeElement && document.querySelector('#changes-panel').contains(document.activeElement) ? document.activeElement : document.querySelector('.review')).dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(k)}, bubbles: true, cancelable: true, ...${JSON.stringify(init)} }))`);
+    // k keeps the first part; the second one takes its place.
+    await key('k');
+    await until(async () => /Part 1 of 1/.test(await panel()), 'the next part');
+    assert.match(await browser.evaluate('document.querySelector(".review .hunk-body").textContent'), /LINE 18/);
+    // c opens a comment box; Ctrl+Enter adds the comment.
+    await key('c');
+    await until(() => browser.evaluate('document.activeElement?.id === "review-comment"'), 'the comment box');
+    await browser.evaluate(`document.getElementById('review-comment').value = 'Keep line 18 as it was, it is a heading.'`);
+    await key('Enter', { ctrlKey: true });
+    await until(async () => /it is a heading/.test(await panel()), 'the comment');
+    // r reverts the second part: the file keeps only the first change.
+    await key('r');
+    await until(async () => /Review finished/.test(await panel()), 'the summary');
+    assert.equal(readFileSync(path.join(work, 'src', 'list.txt'), 'utf8'), after.replace('LINE 18', 'line 18'));
+    assert.match(await panel(), /1 kept/);
+    assert.match(await panel(), /1 reverted/);
+    assert.match(await panel(), /1 comment/);
+
+    await browser.evaluate('document.querySelector(".review .btn[data-action=review-feedback]").click()');
+    const draft = await browser.evaluate('document.getElementById("input").value');
+    assert.match(draft, /^Feedback on your changes:\n- src\/list\.txt \(@@ [^)]+\): Keep line 18 as it was, it is a heading\.\nI reverted: src\/list\.txt \(@@ [^)]+\)\.\nI kept 1 part\.$/);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(requests.length, sentBefore, 'nothing was sent to the agent');
+    assert.equal(await browser.evaluate('!!document.querySelector(".review")'), false, 'the review closed');
+  });
+
   it('keeps a file the user edited after the agent: Revert all, Go back, then undoes only the agent part', async () => {
     const notes = path.join(work, 'notes', 'hello.txt');
     mkdirSync(path.join(work, 'notes'));
@@ -1286,6 +1333,40 @@ globalThis.fetch = (input, init) => {
     });
     await until(() => browser.evaluate('!!document.querySelector(".catalog-row[data-entry=brave-search] .pill.ok")'), 'shown as added');
     assert.ok(!(await browser.evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(key)})`)), 'the key is never on the page');
+  });
+
+  it("limits an MCP server's tools from Settings → MCP → Limits, and the next request gets only the allowed ones", async () => {
+    const fakeMcp = path.join(here, '..', '..', 'core', 'test', 'fixtures', 'fake-mcp.mjs');
+    addSettings({ mcpServers: { unity: { command: process.execPath, args: [fakeMcp] } } });
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    script = [() => reply('Hello.')];
+    await ask('hi', 'Hello.');
+    const toolNames = (i) => requests[i].body.tools.map((tool) => tool.name).filter((name) => name.startsWith('mcp__'));
+    assert.deepEqual(toolNames(0), ['mcp__unity__get_scene', 'mcp__unity__delete_object']);
+
+    await browser.clickSelector('[data-action="open-settings"]');
+    await browser.clickSelector('[data-action="tab"][data-tab="mcp"]');
+    await until(() => browser.evaluate('!!document.querySelector(".mcp-limits [data-setting=\\"mcp.maxTools\\"]")'), 'the global limits');
+    await browser.clickSelector('[data-action="mcp-limits"][data-name="unity"]');
+    await until(() => browser.evaluate('!!document.querySelector("[data-mcp-tool=delete_object]")'), "the server's tools");
+    await browser.evaluate(`(() => {
+      document.querySelector('[data-mcp-tool=delete_object]').checked = false;
+      document.querySelector('[data-mcp-limit=maxResultChars]').value = '2000';
+    })()`);
+    await browser.clickSelector('[data-action="mcp-limits-save"][data-name="unity"]');
+    await until(() => settingsFile()['mcp.serverLimits']?.unity, 'the limits in the settings');
+    assert.deepEqual(settingsFile()['mcp.serverLimits'], { unity: { maxResultChars: 2000, allowedTools: ['get_scene'] } });
+    await until(async () => /1 of 2 tools/.test(await text()), 'the tool count');
+
+    // A task keeps the tools it started with: the limits apply from the next one.
+    await browser.clickSelector('[data-action="close-settings"]');
+    await newSessionIn(work);
+    await until(async () => (await text()).includes('What should we build?'), 'a new session');
+    script = [() => reply('Hello again.')];
+    await ask('hi again', 'Hello again.');
+    assert.deepEqual(toolNames(1), ['mcp__unity__get_scene']);
   });
 
   it('adds a skill from the gallery to <Orka home>/skills, previews one, asks before a download, and removes it after asking', async () => {
