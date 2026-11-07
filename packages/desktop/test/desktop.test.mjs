@@ -18,6 +18,8 @@ const require = createRequire(import.meta.url);
 const core = path.join(here, '..', '..', 'core', 'dist', 'src', 'browser', 'HeadlessBrowser.js');
 const { HeadlessBrowser, findBrowser } = existsSync(core) ? require(core) : {};
 
+/** A JavaScript string literal for code run in the page, safe inside <script> and with line separators. */
+const jsString = (value) => JSON.stringify(String(value)).replace(/[<>/\u2028\u2029]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 const sse = (events) => events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join('');
 const start = (id) => ['message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: 'claude-opus-5-5', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 50, output_tokens: 1 } } }];
 const toolUse = (id, name, input) =>
@@ -848,7 +850,7 @@ globalThis.fetch = (input, init) => {
         await browser.clickSelector('#send');
         await until(async () => (await text()).includes(answer), 'the reply');
         return until(
-          () => browser.evaluate(`[...document.querySelectorAll(".side-item")].find((e) => e.textContent.includes(${JSON.stringify(prompt)}))?.querySelector(".side-more")?.dataset.id`),
+          () => browser.evaluate(`[...document.querySelectorAll(".side-item")].find((e) => e.textContent.includes(${jsString(prompt)}))?.querySelector(".side-more")?.dataset.id`),
           `the row of ${prompt}`,
         );
       };
@@ -954,7 +956,7 @@ globalThis.fetch = (input, init) => {
       await until(chooser, 'the folder choice');
       await browser.clickSelector('.new-session-menu [data-action="new-session-other"]');
       await until(() => browser.evaluate('!!document.querySelector(".folder-picker .fp-path")'), 'the folder picker');
-      await browser.evaluate(`(() => { const f = document.querySelector(".fp-path"); f.focus(); f.value = ${JSON.stringify(third)}; return true; })()`);
+      await browser.evaluate(`(() => { const f = document.querySelector(".fp-path"); f.focus(); f.value = ${jsString(third)}; return true; })()`);
       await browser.press('Enter');
       await until(async () => (await browser.evaluate('document.querySelector(".fp-path").value')) === third && (await browser.evaluate('!document.querySelector("[data-fp=open]").disabled')), 'the third folder shown');
       await browser.clickSelector('[data-fp="open"]');

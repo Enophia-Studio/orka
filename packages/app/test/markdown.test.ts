@@ -47,7 +47,7 @@ describe('markdown blocks', () => {
 
   it('keeps raw HTML escaped in each block', () => {
     const html = markdownBlocks('<script>alert(1)</script>\n\ntext')!.map((b) => b.html()).join('');
-    assert.doesNotMatch(html, /<script>/);
+    assert.ok(!html.toLowerCase().includes("<script"), html);
   });
 });
 
