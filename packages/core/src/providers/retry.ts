@@ -95,7 +95,8 @@ export async function chatWithRetry(
   options: RetryOptions,
 ): Promise<ChatResponse> {
   const timing = options.timing ?? DEFAULT_RETRY_TIMING;
-  const max = Math.max(0, Math.min(MAX_RETRIES_LIMIT, Math.floor(options.maxRetries)));
+  // A value that is not a number (a hand-edited setting) falls back to the default, never to "forever".
+  const max = Number.isFinite(options.maxRetries) ? Math.max(0, Math.min(MAX_RETRIES_LIMIT, Math.floor(options.maxRetries))) : DEFAULT_MAX_RETRIES;
   const now = options.now ?? Date.now;
   for (let attempt = 0; ; attempt++) {
     try {

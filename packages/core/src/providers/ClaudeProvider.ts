@@ -39,6 +39,11 @@ const PROVIDER_ID = 'claude';
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 const MAX_INVALID_JSON_RETRIES = 2;
 
+/** The SDK's error for a streamed tool input that is not valid JSON (with eager input streaming). */
+export function isToolInputParseError(error: unknown): boolean {
+  return error instanceof Anthropic.AnthropicError && !(error instanceof Anthropic.APIError) && error.message.startsWith('Unable to parse tool parameter JSON');
+}
+
 /** Models that take adaptive thinking + `output_config.effort` (Claude 4.6 and newer). */
 function supportsAdaptiveThinking(model: string): boolean {
   return !/claude-(3|haiku-4|sonnet-4-5|sonnet-4-0|sonnet-4-2|opus-4-0|opus-4-1|opus-4-5|opus-4-2)/.test(model);
@@ -70,8 +75,11 @@ export class ClaudeProvider implements AIProvider {
         // With eager input streaming the SDK raises a plain AnthropicError when a tool input is
         // not parseable JSON. That (and only that) is worth re-issuing; API errors are mapped.
         if (error instanceof Anthropic.APIError) throw mapApiError(error);
+        // The parse error quotes the model's own tool input, which may hold words such as
+        // "terminated", so it is told apart before the connection test.
+        const badToolInput = isToolInputParseError(error);
         // A stream cut mid-answer (connection reset): the caller may try again.
-        if (isConnectionError(error)) throw new ProviderError(`The connection to the Claude API broke off: ${(error as Error).message}`, 'network');
+        if (!badToolInput && isConnectionError(error)) throw new ProviderError(`The connection to the Claude API broke off: ${(error as Error).message}`, 'network');
         if (error instanceof Anthropic.AnthropicError && attempt < MAX_INVALID_JSON_RETRIES) {
           onEvent({ type: 'notice', message: t('Model produced malformed tool input; retrying the turn.') });
           // What this attempt streamed is replaced by the next one.

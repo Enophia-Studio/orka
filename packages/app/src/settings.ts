@@ -240,7 +240,7 @@ export function readSettings(c: SettingsStore): AppSettings {
     },
     orchestrator: {
       maxIterations: Math.max(1, c.get<number>('maxIterations', 60)),
-      maxRetries: Math.min(MAX_RETRIES_LIMIT, Math.max(0, Math.floor(c.get<number>('maxRetries', DEFAULT_MAX_RETRIES)))),
+      maxRetries: retriesSetting(c.get<unknown>('maxRetries', DEFAULT_MAX_RETRIES)),
       autoVerify: c.get<boolean>('autoVerify', true),
       commandTimeoutMs: Math.max(5, c.get<number>('commandTimeoutSeconds', 180)) * 1000,
       customInstructions: c.get<string>('customInstructions', ''),
@@ -380,6 +380,11 @@ function readCustomProviders(raw: unknown[] | undefined): CustomProviderDef[] {
 const MODEL_ID = /^[\w.:/@-]{1,160}$/;
 
 const int = (min: number, max: number) => (v: unknown) => Number.isInteger(v) && (v as number) >= min && (v as number) <= max;
+
+/** The retry setting as a whole number in range; a value that is not a number (hand-edited) is the default. */
+export function retriesSetting(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.min(MAX_RETRIES_LIMIT, Math.max(0, Math.floor(value))) : DEFAULT_MAX_RETRIES;
+}
 
 /** Sessions running at once by default, and the most the setting allows. */
 export const DEFAULT_MAX_RUNNING = 3;

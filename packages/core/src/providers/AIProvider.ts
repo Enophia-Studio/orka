@@ -92,8 +92,11 @@ const CONNECTION_CODES = new Set([
   'UND_ERR_HEADERS_TIMEOUT',
   'UND_ERR_BODY_TIMEOUT',
 ]);
-/** Messages of the same, lower case (fetch says "fetch failed", a cut stream "terminated"). */
-const CONNECTION_TEXTS = ['fetch failed', 'terminated', 'socket hang up', 'other side closed', 'network error', 'econnreset', 'connection reset', 'connection error', 'premature close'];
+/**
+ * Messages of the same, lower case and as whole words (fetch says "fetch failed", a cut stream
+ * "terminated"), so "Unterminated string in JSON" is not one.
+ */
+const CONNECTION_TEXTS = /\b(?:fetch failed|terminated|socket hang up|other side closed|network error|econnreset|connection reset|connection error|premature close)\b/;
 
 /** A connection that failed or broke off mid-stream (worth another try), as opposed to an answer the server gave. */
 export function isConnectionError(error: unknown): boolean {
@@ -101,8 +104,7 @@ export function isConnectionError(error: unknown): boolean {
   for (let depth = 0; current instanceof Error && depth < 4; depth++) {
     const code = (current as { code?: unknown }).code;
     if (typeof code === 'string' && CONNECTION_CODES.has(code)) return true;
-    const message = current.message.toLowerCase();
-    if (CONNECTION_TEXTS.some((text) => message.includes(text))) return true;
+    if (CONNECTION_TEXTS.test(current.message.toLowerCase())) return true;
     current = (current as { cause?: unknown }).cause;
   }
   return false;

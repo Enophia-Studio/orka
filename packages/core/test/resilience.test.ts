@@ -19,7 +19,7 @@ import {
 } from '../src/providers/AIProvider';
 import { ClaudeCodeProvider, classifyError } from '../src/providers/ClaudeCodeProvider';
 import { geminiRetryDelay } from '../src/providers/GeminiProvider';
-import { chatWithRetry, DEFAULT_RETRY_TIMING, isTransient, retryDelay } from '../src/providers/retry';
+import { chatWithRetry, DEFAULT_MAX_RETRIES, DEFAULT_RETRY_TIMING, isTransient, retryDelay } from '../src/providers/retry';
 import type { AssistantMessage } from '../src/types';
 import { applyEvent, emptySession } from '../src/ui/transcript';
 import { clockTime, toolLabel, waitLabel } from '../src/ui/waitStatus';
@@ -108,6 +108,8 @@ describe('retries: which failures, how long', () => {
     assert.equal(isConnectionError(Object.assign(new Error('read'), { code: 'ECONNRESET' })), true);
     assert.equal(isConnectionError(new Error('wrapped', { cause: Object.assign(new Error('x'), { code: 'UND_ERR_SOCKET' }) })), true);
     assert.equal(isConnectionError(new Error('Invalid JSON in tool input')), false);
+    assert.equal(isConnectionError(new SyntaxError('Unterminated string in JSON at position 12')), false);
+    assert.equal(isConnectionError(new Error('read ECONNRESET')), true);
     assert.equal(classifyError('API Error: 529 {"type":"overloaded_error"}'), 'server');
     assert.equal(classifyError('API Error: Connection error.'), 'network');
     assert.equal(classifyError('Claude AI usage limit reached|1767000000'), 'rate_limit');
@@ -133,6 +135,16 @@ describe('retries: which failures, how long', () => {
     const auth = new FlakyProvider([() => Promise.reject(new ProviderError('bad key', 'auth', 401))]);
     await assert.rejects(chatWithRetry(auth, { system: '', messages: [], tools: [] }, () => {}, { maxRetries: 3, timing: FAST }), /bad key/);
     assert.equal(auth.requests.length, 1);
+
+    // A setting that is not a number (hand-edited) means the default number of retries, not endless ones.
+    const down = new FlakyProvider(Array.from({ length: 20 }, () => cut('z')));
+    const tries: number[] = [];
+    await assert.rejects(
+      chatWithRetry(down, { system: '', messages: [], tools: [] }, () => {}, { maxRetries: Number('three'), timing: FAST, sleep: async () => {}, onRetry: (info) => tries.push(info.max) }),
+      /broke off/,
+    );
+    assert.equal(down.requests.length, DEFAULT_MAX_RETRIES + 1);
+    assert.ok(tries.every((max) => max === DEFAULT_MAX_RETRIES));
 
     // Stop during a long wait ends it at once.
     const abort = new AbortController();
