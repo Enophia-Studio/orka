@@ -2890,3 +2890,31 @@ input.num.wide {
 .catalog-form input.warn {
   border-color: var(--warn);
 }
+
+/* ---------------------------------------------------------------- skills gallery (Settings > Skills > Gallery) */
+
+.catalog-row .key-row {
+  gap: 12px;
+}
+
+.skill-preview {
+  width: min(760px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skill-preview-text {
+  flex: 1;
+  min-height: 0;
+  max-height: 60vh;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--fs-12);
+  background: var(--code-bg);
+  border-radius: var(--radius-sm);
+}

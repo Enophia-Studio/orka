@@ -25,8 +25,15 @@ import {
   externalAgent,
   FileTaskStore,
   findExecutable,
+  galleryEntry,
+  galleryInstallPlan,
+  licenseName,
+  type GalleryDownload,
+  type GalleryManifest,
   getLocale,
   inferModel,
+  installBundledSkill,
+  installGallerySkill,
   isChatModelId,
   isNewerVersion,
   listModels,
@@ -50,7 +57,9 @@ import {
   PROVIDER_PRESETS,
   PROVIDERS,
   type ProviderKind,
+  readGalleryManifest,
   releasePageUrl,
+  removeGallerySkill,
   resolveClaudeExecutable,
   type SessionView,
   setLocale,
@@ -160,13 +169,30 @@ interface AppUpdateState {
   error?: string;
 }
 /** Global skills folder shared by the VS Code extension, the desktop app and the CLI. */
-export const USER_SKILLS_DIR = path.join(homedir(), '.orka', 'skills');
+/** The user's skills folder: <Orka home>/skills (ORKA_HOME, or ~/.orka), as the CLI uses it too. */
+export function userSkillsDir(orkaHome?: string): string {
+  return path.join(orkaHome ?? (process.env.ORKA_HOME || path.join(homedir(), '.orka')), 'skills');
+}
+
+export const USER_SKILLS_DIR = userSkillsDir();
+
+/** Where an installed gallery skill came from, for the settings. */
+function originView(m: GalleryManifest): NonNullable<SkillView['origin']> {
+  return { id: m.id, kind: m.kind, license: m.license, ...(m.ref ? { ref: m.ref.slice(0, 7) } : {}), ...(m.repo ? { repo: m.repo } : {}) };
+}
+
+/** "12 KB", "1.4 MB". */
+function formatBytes(bytes: number): string {
+  return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 export interface AppControllerOptions {
   /** Tests: Radar's network, clock, timers and feeds. */
   radar?: RadarHooks;
   /** Tests: what runs a CLI's account status command. */
   probe?: ProbeRunner;
+  /** Tests: how the skills gallery fetches a file (the real one allows only raw.githubusercontent.com). */
+  galleryDownload?: GalleryDownload;
 }
 
 /**
@@ -204,6 +230,13 @@ export class AppController implements Disposable {
   private skills: Skill[] = [];
   private builtinSkillNames = new Set<string>();
   private skillErrors: string[] = [];
+  /** Gallery manifests of the user's skills installed from the gallery, by skill name. */
+  private skillOrigins = new Map<string, GalleryManifest>();
+  /** The user's skills folder: <Orka home>/skills. */
+  readonly skillsDir: string;
+  private readonly galleryDownload?: GalleryDownload;
+  /** A gallery install or removal under way (one at a time). */
+  private galleryBusy = false;
   /** MCP servers from the settings, kept running across tasks and shared by every session (a folder's .mcp.json servers are its session's). */
   private readonly mcp = new McpManager(() => this.postConfig());
   private appUpdateCheck?: Promise<void>;
@@ -234,6 +267,8 @@ export class AppController implements Disposable {
     options: AppControllerOptions = {},
   ) {
     this.probe = options.probe ?? runProbe;
+    this.galleryDownload = options.galleryDownload;
+    this.skillsDir = userSkillsDir(shell.orkaHome);
     // One profile of a CLI at a time across every Orka window and app: they share <orka home>/accounts.
     this.gate = new RunGate(() => this.maxRunning(), new SharedAccounts(path.join(shell.orkaHome ?? (process.env.ORKA_HOME || path.join(homedir(), '.orka')), 'accounts')));
     this.settings = readSettings(shell.settings);
@@ -483,6 +518,21 @@ export class AppController implements Disposable {
       case 'reloadSkills':
         await this.reloadSkills();
         break;
+      case 'installGallerySkill':
+        await this.installGallerySkill(message.id);
+        break;
+      case 'removeGallerySkill':
+        await this.removeGallerySkill(message.name);
+        break;
+      case 'previewGallerySkill':
+        await this.previewGallerySkill(message.id);
+        break;
+      case 'openGallerySkillSource': {
+        // Only the gallery's own https pages.
+        const entry = galleryEntry(message.id);
+        if (entry?.source.startsWith('https://')) await this.shell.openExternal(entry.source);
+        break;
+      }
       case 'selectFolder':
         await this.selectFolder(message.path);
         break;
@@ -1046,12 +1096,14 @@ export class AppController implements Disposable {
       loadSkills([{ dir: builtinDir, source: 'builtin' }]),
       loadSkills([
         { dir: builtinDir, source: 'builtin' },
-        { dir: USER_SKILLS_DIR, source: 'user' },
+        { dir: this.skillsDir, source: 'user' },
       ]),
     ]);
+    const origins = await Promise.all(all.skills.map(async (s) => [s.name, s.source === 'user' && s.dir ? await readGalleryManifest(s.dir) : undefined] as const));
     this.builtinSkillNames = new Set(builtin.skills.map((s) => s.name));
     this.skills = all.skills;
     this.skillErrors = all.errors;
+    this.skillOrigins = new Map(origins.filter((o): o is readonly [string, GalleryManifest] => !!o[1]));
     if (post) this.postConfig();
   }
 
@@ -1072,9 +1124,9 @@ export class AppController implements Disposable {
   private async customizeSkill(name: string): Promise<void> {
     const skill = this.skills.find((s) => s.name === name);
     if (!skill) return;
-    const target = path.join(USER_SKILLS_DIR, `${name}.md`);
+    const target = path.join(this.skillsDir, `${name}.md`);
     if (skill.source === 'builtin' && !existsSync(target)) {
-      await fs.mkdir(USER_SKILLS_DIR, { recursive: true });
+      await fs.mkdir(this.skillsDir, { recursive: true });
       await fs.copyFile(skill.path, target);
       await this.reloadSkills();
     }
@@ -1095,8 +1147,8 @@ export class AppController implements Disposable {
       })
     )?.trim();
     if (!name) return;
-    await fs.mkdir(USER_SKILLS_DIR, { recursive: true });
-    const file = path.join(USER_SKILLS_DIR, `${name}.md`);
+    await fs.mkdir(this.skillsDir, { recursive: true });
+    const file = path.join(this.skillsDir, `${name}.md`);
     // "wx": create only if missing, in one step (an existing skill is opened as it is).
     await fs.writeFile(file, skillTemplate(name), { encoding: 'utf8', flag: 'wx' }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'EEXIST') throw error;
@@ -1106,8 +1158,110 @@ export class AppController implements Disposable {
   }
 
   async openSkillsFolder(): Promise<void> {
-    await fs.mkdir(USER_SKILLS_DIR, { recursive: true });
-    await this.shell.openExternal(USER_SKILLS_DIR);
+    await fs.mkdir(this.skillsDir, { recursive: true });
+    await this.shell.openExternal(this.skillsDir);
+  }
+
+  // ---------------------------------------------------------------- skills gallery
+
+  /** Orka's bundled gallery skills, next to the built-in ones. */
+  private get galleryDir(): string {
+    return path.join(this.shell.builtinSkillsDir, 'gallery');
+  }
+
+  /** The name is taken in the user's folder (a gallery copy, or a skill of their own). */
+  private skillNameTaken(id: string): boolean {
+    return this.skills.some((s) => s.source === 'user' && s.name === id) || existsSync(path.join(this.skillsDir, id));
+  }
+
+  /**
+   * Add a gallery skill to the user's skills folder. A bundled one is copied from Orka's own files;
+   * a downloadable one is fetched only after a modal that shows every URL, its licence and that Orka
+   * never runs its scripts. The page names only the entry; everything else comes from the gallery.
+   */
+  async installGallerySkill(id: string): Promise<void> {
+    const entry = galleryEntry(id);
+    if (!entry || this.galleryBusy) return;
+    if (this.skillNameTaken(entry.id)) {
+      void this.shell.message('info', t('Your skills folder already has a skill named {name}.', { name: entry.id }));
+      return;
+    }
+    if (entry.kind === 'bundled') {
+      await this.galleryTask(async () => {
+        await installBundledSkill(entry.id, this.galleryDir, this.skillsDir);
+        return t('{name} was added to your skills. Agents can use it from the next task.', { name: entry.name });
+      });
+      return;
+    }
+    const plan = galleryInstallPlan(entry.id);
+    if (!plan) return;
+    const base = `https://raw.githubusercontent.com/${plan.source.repo}/${plan.source.ref}/`;
+    const lines = [
+      t('Orka downloads {n} files ({size}) over HTTPS from GitHub, at a fixed commit, and checks each one against the size and checksum it expects:', {
+        n: plan.urls.length,
+        size: formatBytes(plan.bytes),
+      }),
+      plan.urls.join('\n'),
+      t('It is made by {author}, not by Orka. Licence: {license}.', { author: entry.author, license: licenseName(entry.license) }),
+    ];
+    if (entry.licenseNote) lines.push(t(entry.licenseNote));
+    lines.push(
+      t('Orka never runs its scripts. When an agent uses the skill it may ask to run them, with the usual approval.'),
+      t('It is installed in your skills folder as {path}.', { path: path.join(this.skillsDir, entry.id) }),
+    );
+    const install = t('Download and install');
+    const choice = await this.shell.message('warning', t('Install the skill {name}?', { name: entry.name }), { modal: true, detail: lines.join('\n\n') }, install);
+    if (choice !== install) return;
+    await this.galleryTask(async () => {
+      await installGallerySkill(entry.id, this.skillsDir, this.galleryDownload ? { download: this.galleryDownload } : {});
+      return t('{name} was installed in your skills. Agents can use it from the next task.', { name: entry.name });
+    });
+  }
+
+  /** Remove a skill the gallery installed (it has a gallery manifest), after a modal. */
+  async removeGallerySkill(name: string): Promise<void> {
+    const origin = this.skillOrigins.get(name);
+    const skill = this.skills.find((s) => s.name === name && s.source === 'user' && s.dir);
+    if (!origin || !skill?.dir || this.galleryBusy) return;
+    const folder = path.basename(skill.dir);
+    const remove = t('Remove');
+    const choice = await this.shell.message(
+      'warning',
+      t('Remove the skill {name}?', { name }),
+      { modal: true, detail: t('The folder {path} and everything in it, including your own changes to it, are deleted. This cannot be undone.', { path: skill.dir }) },
+      remove,
+    );
+    if (choice !== remove) return;
+    await this.galleryTask(async () => {
+      if (!(await removeGallerySkill(this.skillsDir, folder))) throw new Error(t('{name} was not installed from the gallery.', { name }));
+      return t('{name} was removed.', { name });
+    });
+  }
+
+  private async galleryTask(run: () => Promise<string>): Promise<void> {
+    this.galleryBusy = true;
+    try {
+      const done = await run();
+      await this.reloadSkills();
+      void this.shell.message('info', done);
+    } catch (error) {
+      void this.shell.message('error', t('The skill could not be installed or removed: {error}', { error: error instanceof Error ? error.message : String(error) }));
+    } finally {
+      this.galleryBusy = false;
+    }
+  }
+
+  /** The text of a bundled gallery skill, for the gallery's preview (nothing is fetched for downloadable ones). */
+  private async previewGallerySkill(id: string): Promise<void> {
+    const entry = galleryEntry(id);
+    if (!entry || entry.kind !== 'bundled') return;
+    let text: string;
+    try {
+      text = await fs.readFile(path.join(this.galleryDir, entry.id, 'SKILL.md'), 'utf8');
+    } catch {
+      text = t('This skill is not in this copy of Orka.');
+    }
+    this.shell.post({ type: 'skillPreview', id: entry.id, text: text.length > 60_000 ? `${text.slice(0, 60_000)}\n…` : text });
   }
 
   // ---------------------------------------------------------------- MCP servers
@@ -2168,9 +2322,11 @@ export class AppController implements Disposable {
     this.shell.post({ type: 'showAgents' });
   }
 
-  showSettings(tab?: SettingsTab, mcp?: 'servers' | 'catalog'): void {
+  showSettings(tab?: SettingsTab, view?: 'servers' | 'catalog' | 'mine' | 'gallery'): void {
     this.shell.reveal();
-    this.shell.post({ type: 'showSettings', tab, ...(mcp ? { mcp } : {}) });
+    const mcp = view === 'servers' || view === 'catalog' ? view : undefined;
+    const skills = view === 'mine' || view === 'gallery' ? view : undefined;
+    this.shell.post({ type: 'showSettings', tab, ...(mcp ? { mcp } : {}), ...(skills ? { skills } : {}) });
   }
 
   showHistory(): void {
@@ -3120,6 +3276,7 @@ export class AppController implements Disposable {
       source: skill.source,
       enabled: !disabledSkills.has(skill.name),
       overridesBuiltin: skill.source === 'user' && this.builtinSkillNames.has(skill.name),
+      ...(this.skillOrigins.has(skill.name) ? { origin: originView(this.skillOrigins.get(skill.name)!) } : {}),
     }));
     const builtIns: ProviderView[] = this.builtInKinds().map((k) => ({
       kind: k,
@@ -3166,7 +3323,7 @@ export class AppController implements Disposable {
       skillsEnabled: s.skills.enabled,
       skills,
       skillErrors: this.skillErrors,
-      skillsFolder: USER_SKILLS_DIR,
+      skillsFolder: this.skillsDir,
       mcp: this.mcpView(),
       externalAgents: this.externalAgentsView(),
       pricing: s.pricing,

@@ -84,6 +84,7 @@
   "config.fallback.model": "Fallback model; empty = that provider's default model.",
   "command.showMcp": "Show MCP Servers",
   "command.showMcpCatalog": "Browse the MCP Catalog",
+  "command.showSkillsGallery": "Browse the Skills Gallery",
   "command.importMcpFromClaude": "Import MCP Servers from Claude Code",
   "config.mcp.enabled": "Give the agents the tools of the configured MCP servers (Unity Editor, Blender, databases, ...).",
   "config.mcpServers": "MCP servers by name. Each is either {\"command\": \"...\", \"args\": [...], \"env\": {...}} (a local program speaking stdio) or {\"url\": \"http://localhost:8080/mcp\"} (Streamable HTTP). A .mcp.json in the workspace is used too, after you allow it.",

@@ -3,6 +3,7 @@ import { getLocale, setLocale, t, tn } from '@orka/core/src/i18n';
 import { isSecretFile } from '@orka/core/src/permissions/secrets';
 import { applyEvent, emptySession } from '@orka/core/src/ui/transcript';
 import { catalogEntry } from '@orka/core/src/mcp/catalog';
+import { galleryEntry } from '@orka/core/src/skills/gallery';
 import { estimateCost } from '@orka/core/src/usage/pricing';
 import orkaLogo from '../media/orka-logo.svg';
 import type {
@@ -34,6 +35,7 @@ import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './f
 import { folderPickerCreated, folderPickerListing, openFolderPicker } from './features/folderPicker';
 import { hunksHtml } from './features/hunks';
 import { catalogFormHtml, catalogHtml, catalogListHtml, type CatalogState, missingFields } from './features/mcpCatalog';
+import { galleryHtml, galleryListHtml, galleryPreviewHtml, type GalleryState, originLabel } from './features/skillGallery';
 import { contextRing, effortLabel, modelButtonHtml, modelMenuHtml } from './features/modelMenu';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
 import {
@@ -468,18 +470,48 @@ function addFromCatalog(id: string, values: Record<string, string> = {}): void {
   post({ type: 'addMcpFromCatalog', id, values });
 }
 
-// Typing in the catalog's search box redraws only the list, so the box keeps its focus.
+/** Settings > Skills: the user's skills or the gallery; the gallery's search, filters, open details and preview. */
+let skillsView: 'mine' | 'gallery' = 'mine';
+const gallery: GalleryState = { query: '', category: '', license: '', open: new Set() };
+/** The preview dialog of a bundled gallery skill: its id, and its text once the app sent it. */
+let galleryPreview: { id: string; text?: string } | undefined;
+
+function renderGalleryPreview(): void {
+  const entry = galleryPreview && galleryEntry(galleryPreview.id);
+  if (!galleryPreview || !entry) {
+    catalogLayer.innerHTML = '';
+    return;
+  }
+  catalogLayer.innerHTML = `<div class="modal-backdrop" data-action="gallery-preview-close">${galleryPreviewHtml(entry, galleryPreview.text)}</div>`;
+  catalogLayer.querySelector<HTMLElement>('.btn[data-action="gallery-preview-close"]')?.focus();
+}
+
+function closeGalleryPreview(): void {
+  if (!galleryPreview) return;
+  galleryPreview = undefined;
+  renderGalleryPreview();
+}
+
+// Typing in a search box (MCP catalog, skills gallery) redraws only its list, so the box keeps its focus.
 document.addEventListener('input', (e) => {
   const target = e.target as HTMLElement;
-  if (target.id !== 'mcp-catalog-search') return;
-  catalog.query = (target as HTMLInputElement).value;
-  renderCatalogList();
+  if (target.id === 'mcp-catalog-search') {
+    catalog.query = (target as HTMLInputElement).value;
+    renderCatalogList();
+  } else if (target.id === 'skill-gallery-search') {
+    gallery.query = (target as HTMLInputElement).value;
+    renderGalleryList();
+  }
 });
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && catalogForm && !modalOpen()) {
     e.preventDefault();
     closeCatalogForm();
+  }
+  if (e.key === 'Escape' && galleryPreview && !modalOpen()) {
+    e.preventDefault();
+    closeGalleryPreview();
   }
 });
 
@@ -1898,7 +1930,7 @@ document.addEventListener(
   (e) => {
     if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || !session.running || !workView()) return;
     const overlay =
-      modalOpen() || ui.modelMenuOpen || ui.agentsOpen || !!sessionMenu || !!addAccount || !!catalogForm || (!!el.composerMenu && !el.composerMenu.hidden) || (!!composer.suggest && !el.suggest.hidden);
+      modalOpen() || ui.modelMenuOpen || ui.agentsOpen || !!sessionMenu || !!addAccount || !!catalogForm || !!galleryPreview || (!!el.composerMenu && !el.composerMenu.hidden) || (!!composer.suggest && !el.suggest.hidden);
     if (overlay) return;
     const target = e.target;
     if (target !== el.input && target !== document.body && !(target instanceof Node && el.transcript.contains(target))) return;
@@ -2546,6 +2578,34 @@ document.addEventListener('click', (e) => {
       addFromCatalog(entry.id, values);
       break;
     }
+    case 'skills-view':
+      skillsView = target.dataset.view === 'gallery' ? 'gallery' : 'mine';
+      renderSettings();
+      break;
+    case 'gallery-details':
+      if (gallery.open.has(id!)) gallery.open.delete(id!);
+      else gallery.open.add(id!);
+      renderGalleryList();
+      break;
+    case 'gallery-install':
+      if (galleryEntry(id)) post({ type: 'installGallerySkill', id: id! });
+      break;
+    case 'gallery-remove':
+      post({ type: 'removeGallerySkill', name: name! });
+      break;
+    case 'gallery-source':
+      if (galleryEntry(id)) post({ type: 'openGallerySkillSource', id: id! });
+      break;
+    case 'gallery-preview':
+      if (galleryEntry(id)?.kind !== 'bundled') break;
+      galleryPreview = { id: id! };
+      renderGalleryPreview();
+      post({ type: 'previewGallerySkill', id: id! });
+      break;
+    case 'gallery-preview-close':
+      // The backdrop closes the preview only when clicked itself, not through the dialog.
+      if (target === clicked || target.tagName === 'BUTTON') closeGalleryPreview();
+      break;
     case 'catalog-form-close':
       // The backdrop closes the form only when clicked itself, not through the form.
       if (target === clicked || target.tagName === 'BUTTON') closeCatalogForm();
@@ -2604,6 +2664,12 @@ document.addEventListener('change', (e) => {
   if (target instanceof HTMLSelectElement && target.id === 'mcp-catalog-category') {
     catalog.category = target.value;
     renderCatalogList();
+    return;
+  }
+  if (target instanceof HTMLSelectElement && (target.id === 'skill-gallery-category' || target.id === 'skill-gallery-license')) {
+    if (target.id === 'skill-gallery-category') gallery.category = target.value;
+    else gallery.license = target.value === 'open' || target.value === 'other' ? target.value : '';
+    renderGalleryList();
     return;
   }
   if (target instanceof HTMLInputElement && target.dataset.mcp) {
@@ -3457,11 +3523,29 @@ function providersTab(s: SettingsView): string {
     <p class="footnote">${escapeHtml(t("Keys are kept in VS Code's secret storage on this machine and are only sent to their provider."))}</p>`;
 }
 
+/** My skills or Gallery (skills to add from Orka's list). */
+function skillsViewSwitch(): string {
+  const button = (view: 'mine' | 'gallery', label: string) =>
+    `<button class="seg-btn" role="radio" aria-checked="${skillsView === view}" data-action="skills-view" data-view="${view}">${escapeHtml(label)}</button>`;
+  return `<div class="seg mcp-view" role="radiogroup" aria-label="Skills">${button('mine', t('My skills'))}${button('gallery', t('Gallery'))}</div>`;
+}
+
+/** The gallery's list alone (search and filter changes), so the search box keeps its focus. */
+function renderGalleryList(): void {
+  const list = document.getElementById('skill-gallery-list');
+  if (list && config) list.innerHTML = galleryListHtml(gallery, config.skills);
+}
+
 function skillsTab(): string {
   if (!config) return '';
+  if (skillsView === 'gallery') return `${skillsViewSwitch()}${galleryHtml(gallery, config.skills)}`;
   const on = config.skillsEnabled;
   const tag = (s: SkillView) =>
-    s.source === 'builtin' ? `<span class="tag">${escapeHtml(t('built-in'))}</span>` : `<span class="tag sub">${escapeHtml(s.overridesBuiltin ? t('yours · replaces built-in') : t('yours'))}</span>`;
+    s.source === 'builtin'
+      ? `<span class="tag">${escapeHtml(t('built-in'))}</span>`
+      : s.origin
+        ? `<span class="tag sub" title="${attr(originLabel(s.origin))}">${escapeHtml(t('from the gallery'))}</span>`
+        : `<span class="tag sub">${escapeHtml(s.overridesBuiltin ? t('yours · replaces built-in') : t('yours'))}</span>`;
   const rows = config.skills
     .map(
       (s) => `<div class="skill-row${s.enabled && on ? '' : ' off'}">
@@ -3471,8 +3555,10 @@ function skillsTab(): string {
         <button class="link" data-action="use-skill" data-name="${attr(s.name)}" title="${attr(t('Use it for your next request'))}">/${escapeHtml(s.name)}</button>
         <button class="link" data-action="open-skill" data-name="${attr(s.name)}">${escapeHtml(t('Open'))}</button>
         ${s.source === 'builtin' ? `<button class="link" data-action="customize-skill" data-name="${attr(s.name)}" title="${attr(t('Copy it to your skills folder and edit the copy'))}">${escapeHtml(t('Customize'))}</button>` : ''}
+        ${s.origin ? `<button class="link" data-action="gallery-remove" data-name="${attr(s.name)}">${escapeHtml(t('Remove'))}</button>` : ''}
       </div>
       <div class="muted small">${escapeHtml(s.description)}</div>
+      ${s.origin ? `<div class="mono muted small ellipsis">${escapeHtml(originLabel(s.origin))}</div>` : ''}
     </div>`,
     )
     .join('');
@@ -3482,6 +3568,7 @@ function skillsTab(): string {
         .join('')}</div>`
     : '';
   return `
+    ${skillsViewSwitch()}
     <div class="card">
       <div class="card-head">${icon('skill', 'sub')}<strong>Skills</strong><span class="spacer"></span>
         <label class="switch"><input type="checkbox" data-setting="skills.enabled"${on ? ' checked' : ''}> ${escapeHtml(on ? t('On') : t('Off'))}</label></div>
@@ -3489,7 +3576,8 @@ function skillsTab(): string {
         t('Skills are expert playbooks (Unity, debugging, testing, security…). Agents load the ones a task needs; type /name to use one yourself. They are global: the same skills in every project.'),
       )}</div>
       <div class="key-row">
-        <button class="btn primary" data-action="new-skill">${icon('plus')}${escapeHtml(t('New skill'))}</button>
+        <button class="btn primary" data-action="skills-view" data-view="gallery">${icon('plus')}${escapeHtml(t('Add from the gallery'))}</button>
+        <button class="btn" data-action="new-skill">${icon('plus')}${escapeHtml(t('New skill'))}</button>
         <button class="btn" data-action="open-skills-folder">${icon('folder')}${escapeHtml(t('Open folder'))}</button>
         <button class="icon-btn" data-action="reload-skills" aria-label="${attr(t('Reload'))}" title="${attr(t('Reload'))}">${icon('refresh')}</button>
       </div>
@@ -3744,7 +3832,8 @@ function renderSettings(): void {
   if (el.settings.hidden || !config) return;
   // Keep scroll when settings re-render after a change, and the catalog's search box its focus and caret.
   const scroll = el.settings.scrollTop;
-  const search = document.activeElement instanceof HTMLInputElement && document.activeElement.id === 'mcp-catalog-search' ? document.activeElement : undefined;
+  const active = document.activeElement;
+  const search = active instanceof HTMLInputElement && (active.id === 'mcp-catalog-search' || active.id === 'skill-gallery-search') ? active : undefined;
   const caret = search ? [search.selectionStart, search.selectionEnd] : undefined;
   const tabs: Array<[SettingsTab, string]> = [
     ['agents', 'Agents'],
@@ -3772,7 +3861,7 @@ function renderSettings(): void {
       .join('')}</nav>
     <div class="settings-body">${body}</div>`;
   el.settings.scrollTop = scroll;
-  const searchAgain = caret && document.getElementById('mcp-catalog-search');
+  const searchAgain = caret && search && document.getElementById(search.id);
   if (caret && searchAgain instanceof HTMLInputElement) {
     searchAgain.focus();
     searchAgain.setSelectionRange(caret[0], caret[1]);
@@ -4557,6 +4646,12 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
     case 'saveRefused':
       onSaveRefused(message);
       break;
+    case 'skillPreview':
+      if (galleryPreview?.id === message.id) {
+        galleryPreview.text = message.text;
+        renderGalleryPreview();
+      }
+      break;
     case 'hunks':
       if (ui.hunks.has(message.path)) {
         ui.hunks.set(message.path, message.hunks);
@@ -4567,6 +4662,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       ui.view = 'settings';
       if (message.tab) ui.tab = message.tab;
       if (message.mcp) mcpView = message.mcp;
+      if (message.skills) skillsView = message.skills;
       if (ui.tab === 'skills') post({ type: 'reloadSkills' });
       if (ui.tab === 'accounts') checkAccountsOnce();
       renderView();

@@ -84,6 +84,7 @@
   "config.fallback.model": "Yedek model; boş = o provider'ın varsayılan modeli.",
   "command.showMcp": "MCP Sunucularını Göster",
   "command.showMcpCatalog": "MCP Kataloğuna Göz At",
+  "command.showSkillsGallery": "Skills Galerisine Göz At",
   "command.importMcpFromClaude": "MCP Sunucularını Claude Code'dan İçe Aktar",
   "config.mcp.enabled": "Agent'lara tanımlı MCP sunucularının araçlarını ver (Unity Editor, Blender, veritabanları, ...).",
   "config.mcpServers": "İsme göre MCP sunucuları. Her biri ya {\"command\": \"...\", \"args\": [...], \"env\": {...}} (stdio konuşan yerel bir program) ya da {\"url\": \"http://localhost:8080/mcp\"} (Streamable HTTP). Çalışma alanındaki .mcp.json da, izin verdikten sonra kullanılır.",

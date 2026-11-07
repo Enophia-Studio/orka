@@ -4,7 +4,9 @@
   theme variables and replays a scripted agent session. Build first (npm run build), then open
   this file in a browser. Append ?light for the light theme, ?empty for the empty state, ?tr for Turkish,
   ?settings=skills (or agents/providers/control) to open a settings tab, ?catalog for Settings > MCP > Catalog
-  (?catalog=details with two entries open, ?catalog=add with the Add form and, on Continue, the consent dialog), ?ide for the desktop app's
+  (?catalog=details with two entries open, ?catalog=add with the Add form and, on Continue, the consent dialog), ?gallery for
+  Settings > Skills > Gallery (?gallery=details with two entries open, ?gallery=preview with a skill's text, ?gallery=install with
+  the download consent dialog), ?ide for the desktop app's
   window (its IDE layout and its own theme), with ?collapsed for its sidebar closed. With ?ide,
   ?radar=off, ?radar=pending, ?radar=report or ?radar=elsewhere (another window runs it) opens the
   Radar tab in that state, ?auto with radar.autoAnalyze on (the panel's buttons work: turn it on,
@@ -119,6 +121,8 @@
         sent.push(message);
         console.log('[webview -> extension]', message);
         if (message.type === 'ready') setTimeout(replay, 0);
+        if (message.type === 'previewGallerySkill') setTimeout(() => deliver({ type: 'skillPreview', id: message.id, text: '---\nname: ' + message.id + '\ndescription: Godot 4 projects (GDScript or C#, scenes, resources, autoloads, export).\nlicense: MIT\n---\n\n# Godot\n\n## Orient first\n- Read `project.godot`: the engine version, autoloads, input map and main scene.\n- Never edit `.godot/` (the import cache) or `.import` files.\n\n## GDScript habits\n- Type everything: `var speed: float = 200.0`.\n- <b>markup is shown as text</b>' }), 150);
+        if (message.type === 'installGallerySkill' && message.id === 'ui-ugui') setTimeout(() => deliver({ type: 'dialog', id: 'gallery-consent', dialog: { kind: 'message', level: 'warning', modal: true, text: 'Install the skill Unity uGUI?', detail: 'Orka downloads 3 files (14 KB) over HTTPS from GitHub, at a fixed commit, and checks each one against the size and checksum it expects:\n\nhttps://raw.githubusercontent.com/Unity-Technologies/skills/60f95e6d4beaeacf4dfdff7829ec9b35008a0be0/LICENSE.md\nhttps://raw.githubusercontent.com/Unity-Technologies/skills/60f95e6d4beaeacf4dfdff7829ec9b35008a0be0/skills/ui-ugui/SKILL.md\nhttps://raw.githubusercontent.com/Unity-Technologies/skills/60f95e6d4beaeacf4dfdff7829ec9b35008a0be0/skills/ui-ugui/references/layout.md\n\nIt is made by Unity Technologies, not by Orka. Licence: Unity Companion License.\n\nUnity Companion License: use it only together with the Unity Engine, under your Unity licence.\n\nOrka never runs its scripts. When an agent uses the skill it may ask to run them, with the usual approval.\n\nIt is installed in your skills folder as C:\\Users\\you\\.orka\\skills\\ui-ugui.', actions: ['Download and install'] } }), 0);
         if (message.type === 'addMcpFromCatalog') setTimeout(() => deliver({ type: 'dialog', id: 'catalog-consent', dialog: { kind: 'message', level: 'warning', modal: true, text: 'Add the MCP server ' + message.id + '?', detail: 'Command: docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server\n\nEnvironment: GITHUB_PERSONAL_ACCESS_TOKEN (values hidden)\n\nOn its first start, docker downloads this third-party server and runs it on your computer with your user rights. It is made by GitHub, not by Orka.', actions: ['Add and turn on'] } }), 0);
         if (message.type === 'listTasks') setTimeout(() => deliver({ type: 'history', currentId: 't-now', tasks: [
           { id: 't-now', title: L('Rework the lobby in my Unity project: add a ready state and a 4-player limit.', 'Unity projemde lobby sistemini yeniden düzenle: hazır (ready) durumu ekle ve 4 oyuncu sınırı koy.'), createdAt: new Date(Date.now() - 3600e3).toISOString(), updatedAt: new Date(Date.now() - 120e3).toISOString(), requests: 3, model: 'claude-opus-5-5', usage: { inputTokens: 5900, outputTokens: 2410, cacheReadTokens: 51200, cacheWriteTokens: 6100 } },
@@ -482,6 +486,8 @@
           skill('debugging', 'My own debugging rules: always add a log first.', 'user', true, true),
           skill('deploy', 'Deploying the game server to our Hetzner machines.', 'user'),
           skill('documentation', 'Writing or updating READMEs, API docs, code comments and changelogs.', 'builtin', false),
+          { ...skill('godot', 'Godot 4 projects (GDScript or C#, scenes, resources, autoloads, export).', 'user'), origin: { id: 'godot', kind: 'bundled', license: 'MIT' } },
+          { ...skill('semgrep', 'Run Semgrep scans and triage the findings.', 'user'), origin: { id: 'semgrep', kind: 'source', license: 'CC-BY-SA-4.0', repo: 'trailofbits/skills', ref: 'e4dd0bb' } },
           skill('security', 'Security-sensitive work: auth, input handling, secrets, dependencies.', 'builtin'),
           skill('testing', 'Writing, fixing or extending automated tests.', 'builtin'),
           skill('unity', 'Unity projects (C# scripts, scenes, prefabs, ScriptableObjects, packages).', 'builtin'),
@@ -545,6 +551,16 @@
         setTimeout(() => {
           if (params.get('catalog') === 'details') for (const id of ['mcp-for-unity', 'git']) document.querySelector('[data-action="catalog-details"][data-id="' + id + '"]')?.click();
           if (params.get('catalog') === 'add') document.querySelector('[data-action="catalog-add"][data-id="github-docker"]')?.click();
+        }, 20);
+      }
+      // ?gallery: Settings > Skills > Gallery; ?gallery=details opens two entries, ?gallery=preview a skill's text, ?gallery=install the download consent.
+      if (params.has('gallery')) {
+        deliver({ type: 'showSettings', tab: 'skills', skills: 'gallery' });
+        setTimeout(() => {
+          const mode = params.get('gallery');
+          if (mode === 'details') for (const id of ['unity-cli', 'docx']) document.querySelector('[data-action="gallery-details"][data-id="' + id + '"]')?.click();
+          if (mode === 'preview') document.querySelector('[data-action="gallery-preview"][data-id="godot"]')?.click();
+          if (mode === 'install') document.querySelector('[data-action="gallery-install"][data-id="ui-ugui"]')?.click();
         }, 20);
       }
       if (empty) return;

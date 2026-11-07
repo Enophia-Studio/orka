@@ -1,6 +1,6 @@
 import { type ApprovalRequest, type ApprovalResponse, copyToClipboard, type EditorContext, NodeHost, type Orchestrator, t, unifiedDiff } from '@orka/core';
 import type { AppSettings, AppShell, DialogView, Disposable, Folder, FromWebview, InputOptions, PickItem, StateStore, TerminalHandle, TerminalProgram, ToWebview } from '@orka/app';
-import { findFilesByName, NodeFolderBrowser, USER_SKILLS_DIR } from '@orka/app';
+import { findFilesByName, NodeFolderBrowser, userSkillsDir } from '@orka/app';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, type FSWatcher, mkdirSync, promises as fs, statSync, watch } from 'node:fs';
 import * as path from 'node:path';
@@ -289,8 +289,10 @@ export class DesktopShell implements AppShell, Disposable {
     this.watchers[what].add(listener);
     if (what === 'skills' && !this.skillsWatcher) {
       try {
-        mkdirSync(USER_SKILLS_DIR, { recursive: true });
-        this.skillsWatcher = watch(USER_SKILLS_DIR, { recursive: true }, (_e, name) => {
+        // The same folder the app loads user skills from: <Orka home>/skills.
+        const dir = userSkillsDir(this.orkaHome);
+        mkdirSync(dir, { recursive: true });
+        this.skillsWatcher = watch(dir, { recursive: true }, (_e, name) => {
           if (!name || /\.md$/i.test(String(name))) this.fire('skills');
         });
       } catch {

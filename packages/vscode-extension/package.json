@@ -192,6 +192,11 @@
         "category": "Orka"
       },
       {
+        "command": "orka.showSkillsGallery",
+        "title": "%command.showSkillsGallery%",
+        "category": "Orka"
+      },
+      {
         "command": "orka.importMcpFromClaude",
         "title": "%command.importMcpFromClaude%",
         "category": "Orka"

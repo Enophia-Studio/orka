@@ -142,6 +142,8 @@ export interface SkillView {
   enabled: boolean;
   /** A user skill with the same name as a built-in one replaces it. */
   overridesBuiltin?: boolean;
+  /** Installed from the skills gallery: the entry, bundled with Orka or downloaded (owner/name at a commit). */
+  origin?: { id: string; kind: 'bundled' | 'source'; license: string; repo?: string; ref?: string };
 }
 
 export interface SettingsView {
@@ -488,7 +490,9 @@ export type ToWebview =
   | Scoped<{ type: 'event'; event: AgentEvent }>
   | { type: 'config'; config: ConfigView }
   | { type: 'showAgents' }
-  | { type: 'showSettings'; tab?: SettingsTab; mcp?: 'servers' | 'catalog' }
+  | { type: 'showSettings'; tab?: SettingsTab; mcp?: 'servers' | 'catalog'; skills?: 'mine' | 'gallery' }
+  /** The text of a bundled gallery skill, asked for by the gallery's preview. */
+  | { type: 'skillPreview'; id: string; text: string }
   | { type: 'showHistory' }
   | { type: 'history'; tasks: TaskSummary[]; currentId?: string }
   /** Desktop: the tasks of the recent folders, for the session list; taskId: the task open now (saved or not). */
@@ -687,6 +691,14 @@ export type FromWebview =
   | { type: 'newSkill' }
   | { type: 'openSkillsFolder' }
   | { type: 'reloadSkills' }
+  /** Add a gallery skill to the user's skills folder (a download asks for consent first, with every URL). */
+  | { type: 'installGallerySkill'; id: string }
+  /** Remove a skill the gallery installed (asks first). */
+  | { type: 'removeGallerySkill'; name: string }
+  /** Ask for the text of a bundled gallery skill (answered with skillPreview). */
+  | { type: 'previewGallerySkill'; id: string }
+  /** A gallery entry's page upstream (the URL comes from the gallery, never from the page). */
+  | { type: 'openGallerySkillSource'; id: string }
   | { type: 'selectFolder'; path: string }
   | { type: 'toggleMcpServer'; name: string; enabled: boolean }
   | { type: 'importMcp' }

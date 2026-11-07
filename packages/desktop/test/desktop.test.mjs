@@ -1249,6 +1249,51 @@ globalThis.fetch = (input, init) => {
     assert.ok(!(await browser.evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(key)})`)), 'the key is never on the page');
   });
 
+  it('adds a skill from the gallery to <Orka home>/skills, previews one, asks before a download, and removes it after asking', async () => {
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    await browser.clickSelector('[data-action="open-settings"]');
+    await browser.clickSelector('[data-action="tab"][data-tab="skills"]');
+    await browser.clickSelector('[data-action="skills-view"][data-view="gallery"]');
+    await until(() => browser.evaluate('!!document.getElementById("skill-gallery-search")'), 'the gallery');
+    // Searching redraws only the list: the box keeps its focus.
+    await browser.evaluate(`(() => { const box = document.getElementById('skill-gallery-search'); box.focus(); box.value = 'godot'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    assert.deepEqual(await browser.evaluate('[...document.querySelectorAll(".catalog-row")].map((r) => r.dataset.entry)'), ['godot', 'godot-gdscript-patterns']);
+    assert.equal(await browser.evaluate('document.activeElement.id'), 'skill-gallery-search');
+
+    // The preview shows the skill's text as it comes with Orka.
+    await browser.clickSelector('[data-action="gallery-preview"][data-id="godot"]');
+    await until(() => browser.evaluate('(document.querySelector(".skill-preview-text") || {}).textContent || ""').then((t) => t.includes('# Godot')), 'the preview');
+    await browser.clickSelector('.skill-preview .btn[data-action="gallery-preview-close"]');
+
+    // Enable copies it into the user's skills folder, with its licence.
+    const dir = path.join(home, 'skills', 'godot');
+    await browser.clickSelector('[data-action="gallery-install"][data-id="godot"]');
+    await until(() => existsSync(path.join(dir, '.orka-gallery.json')), 'the skill in the skills folder');
+    for (const file of ['SKILL.md', 'LICENSE', 'NOTICE']) assert.ok(existsSync(path.join(dir, file)), file);
+    await until(() => browser.evaluate('!!document.querySelector(".catalog-row[data-entry=godot] .pill.ok")'), 'shown as installed');
+
+    // A download asks first, with the exact URLs; Cancel fetches nothing.
+    await browser.evaluate(`(() => { const box = document.getElementById('skill-gallery-search'); box.value = 'ugui'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    await browser.clickSelector('[data-action="gallery-install"][data-id="ui-ugui"]');
+    await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog[role=alertdialog]")'), 'the consent dialog');
+    const consent = await browser.evaluate('document.querySelector(".modal-backdrop .dialog").textContent');
+    assert.match(consent, /https:\/\/raw\.githubusercontent\.com\/Unity-Technologies\/skills\/60f95e6d4beaeacf4dfdff7829ec9b35008a0be0\/skills\/ui-ugui\/SKILL\.md/);
+    assert.match(consent, /Unity Companion License/);
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-cancel"]');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.ok(!existsSync(path.join(home, 'skills', 'ui-ugui')));
+
+    // My skills shows where it came from; Remove asks, then deletes the folder.
+    await browser.clickSelector('[data-action="skills-view"][data-view="mine"]');
+    await until(() => browser.evaluate('!!document.querySelector("[data-action=gallery-remove][data-name=godot]")'), 'the installed skill in My skills');
+    await browser.clickSelector('[data-action="gallery-remove"][data-name="godot"]');
+    await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog[role=alertdialog]")'), 'the remove dialog');
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-action"]');
+    await until(() => !existsSync(dir), 'the folder removed');
+  });
+
   it("offers the agent's own model and thought level in the message box menu, and shows how full the context is", async () => {
     const log = path.join(home, 'fake-acp.log');
     addSettings({ ...fakeAgentSettings, provider: 'agent:custom:fake', 'agentClis.enabled': ['custom:fake'] });
