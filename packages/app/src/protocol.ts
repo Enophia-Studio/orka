@@ -554,7 +554,10 @@ export type ToWebview =
    */
   | { type: 'showSession'; id: string }
   | Scoped<{ type: 'fileMatches'; query: string; files: string[] }>
-  | Scoped<{ type: 'hunks'; path: string; hunks: HunkView[] }>
+  /** total: the file's number of parts, also past the ones sent. */
+  | Scoped<{ type: 'hunks'; path: string; hunks: HunkView[]; total?: number }>
+  /** The answer to revertChange: whether the file was reverted (it may stay: the user cancelled, another session works nearby). */
+  | Scoped<{ type: 'changeReverted'; path: string; reverted: boolean }>
   | { type: 'dialog'; id: string; dialog: DialogView }
   | { type: 'closeDialog'; id: string }
   /**
@@ -604,7 +607,7 @@ export type ToWebview =
 /** What one session sends to the page (always with its sessionId). */
 export type SessionPost = Extract<
   ToWebview,
-  { type: 'init' | 'event' | 'fileMatches' | 'hunks' | 'setInput' | 'dirEntries' | 'fileContent' | 'fileSaved' | 'saveRefused' | 'browserState' | 'browserFrame' | 'browserServers' }
+  { type: 'init' | 'event' | 'fileMatches' | 'hunks' | 'changeReverted' | 'setInput' | 'dirEntries' | 'fileContent' | 'fileSaved' | 'saveRefused' | 'browserState' | 'browserFrame' | 'browserServers' }
 >;
 
 /** The page's messages that act on one session: its task, its changes, its folder's files. */

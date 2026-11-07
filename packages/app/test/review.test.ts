@@ -11,6 +11,7 @@ import {
   feedbackText,
   hunksToFetch,
   receiveHunks,
+  receiveRevert,
   reviewHtml,
   startReview,
   step,
@@ -80,6 +81,38 @@ describe('review mode', () => {
     assert.equal(currentPart(back)?.hunk, undefined, 'waiting for the parts');
     receiveHunks(back, '/w/a.ts', [hunk('@@ a1 @@'), hunk('@@ a2 @@'), hunk('@@ a3 @@')]);
     assert.equal(currentPart(back)?.hunk?.header, '@@ a3 @@');
+  });
+
+  it('in a file with more parts than the app sends, a kept or reverted part counts and the next one is not passed', () => {
+    const state = startReview([change('big.ts', 'modified')]);
+    const parts = (from: number) => Array.from({ length: 40 }, (_, i) => hunk(`@@ p${from + i} @@`));
+    receiveHunks(state, '/w/big.ts', parts(1), 45);
+    decide(state, 'reverted');
+    receiveHunks(state, '/w/big.ts', parts(2), 44);
+    assert.deepEqual(counts(state), { kept: 0, reverted: 1, left: 0 });
+    assert.equal(currentPart(state)?.hunk?.header, '@@ p2 @@', 'the part that moved up is reviewed next');
+    decide(state, 'kept');
+    receiveHunks(state, '/w/big.ts', parts(2), 44);
+    assert.deepEqual(counts(state), { kept: 0, reverted: 1, left: 1 }, 'a part that stayed is left');
+    assert.equal(currentPart(state)?.hunk?.header, '@@ p3 @@');
+    assert.match(feedbackText(state), /I reverted: big\.ts \(@@ p1 @@\)\./);
+  });
+
+  it('a whole file counts as reverted only when the app says it reverted it', () => {
+    const state = startReview([change('new.ts', 'added'), change('old.ts', 'deleted'), change('c.ts', 'added')]);
+    assert.deepEqual(decide(state, 'reverted'), { type: 'revertChange', path: '/w/new.ts' });
+    assert.equal(decide(state, 'kept'), undefined, 'nothing else until the app answers');
+    assert.equal(currentPart(state)?.file.relPath, 'new.ts');
+    receiveRevert(state, '/w/new.ts', false);
+    assert.equal(currentPart(state)?.file.relPath, 'old.ts');
+    decide(state, 'reverted');
+    receiveRevert(state, '/w/other.ts', true);
+    assert.ok(state.pending, 'an answer for another file is not this one');
+    receiveRevert(state, '/w/old.ts', true);
+    assert.equal(currentPart(state)?.file.relPath, 'c.ts');
+    assert.deepEqual(counts(state), { kept: 0, reverted: 1, left: 1 });
+    assert.match(feedbackText(state), /I reverted: old\.ts\./);
+    assert.doesNotMatch(feedbackText(state), /new\.ts/);
   });
 
   it('passes over files that left the Changes list', () => {

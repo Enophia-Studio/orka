@@ -44,6 +44,7 @@ import {
   feedbackText,
   hunksToFetch,
   receiveHunks,
+  receiveRevert,
   reviewHtml,
   type ReviewState,
   startReview,
@@ -5107,9 +5108,15 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
         renderGalleryPreview();
       }
       break;
+    case 'changeReverted':
+      if (review) {
+        receiveRevert(review, message.path, message.reverted);
+        renderChanges();
+      }
+      break;
     case 'hunks':
       if (review) {
-        receiveHunks(review, message.path, message.hunks);
+        receiveHunks(review, message.path, message.hunks, message.total);
         renderChanges();
       }
       if (ui.hunks.has(message.path)) {

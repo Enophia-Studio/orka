@@ -26,10 +26,15 @@ export interface ReviewState {
   hunk: number;
   /** Each modified file's parts, once the app sent them (undefined while asked for). */
   hunks: Map<string, HunkView[] | undefined>;
+  /** Each modified file's number of parts, also those past the ones the app sends. */
+  totals: Map<string, number>;
   /** What happened to each part acted on ("left": the app kept it as it was, e.g. it touches your edits). */
   outcome: Array<{ relPath: string; header: string; action: ReviewAction }>;
-  /** A Keep or Revert sent for a part, until the file's parts come back. */
-  pending?: { path: string; relPath: string; header: string; action: 'kept' | 'reverted'; count: number };
+  /**
+   * A Keep or Revert sent for a part, until the file's parts come back; or a Revert of a whole
+   * file, until the app says whether it reverted it.
+   */
+  pending?: { path: string; relPath: string; header: string; action: 'kept' | 'reverted'; count: number; whole?: boolean };
   comments: Array<{ relPath: string; header: string; text: string }>;
   commenting: boolean;
   /** Past the last part: the summary shows. */
@@ -42,6 +47,7 @@ export function startReview(changes: readonly FileChange[]): ReviewState {
     file: 0,
     hunk: 0,
     hunks: new Map(),
+    totals: new Map(),
     outcome: [],
     comments: [],
     commenting: false,
@@ -107,7 +113,9 @@ function nextFile(state: ReviewState): void {
 
 /**
  * Keep or revert the part under review: what the page must post, or undefined when there is
- * nothing to act on. A whole file is decided at once; a part waits for the file's parts to come back.
+ * nothing to act on. A whole file is kept at once; its Revert waits for the app's answer (it may
+ * do nothing: another session works nearby, or the user edited the file and cancels). A part
+ * waits for the file's parts to come back.
  */
 export function decide(
   state: ReviewState,
@@ -119,26 +127,42 @@ export function decide(
   const part = currentPart(state);
   if (!part || state.pending) return undefined;
   if (part.file.status !== 'modified') {
+    if (action === 'reverted') {
+      state.pending = { path: part.file.path, relPath: part.file.relPath, header: '', action, count: 1, whole: true };
+      return { type: 'revertChange', path: part.file.path };
+    }
     state.outcome.push({ relPath: part.file.relPath, header: '', action });
     nextFile(state);
-    return { type: action === 'kept' ? 'acceptChange' : 'revertChange', path: part.file.path };
+    return { type: 'acceptChange', path: part.file.path };
   }
   if (!part.hunk) return undefined;
-  state.pending = { path: part.file.path, relPath: part.file.relPath, header: part.hunk.header, action, count: part.total ?? 0 };
+  const count = state.totals.get(part.file.path) ?? part.total ?? 0;
+  state.pending = { path: part.file.path, relPath: part.file.relPath, header: part.hunk.header, action, count };
   return { type: action === 'kept' ? 'keepHunk' : 'revertHunk', path: part.file.path, index: part.index, header: part.hunk.header };
 }
 
+/** The app's answer to a whole file's Revert: reverted, or left as it was. The review then moves on. */
+export function receiveRevert(state: ReviewState, path: string, reverted: boolean): void {
+  const pending = state.pending;
+  if (!pending?.whole || pending.path !== path) return;
+  state.pending = undefined;
+  state.outcome.push({ relPath: pending.relPath, header: '', action: reverted ? 'reverted' : 'left' });
+  if (!state.done && state.files[state.file]?.path === path) nextFile(state);
+}
+
 /**
- * A file's parts from the app. A pending decision counts when the file lost a part; otherwise the
- * app left it as it was. The position stays on the same index, which is now the next part.
+ * A file's parts from the app (`total`: all of them, also past the ones sent). A pending decision
+ * counts when the file lost a part; otherwise the app left it as it was. The position stays on the
+ * same index, which is now the next part.
  */
-export function receiveHunks(state: ReviewState, path: string, hunks: HunkView[]): void {
+export function receiveHunks(state: ReviewState, path: string, hunks: HunkView[], total = hunks.length): void {
   if (!state.files.some((f) => f.path === path)) return;
   state.hunks.set(path, hunks);
+  state.totals.set(path, total);
   const pending = state.pending;
-  if (pending?.path === path) {
+  if (pending?.path === path && !pending.whole) {
     state.pending = undefined;
-    const applied = hunks.length < pending.count;
+    const applied = total < pending.count;
     state.outcome.push({ relPath: pending.relPath, header: pending.header, action: applied ? pending.action : 'left' });
     // A part that stayed is passed: the user decided, the app could not.
     if (!applied) step(state, 1);

@@ -822,9 +822,12 @@ describe('desktop Files and editor', () => {
     assert.match(shell.asked.at(-1)!.text, /You edited f\.txt after the agent\./);
     assert.deepEqual(shell.asked.at(-1)!.actions, ["Undo only the agent's part"], 'nothing offers to throw the edit away');
     assert.equal(readFileSync(abs, 'utf8'), lines(12, { 2: 'agent line', 10: 'my line' }), 'cancelled: nothing changed');
+    const answered = () => shell.posted.flatMap((m) => (m.type === 'changeReverted' ? [m.reverted] : []));
+    assert.deepEqual(answered(), [false], 'the page hears that the file stayed');
     shell.answer = "Undo only the agent's part";
     await controller.handleMessage({ type: 'revertChange', path: abs });
     assert.equal(readFileSync(abs, 'utf8'), lines(12, { 10: 'my line' }));
+    assert.deepEqual(answered(), [false, true]);
     // Edits on the same lines cannot be told apart: nothing is written.
     const both = agentChanged(controller, 'g.txt', lines(5), lines(5, { 3: 'agent' }));
     await save(controller, 'g.txt', lines(5, { 3: 'agent and me' }));
@@ -848,6 +851,18 @@ describe('desktop Files and editor', () => {
     assert.equal(shell.asked.at(-1)!.text, 'This part includes lines you edited; it was left as is.');
     await controller.handleMessage({ type: 'revertHunk', path: abs, index: 1, header: hunkHeader(second) });
     assert.equal(readFileSync(abs, 'utf8'), lines(20, { 2: 'agent A', 3: 'mine' }));
+  });
+
+  it('sends at most 40 parts of a file, with the number it has in all', async () => {
+    const { shell, controller } = await start('desktop');
+    const changed: Record<number, string> = {};
+    for (let i = 1; i <= 45; i++) changed[i * 10] = `agent ${i}`;
+    const abs = agentChanged(controller, 'many.txt', lines(460), lines(460, changed));
+    await controller.handleMessage({ type: 'getHunks', path: abs });
+    const sent = shell.posted.filter((m) => m.type === 'hunks').at(-1);
+    assert.ok(sent && sent.type === 'hunks');
+    assert.equal(sent.hunks.length, 40);
+    assert.equal(sent.total, 45);
   });
 
   it('sends the editor selection as the context of the request, checked', async () => {

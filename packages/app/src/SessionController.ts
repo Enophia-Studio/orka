@@ -350,7 +350,8 @@ export class SessionController {
         this.orchestrator.changes.accept(message.path);
         break;
       case 'revertChange':
-        await this.revert(message.path);
+        // The page hears whether the file was reverted (its review counts only what happened).
+        this.post({ type: 'changeReverted', path: message.path, reverted: await this.revert(message.path) });
         break;
       case 'getHunks':
         await this.postHunks(message.path);
@@ -746,22 +747,24 @@ export class SessionController {
   /**
    * Revert one file. A file the user edited after the agent is never reverted as a whole (that would
    * throw their edit away): only the agent's part is undone, when it can be told apart cleanly.
+   * True when something was reverted.
    */
-  private async revert(absPath: string): Promise<void> {
+  private async revert(absPath: string): Promise<boolean> {
     const orchestrator = this.orchestrator;
     const rel = this.relPath(absPath);
-    if (this.workingNearby()) return;
+    if (this.workingNearby()) return false;
     if (!orchestrator.changes.isUserEdited(absPath)) {
-      if (await orchestrator.changes.revert(absPath)) orchestrator.addNote(`The user reverted your changes to ${rel}.`);
-      return;
+      const reverted = await orchestrator.changes.revert(absPath);
+      if (reverted) orchestrator.addNote(`The user reverted your changes to ${rel}.`);
+      return reverted;
     }
     const undo = t("Undo only the agent's part");
     const choice = await this.ctx.shell.message('warning', t('You edited {file} after the agent.', { file: rel }), { modal: true }, undo);
-    if (choice !== undo || this.workingNearby()) return;
+    if (choice !== undo || this.workingNearby()) return false;
     const result = await orchestrator.changes.revertAgentPart(absPath);
     if (result === 'reverted') {
       orchestrator.addNote(`The user undid your changes to ${rel} and kept their own edits. Re-read the file before editing it again.`);
-      return;
+      return true;
     }
     const reasons: Record<Exclude<typeof result, 'reverted'>, string> = {
       conflict: t("Could not separate your edits from the agent's in {file} (they are on the same or neighbouring lines); nothing was changed.", { file: rel }),
@@ -772,6 +775,7 @@ export class SessionController {
       notApplicable: t('The agent created or deleted {file}, so its part cannot be undone apart from your edits; nothing was changed.', { file: rel }),
     };
     this.publishNotice('warning', reasons[result]);
+    return false;
   }
 
   /** Hunks of one changed file for the Changes panel. */
@@ -782,7 +786,8 @@ export class SessionController {
       lines: h.lines.slice(0, MAX_HUNK_LINES).map((l) => ({ type: l.type, text: lineText(l.text) })),
       hidden: Math.max(0, h.lines.length - MAX_HUNK_LINES),
     }));
-    this.post({ type: 'hunks', path: absPath, hunks: views });
+    // total: the page tells a part that went (kept or reverted) from one that stayed, also past the parts sent.
+    this.post({ type: 'hunks', path: absPath, hunks: views, total: hunks.length });
   }
 
   /** Keep one part of a change (the rest stays reviewable). */
