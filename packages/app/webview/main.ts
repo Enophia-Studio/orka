@@ -235,6 +235,12 @@ function liveSessions(): LiveSessionView[] {
 function setLive(sessions: LiveSessionView[]): void {
   ui.live = sessions;
   for (const id of drafts.keys()) if (!sessions.some((s) => s.id === id)) drafts.delete(id);
+  markRunning();
+}
+
+/** data-running while any open session works: the desktop window holds back a reload then. */
+function markRunning(): void {
+  document.documentElement.toggleAttribute('data-running', session.running || ui.live.some((s) => s.state !== 'idle'));
 }
 
 /** The window's title as the page loaded it; "(n) " goes before it while other sessions wait for approval. */
@@ -4144,6 +4150,7 @@ function onEvent(event: AgentEvent): void {
   const changedId = applyEvent(session, event);
   // Sent messages offer "Go back" only while the agent is idle.
   document.body.classList.toggle('busy', session.running);
+  markRunning();
   switch (event.type) {
     case 'plan':
       renderPlan();
@@ -4236,6 +4243,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       setSessionId(message.sessionId);
       session = message.session;
       document.body.classList.toggle('busy', session.running);
+      markRunning();
       config = message.config;
       ui.taskId = message.taskId;
       setLocale(config.locale);

@@ -313,6 +313,53 @@ describe('Orka desktop app', { skip: (!existsSync(APP) && 'build first (npm run 
     assert.match(await browser.evaluate(`fetch('/').then((r) => r.text())`), /<html lang="en" translate="no"/, 'a reload loads it in English');
   });
 
+  it("keeps the browser's own menu and page shortcuts out of the app, except in text fields and while nothing runs", async () => {
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    // True when the browser's default action was cancelled.
+    const held = (target, event) => browser.evaluate(`!document.querySelector(${JSON.stringify(target)}).dispatchEvent(${event})`);
+    const key = (init) => `new KeyboardEvent('keydown', Object.assign({ bubbles: true, cancelable: true }, ${JSON.stringify(init)}))`;
+    const menu = `new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 })`;
+
+    assert.equal(await held('#transcript', menu), true, 'no browser menu on the conversation');
+    assert.equal(await held('#input', menu), false, 'copy and paste in the message box');
+    await browser.evaluate(`(() => { const r = document.createRange(); r.selectNodeContents(document.body); getSelection().removeAllRanges(); getSelection().addRange(r); })()`);
+    assert.equal(await held('#transcript', menu), false, 'selected text can be copied');
+    await browser.evaluate('getSelection().removeAllRanges()');
+
+    for (const init of [{ key: 'p', ctrlKey: true }, { key: 's', ctrlKey: true }, { key: 'o', ctrlKey: true }, { key: 'ArrowLeft', altKey: true }, { key: 'ArrowRight', altKey: true }, { key: 'F7' }]) {
+      if (process.platform === 'darwin') continue;
+      assert.equal(await held('#input', key(init)), true, JSON.stringify(init));
+    }
+    assert.equal(await held('#input', key({ key: 'f', ctrlKey: true })), false, 'find stays');
+    assert.equal(await held('#input', key({ key: 'a', ctrlKey: true })), false, 'select all stays');
+    assert.equal(await held('#input', key({ key: 'ArrowLeft', ctrlKey: true })), false, 'moving by word stays');
+    assert.equal(await held('body', `new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 3 })`), true, 'the mouse Back button');
+    assert.equal(
+      await browser.evaluate(`(() => { const d = new DataTransfer(); d.items.add(new File(['x'], 'a.txt')); return !document.querySelector('#transcript').dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: d })); })()`),
+      true,
+      'a dropped file does not replace the app',
+    );
+
+    // Reloading only while no session runs.
+    const reload = key({ key: 'F5' });
+    assert.equal(await held('#input', reload), false, 'nothing runs: F5 reloads');
+    let release;
+    script = [() => new Promise((resolve) => (release = () => resolve(reply('Done waiting.'))))];
+    await browser.clickSelector('#input');
+    await browser.type('Wait a moment');
+    await browser.clickSelector('#send');
+    await until(() => browser.evaluate('document.documentElement.hasAttribute("data-running")'), 'the running mark');
+    assert.equal(await held('#input', reload), true, 'F5 is held back while the session runs');
+    assert.equal(await held('#input', key({ key: 'r', ctrlKey: true })), true, 'Ctrl+R too');
+    await until(() => release, 'the request');
+    release();
+    await until(async () => (await text()).includes('Done waiting.'), 'the reply');
+    await until(() => browser.evaluate('!document.documentElement.hasAttribute("data-running")'), 'the mark gone');
+    assert.equal(await held('#input', reload), false, 'F5 reloads again');
+  });
+
   it('shows Radar in a tab next to the plan and changes: off, naming every site it would contact, fetching nothing', async () => {
     // Every fetch the app makes is written down.
     const probe = path.join(home, 'fetch-probe.cjs');

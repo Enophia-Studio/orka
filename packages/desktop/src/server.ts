@@ -238,6 +238,58 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 }
 
 /**
+ * Orka's window is an app, not a web page (README: Orka Desktop). The browser's own menu opens
+ * only in text fields, the editor and on selected text (to copy and paste), and the browser's
+ * shortcuts that would print, save or open a page, open its history, downloads, bookmarks or
+ * help, or leave the page are held back: Ctrl+P, Ctrl+S (the editor saves first), Ctrl+O,
+ * Ctrl+U, Ctrl+J, Ctrl+H, Ctrl+D, Ctrl+Shift+B/O/M/Delete, F1, F7 (caret browsing), Alt+Left and
+ * Alt+Right (Cmd+[ and Cmd+] on macOS), Alt+Home, the Back and Forward keys and mouse buttons,
+ * and a file dropped where nothing takes it. Reloading (F5, Ctrl+R) works only while no session
+ * runs (the page marks that with data-running). Find (Ctrl+F), zoom and the developer tools stay.
+ * The handlers run last (on window, bubbling), so the page's own shortcuts come first, and they
+ * only cancel the browser's default action.
+ */
+const APP_GUARD = `(() => {
+  const mac = /Mac/.test(navigator.platform);
+  const editable = (target) =>
+    target instanceof Element && !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], .cm-editor');
+  window.addEventListener('contextmenu', (e) => {
+    if (editable(e.target) || String(getSelection() || '').trim()) return;
+    e.preventDefault();
+  });
+  const held = (e) => {
+    // Autofill sends keydown events without a key.
+    const key = typeof e.key !== 'string' ? '' : e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const mod = (mac ? e.metaKey : e.ctrlKey) && !e.altKey;
+    if (key === 'F1' || key === 'F7' || key === 'BrowserBack' || key === 'BrowserForward' || key === 'BrowserHome') return true;
+    if (key === 'F5' || (mod && key === 'r')) return document.documentElement.hasAttribute('data-running');
+    if (mod && !e.shiftKey && ['p', 's', 'o', 'u', 'j', 'h', 'd'].includes(key)) return true;
+    if (mod && e.shiftKey && ['b', 'o', 'm', 'Delete'].includes(key)) return true;
+    if (mac) return e.metaKey && !e.altKey && (key === '[' || key === ']');
+    return e.altKey && !e.ctrlKey && !e.metaKey && (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'Home');
+  };
+  window.addEventListener('keydown', (e) => {
+    if (held(e)) e.preventDefault();
+  });
+  // The mouse's Back and Forward buttons.
+  for (const type of ['mousedown', 'mouseup', 'auxclick']) {
+    window.addEventListener(type, (e) => {
+      if (e.button === 3 || e.button === 4) e.preventDefault();
+    });
+  }
+  // A file dropped where nothing takes it would replace the app with that file.
+  const files = (e) => !e.defaultPrevented && !!e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
+  window.addEventListener('dragover', (e) => {
+    if (!files(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'none';
+  });
+  window.addEventListener('drop', (e) => {
+    if (files(e)) e.preventDefault();
+  });
+})();`;
+
+/**
  * The window's page: the chat UI plus a small bridge standing in for VS Code's webview API
  * (acquireVsCodeApi): messages go out as POSTs once the event stream is open, and come in as
  * window messages, exactly as in VS Code.
@@ -264,6 +316,7 @@ function page(nonce: string, state: unknown, look: PageLook): string {
 <body>
   <div id="app"></div>
   <script type="application/json" id="orka-state">${initial}</script>
+  <script nonce="${nonce}">${APP_GUARD}</script>
   <script nonce="${nonce}">
     (() => {
       let state = JSON.parse(document.getElementById('orka-state').textContent);

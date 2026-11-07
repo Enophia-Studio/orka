@@ -109,6 +109,9 @@ describe('Orka desktop server', () => {
       const turkish = (await request(port, '/', { cookie })).body;
       assert.match(turkish, /<html lang="tr" translate="no"/);
       assert.match(turkish, /<meta name="google" content="notranslate">/);
+      // The app guard (no browser menu or page shortcuts) runs under the page's nonce, before the chat UI.
+      const guard = turkish.indexOf("addEventListener('contextmenu'");
+      assert.ok(guard > 0 && guard < turkish.indexOf('src="/webview.js"'));
       look = { layout: 'ide', theme: 'system', locale: 'en' };
       assert.match((await request(port, '/', { cookie })).body, /<html lang="en" translate="no"/);
       // Only known languages reach the markup.

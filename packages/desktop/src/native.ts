@@ -1,7 +1,7 @@
 import { shLine, shQuote, terminalWindow, type TerminalProgram } from '@orka/app';
 import { findBrowser, programPath } from '@orka/core';
 import { type ChildProcess, execFile, spawn } from 'node:child_process';
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 
 /** How a program ended; undefined when it is not installed. */
@@ -207,13 +207,98 @@ export function openTerminalWindow(options: { title: string; cwd: string; comman
 }
 
 /**
+ * The browser's command line for Orka's window: app mode in Orka's own profile, without the
+ * browser's own features (README: Orka Desktop). Translation, sync, extensions, the default
+ * apps, first-run and default-browser prompts are off, and so is the browser's background
+ * traffic: component and safe-browsing list updates, crash and metrics uploads, link pings and
+ * the autofill server. Rendering and the GPU keep the browser's defaults.
+ */
+export function appWindowArgs(url: string, profileDir: string): string[] {
+  return [
+    `--app=${url}`,
+    `--user-data-dir=${profileDir}`,
+    '--window-size=1200,860',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-default-apps',
+    '--disable-extensions',
+    '--disable-component-extensions-with-background-pages',
+    '--disable-sync',
+    '--disable-background-networking',
+    '--disable-component-update',
+    '--disable-client-side-phishing-detection',
+    '--disable-domain-reliability',
+    '--disable-breakpad',
+    '--metrics-recording-only',
+    '--no-pings',
+    // One list: the browser reads only the last --disable-features.
+    '--disable-features=Translate,TranslateUI,AutofillServerCommunication,MediaRouter,OptimizationHints',
+  ];
+}
+
+/**
+ * Preferences of the window's profile that have no switch: no offer to translate, to save a
+ * password or to fill in addresses and cards, no sign-in to the browser and no default-browser
+ * check. Merged into the profile's own Preferences before each start, so what the browser keeps
+ * there (the window's size and place) stays.
+ */
+const APP_PREFERENCES = {
+  translate: { enabled: false },
+  credentials_enable_service: false,
+  credentials_enable_autosignin: false,
+  profile: { password_manager_enabled: false },
+  autofill: { enabled: false, profile_enabled: false, credit_card_enabled: false },
+  signin: { allowed: false },
+  browser: { check_default_browser: false },
+};
+
+/** Writes APP_PREFERENCES into the profile at profileDir (created when new). */
+export function prepareAppProfile(profileDir: string): void {
+  const file = path.join(profileDir, 'Default', 'Preferences');
+  let current: unknown;
+  try {
+    current = JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    current = undefined; // a new profile, or one the browser will rebuild anyway
+  }
+  const merged = mergePreferences(isRecord(current) ? current : {}, APP_PREFERENCES);
+  mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.orka-${process.pid}`;
+  writeFileSync(temp, JSON.stringify(merged));
+  try {
+    renameSync(temp, file);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function mergePreferences(base: Record<string, unknown>, ours: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(ours)) {
+    const existing = out[key];
+    out[key] = isRecord(value) && isRecord(existing) ? mergePreferences(existing, value) : value;
+  }
+  return out;
+}
+
+/**
  * Orka's window: Edge, Chrome or Chromium in app mode (no tabs or address bar) with its own
  * profile. Undefined when none is installed.
  */
 export function openAppWindow(url: string, profileDir: string, browserPath?: string): ChildProcess | undefined {
   const exe = findBrowser(browserPath);
   if (!exe) return undefined;
-  return spawn(exe, [`--app=${url}`, `--user-data-dir=${profileDir}`, '--no-first-run', '--no-default-browser-check', '--window-size=1200,860'], {
+  try {
+    prepareAppProfile(profileDir);
+  } catch {
+    /* the window still opens, only with the browser's own defaults */
+  }
+  return spawn(exe, appWindowArgs(url, profileDir), {
     stdio: 'ignore',
     windowsHide: false,
   });
