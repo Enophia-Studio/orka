@@ -1399,6 +1399,11 @@ export class AppController implements Disposable {
     const session = elsewhere ? this.liveFor(target) : this.activeSession;
     const store = session?.store ?? (elsewhere ? new FileTaskStore(this.shell.storage(target).tasks) : undefined);
     if (!store) return;
+    // A running session would save its conversation again when it ends, under a new id.
+    if (session?.isRunning && id === session.taskId) {
+      void this.shell.message('info', t('Stop the agent before deleting this task.'));
+      return;
+    }
     const deleteLabel = t('Delete');
     const choice = await this.shell.message('warning', t('Delete this task from the history? This cannot be undone.'), { modal: true }, deleteLabel);
     if (choice !== deleteLabel) return;

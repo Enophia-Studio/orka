@@ -250,7 +250,7 @@ function folderName(p: string): string {
 
 /**
  * The … menu of a session: stop or close it while it is open in the background, move it to a
- * group, out of it, hide or show it, delete it.
+ * group, out of it, hide or show it, delete it (not while it runs).
  */
 export function sessionMenuHtml(taskId: string, folder: string, organizer: SessionOrganizerView, live?: MenuSession): string {
   const inGroup = organizer.assigned[taskId];
@@ -272,7 +272,7 @@ export function sessionMenuHtml(taskId: string, folder: string, organizer: Sessi
     ${inGroup ? item('session-ungroup', 'undo', t('Take out of the group')) : ''}
     <hr>
     ${item('session-hide', hidden ? 'eye' : 'ban', hidden ? t('Show in the list') : t('Hide from the list'), ` data-hidden="${!hidden}"`)}
-    ${item('delete-session', 'delete', t('Delete'), '', ' danger')}`;
+    ${live?.running ? '' : item('delete-session', 'delete', t('Delete'), '', ' danger')}`;
 }
 
 function samePath(a: string, b: string): boolean {

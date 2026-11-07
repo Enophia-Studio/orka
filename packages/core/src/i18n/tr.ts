@@ -336,6 +336,7 @@ export const TR: Record<string, string> = {
   'Could not attach {file}.': '{file} eklenemedi.',
   'Untitled task': 'Adsız görev',
   'Stop the agent before opening another task.': 'Başka bir görev açmadan önce agent\'ı durdurun.',
+  'Stop the agent before deleting this task.': 'Bu görevi silmeden önce agent\'ı durdurun.',
   'That task could not be loaded.': 'Bu görev yüklenemedi.',
   Delete: 'Sil',
   'Delete this task from the history? This cannot be undone.': 'Bu görev geçmişten silinsin mi? Bu işlem geri alınamaz.',

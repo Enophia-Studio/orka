@@ -149,8 +149,10 @@ describe('open sessions in the list', () => {
     const running = sessionMenuHtml('b1', 'D:/work/beta', organizer, { id: 's-b', running: true, draft: false });
     assert.ok(running.includes('data-action="stop-session"') && running.includes('data-session="s-b"'));
     assert.ok(!running.includes('close-session'));
-    assert.ok(running.includes('data-action="delete-session"'), 'the task keeps its other actions');
+    assert.ok(running.includes('data-action="session-hide"'), 'the task keeps its other actions');
+    assert.ok(!running.includes('delete-session'), 'but not Delete while it runs');
     const idle = sessionMenuHtml('b1', 'D:/work/beta', organizer, { id: 's-b', running: false, draft: false });
+    assert.ok(idle.includes('data-action="delete-session"'));
     assert.ok(idle.includes('data-action="close-session"') && idle.includes('Close (keeps it in the list)'));
     const draft = sessionMenuHtml('new-b', 'D:/work/beta', organizer, { id: 's-b', running: false, draft: true });
     assert.ok(draft.includes('close-session') && !draft.includes('delete-session'), 'an unsaved task offers nothing else');

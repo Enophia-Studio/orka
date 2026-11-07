@@ -712,6 +712,20 @@ describe('desktop Files and editor', () => {
     assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'mine\n');
   });
 
+  it('refuses to delete the task of a running session, which would save it again under a new id', async () => {
+    process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Working.' }, { hang: true }]]);
+    const { shell, controller } = await start('desktop', agentSettings);
+    const sent = controller.send('Do something');
+    await until(() => orchestratorOf(controller).isRunning && shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to work');
+    const id = sessionOf(controller).taskId;
+    shell.answer = 'Delete';
+    await controller.handleMessage({ type: 'deleteTask', id, folder: folderA });
+    assert.equal(sessionOf(controller).taskId, id, 'the session keeps its task');
+    assert.equal(shell.asked.at(-1)?.text, 'Stop the agent before deleting this task.');
+    controller.stop();
+    await sent;
+  });
+
   it("protects a save made through another path to a file the agent changed", async () => {
     const { controller } = await start('desktop');
     mkdirSync(path.join(folderA, 'src'));
