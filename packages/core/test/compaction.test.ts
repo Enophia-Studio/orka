@@ -112,4 +112,26 @@ describe('compaction', () => {
     const c = session.items.find((i) => i.kind === 'compaction');
     assert.ok(c && c.kind === 'compaction' && c.status === 'error' && /empty handoff note/.test(c.message ?? ''));
   });
+
+  it('Stop pressed while the handoff is built still cancels the next request', async () => {
+    let stop = () => {};
+    let nextAborted: boolean | undefined;
+    const main = new ScriptedProvider([
+      () => big([call('read_file', { path: 'src/math.js' })]),
+      () => {
+        // The note came back; Stop lands while the handoff is put together.
+        stop();
+        return big([text('NOTE: read the file.')], 100);
+      },
+      (req) => {
+        nextAborted = req.signal?.aborted;
+        if (nextAborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+        return [text('Went on after Stop.')];
+      },
+    ]);
+    const { orchestrator } = setup(main);
+    stop = () => orchestrator.stop();
+    assert.equal(await orchestrator.run('go'), 'stopped');
+    assert.equal(nextAborted, true, 'the request after the compaction got an aborted signal');
+  });
 });

@@ -620,6 +620,8 @@ export class Orchestrator {
       const turn = new AbortController();
       const stopTurn = () => turn.abort();
       signal.addEventListener('abort', stopTurn, { once: true });
+      // A Stop that came during the compaction above fired before the listener was there.
+      if (signal.aborted) turn.abort();
       let looped: string | undefined;
       let shown = '';
       try {
