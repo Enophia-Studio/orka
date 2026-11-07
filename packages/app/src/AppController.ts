@@ -798,6 +798,8 @@ export class AppController implements Disposable {
   private activate(session: SessionController): void {
     const previous = this.activeSession;
     if (previous) previous.lastActive = Date.now();
+    // Its Browser panel is out of sight: no frames, and its page is the agent's again.
+    if (previous && previous !== session) previous.browserPanel?.hide();
     this.activeId = session.id;
     session.lastActive = Date.now();
     this.shell.attach(session.orchestrator, this.settings);
@@ -3320,6 +3322,7 @@ export class AppController implements Disposable {
       folder: root,
       canOpenFolder: this.shell.canOpenFolder,
       ...(this.shell.folderBrowser ? { canBrowseFolders: true } : {}),
+      ...(this.shell.kind === 'desktop' ? { browserPanel: true as const } : {}),
       skillsEnabled: s.skills.enabled,
       skills,
       skillErrors: this.skillErrors,

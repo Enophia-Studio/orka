@@ -1,5 +1,6 @@
 import {
   type AgentEvent,
+  browserFor,
   type AgentOption,
   type AIProvider,
   type ApprovalRequest,
@@ -42,6 +43,7 @@ import {
 import { createHash } from 'node:crypto';
 import { promises as fs, realpathSync, statSync } from 'node:fs';
 import * as path from 'node:path';
+import { BrowserPanel } from './browserPanel';
 import type { ConfigView, EditorSelection, HunkView, ImageAttachment, SessionMessage, SessionPost, ToWebview } from './protocol';
 import type { RunGate } from './runGate';
 import { readChoice, type SessionChoice } from './sessionModel';
@@ -142,6 +144,8 @@ export class SessionController {
   readonly permissions: PermissionManager;
   /** The desktop app's Files tree and editor (VS Code has its own editor). */
   readonly files?: WorkspaceFiles;
+  /** The desktop Browser panel: the agent's browser of this session, live, and the user's Take over. */
+  readonly browserPanel?: BrowserPanel;
   private task = { id: newTaskId(), createdAt: new Date().toISOString() };
   private session: SessionView = emptySession();
   private readonly pendingApprovals = new Map<string, (response: ApprovalResponse) => void>();
@@ -200,6 +204,15 @@ export class SessionController {
     });
     this.root = this.host.workspaceRoot;
     this.files = shell.kind === 'desktop' ? new WorkspaceFiles(this.root) : undefined;
+    this.browserPanel =
+      shell.kind === 'desktop'
+        ? new BrowserPanel({
+            browser: browserFor(this.host),
+            post: (message) => this.post(message),
+            active: () => this.ctx.isActive(this),
+            processes: () => [...this.host.processes.values()].map((p) => ({ name: p.name, output: p.output, running: p.running })),
+          })
+        : undefined;
     const storage = shell.storage(folder);
     this.snapshots = new ShadowGit(folder, storage.snapshots);
     this.store = new FileTaskStore(storage.tasks);
@@ -371,6 +384,14 @@ export class SessionController {
         break;
       case 'useModelAsDefault':
         await this.ctx.useModelAsDefault(this);
+        break;
+      case 'browserView':
+      case 'browserOpen':
+      case 'browserNav':
+      case 'browserControl':
+      case 'browserInput':
+      case 'browserServers':
+        await this.browserPanel?.handle(message);
         break;
     }
   }
@@ -1229,6 +1250,8 @@ export class SessionController {
     // A hand-off belongs to the workspace and change list being dropped.
     this.handoff = undefined;
     this.orchestrator.dispose();
+    // Its browser closes with its processes; the panel lets go of it first.
+    this.browserPanel?.dispose();
     this.host.stopAllProcesses();
     this.denyApprovals();
     // Its stopped run may take a moment to end: its place and folder are free at once.

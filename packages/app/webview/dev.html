@@ -16,7 +16,10 @@
   LobbyManager.cs as edited by the user in Changes (whose hunks ?ide highlights). With ?ide, ?picker
   opens Orka's own folder picker ("Open folder…") on a small in-memory disk. With ?ide, ?live
   opens two sessions: LobbyDemo's, shown and running, and SharedLib's, waiting for an approval in the
-  background (its row, the badge and the window title show it).
+  background (its row, the badge and the window title show it). With ?ide, ?browser opens the
+  Browser tab on a page of a local dev server (frames drawn here), ?browser=empty with no page yet,
+  ?browser=control with the page taken over (clicks and keys show on the drawn page), and
+  ?browser=error after an address that could not be opened.
 -->
 <html lang="en">
 <head>
@@ -159,6 +162,7 @@
         if (ide) radarMock(message);
         if (ide) filesMock(message);
         if (ide) foldersMock(message);
+        if (ide) browserMock(message);
         accountsMock(message);
         modelMock(message);
       },
@@ -166,6 +170,7 @@
         ...(params.has('collapsed') ? { sidebarClosed: true } : {}),
         ...(params.has('radar') ? { asideTab: 'radar' } : {}),
         ...(params.has('files') || params.has('editor') ? { asideTab: 'files' } : {}),
+        ...(params.has('browser') ? { asideTab: 'browser' } : {}),
         ...(params.has('editor') ? { editor: { folder: root, path: 'Assets/Scripts/Net/LobbyManager.cs', shown: true, expanded: ['Assets', 'Assets/Scripts', 'Assets/Scripts/Net'] } } : {}),
       }),
       setState: () => {},
@@ -364,6 +369,52 @@
       const dir = p.split('/').join(SEP);
       return dir.length > 3 && dir.endsWith(SEP) ? dir.slice(0, -1) : dir;
     };
+    // ---- Browser tab (desktop app only): a drawn page stands in for the session's headless browser.
+    const browserMode = params.get('browser') || 'page';
+    const browserState = {
+      running: browserMode !== 'empty', url: browserMode === 'empty' ? '' : 'http://localhost:5173/lobby', canBack: browserMode !== 'empty', canForward: false,
+      control: browserMode === 'control', ...(browserMode === 'error' ? { error: 'Could not open http://localhost:3000/: net::ERR_CONNECTION_REFUSED' } : {}),
+    };
+    const browserMarks = [];
+    let browserTyped = '';
+    function browserDraw() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280; canvas.height = 800;
+      const g = canvas.getContext('2d');
+      g.fillStyle = '#f6f7f9'; g.fillRect(0, 0, 1280, 800);
+      g.fillStyle = '#20232a'; g.fillRect(0, 0, 1280, 72);
+      g.fillStyle = '#ffffff'; g.font = 'bold 30px sans-serif'; g.fillText('LobbyDemo', 40, 47);
+      g.fillStyle = '#20232a'; g.font = '44px sans-serif'; g.fillText(L('Players ready: 2 / 4', 'Hazır oyuncu: 2 / 4'), 40, 170);
+      g.fillStyle = '#3b82f6'; g.fillRect(40, 220, 260, 70);
+      g.fillStyle = '#ffffff'; g.font = '30px sans-serif'; g.fillText(L('Ready', 'Hazır'), 120, 266);
+      g.strokeStyle = '#9aa1ab'; g.lineWidth = 2; g.strokeRect(40, 330, 520, 64);
+      g.fillStyle = '#20232a'; g.font = '28px sans-serif'; g.fillText(browserTyped || L('Player name', 'Oyuncu adı'), 56, 372);
+      for (const [x, y] of browserMarks) { g.fillStyle = 'rgba(239,68,68,.8)'; g.beginPath(); g.arc(x, y, 14, 0, 7); g.fill(); }
+      deliver({ type: 'browserFrame', data: canvas.toDataURL('image/jpeg', 0.7).split(',')[1], width: 1280, height: 800 });
+    }
+    const browserPost = () => deliver({ type: 'browserState', state: { ...browserState } });
+    function browserMock(message) {
+      const later = (f, ms = 40) => setTimeout(f, ms);
+      if (message.type === 'browserView' && message.visible) later(() => { browserPost(); if (browserState.running) browserDraw(); });
+      if (message.type === 'browserServers') later(() => deliver({ type: 'browserServers', servers: [{ url: 'http://localhost:5173/', process: 'npm run dev' }, { url: 'http://localhost:8080/' }] }), 300);
+      if (message.type === 'browserOpen') {
+        browserState.loading = true; delete browserState.error; browserPost();
+        later(() => {
+          delete browserState.loading;
+          const url = /^\d+$/.test(message.url) ? 'http://localhost:' + message.url + '/' : /^[a-z]+:\/\//i.test(message.url) ? message.url : 'http://' + message.url;
+          if (!/^https?:/i.test(url)) { browserState.error = L('Only http and https addresses open here.', 'Burada yalnızca http ve https adresleri açılır.'); return browserPost(); }
+          Object.assign(browserState, { running: true, url, canBack: true });
+          browserPost(); browserDraw();
+        }, 500);
+      }
+      if (message.type === 'browserNav') later(() => { browserPost(); browserDraw(); });
+      if (message.type === 'browserControl') later(() => { browserState.control = message.take && browserState.running; browserPost(); });
+      if (message.type === 'browserInput' && browserState.control) {
+        const input = message.input;
+        if (input.kind === 'mouse' && input.action === 'down') { browserMarks.push([input.x * 1280, input.y * 800]); browserDraw(); }
+        if (input.kind === 'key' && input.action === 'down') { browserTyped = input.key === 'Backspace' ? browserTyped.slice(0, -1) : browserTyped + (input.text && input.text !== '\r' ? input.text : ''); browserDraw(); }
+      }
+    }
     function foldersMock(message) {
       const reply = (m) => setTimeout(() => deliver(m), 40);
       if (message.type === 'ready' && params.has('picker')) setTimeout(() => document.querySelector('[data-action="open-folder"]')?.click(), 300);
@@ -469,6 +520,7 @@
         folder: root,
         canOpenFolder: ide,
         canBrowseFolders: ide,
+        ...(ide ? { browserPanel: true } : {}),
         app: { version: '0.6.0', checkUpdates: true, checkedAt: Date.now() - 3600e3 },
         agentClis: [
           { id: 'antigravity', label: 'Antigravity CLI', vendor: 'Google', custom: false, enabled: true, status: { state: 'ready', version: '1.5.1', executable: 'C:/Users/you/AppData/Local/agy/bin/agy.exe' }, path: '', note: "Runs your installed Antigravity CLI (\"agy acp\"), which Google documents for any ACP client. Google's FAQ calls wrapping agy in third-party apps unsupported on consumer plans: read both and decide how you sign in.", termsUrl: 'https://antigravity.google/terms', faqUrl: 'https://antigravity.google/docs/faq', docsUrl: 'https://antigravity.google/docs/ide/extensions/acp/', installHint: 'irm https://antigravity.google/cli/install.ps1 | iex', loginCommand: 'agy', preview: false },

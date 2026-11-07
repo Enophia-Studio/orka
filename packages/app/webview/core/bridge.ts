@@ -44,8 +44,8 @@ export interface UiState {
   collapsedSections?: string[];
   /** The accounts in the session list's footer are folded open. */
   accountsOpen?: boolean;
-  /** The tab of the side panel: the task's plan and changes, Files (desktop), or Radar. */
-  asideTab?: 'task' | 'radar' | 'files';
+  /** The tab of the side panel: the task's plan and changes, Files or Browser (desktop), or Radar. */
+  asideTab?: 'task' | 'radar' | 'files' | 'browser';
   /**
    * The desktop editor in this folder: the file open (and whether it showed in place of the
    * conversation) and the folders open in the Files tree. Paths only, never a file's contents.

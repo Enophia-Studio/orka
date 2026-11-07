@@ -1821,4 +1821,22 @@ export const TR: Record<string, string> = {
   'Writes and tests custom Semgrep rules for bug and vulnerability patterns.': 'Hata ve güvenlik açığı kalıpları için özel Semgrep kuralları yazar ve test eder.',
   'Reference for the Anthropic SDKs in nine languages: models, streaming, tool use, caching and migration.': "Dokuz dilde Anthropic SDK'ları için başvuru: modeller, streaming, araç kullanımı, önbellek ve geçiş.",
   'Model facts go out of date: remove it and install it again to refresh.': 'Model bilgileri eskir: güncellemek için kaldırıp yeniden kur.',
+  // Browser panel (desktop IDE layout)
+  Forward: 'İleri',
+  'localhost:5173 or an address': 'localhost:5173 ya da bir adres',
+  'Find dev servers': 'Geliştirme sunucularını bul',
+  'Looking for dev servers…': 'Geliştirme sunucuları aranıyor…',
+  'No dev server found on this machine. Start one, or type its address.': 'Bu makinede geliştirme sunucusu bulunamadı. Birini başlat ya da adresini yaz.',
+  'Printed by {name}': '{name} tarafından yazıldı',
+  'The page': 'Sayfa',
+  'Opening…': 'Açılıyor…',
+  'Take over': 'Kontrolü al',
+  'Give back': 'Geri ver',
+  'The page: your mouse and keys go to it. Shift+Escape gives control back.': 'Sayfa: fare ve tuşların ona gider. Shift+Escape kontrolü geri verir.',
+  'Waiting for the page…': 'Sayfa bekleniyor…',
+  'No page is open. Type a localhost address or pick a dev server; pages the agent opens with its browser show here too.':
+    "Açık sayfa yok. Bir localhost adresi yaz ya da bir geliştirme sunucusu seç; Agent'ın tarayıcısıyla açtığı sayfalar da burada görünür.",
+  'You have the page: the agent can only look at it until you give it back.': 'Sayfa sende: sen geri verene kadar Agent sayfaya yalnızca bakabilir.',
+  'The agent and you share this browser. It closes with the session; nothing is recorded.': 'Bu tarayıcıyı Agent ile paylaşıyorsun. Oturumla birlikte kapanır; hiçbir şey kaydedilmez.',
+  'Only http and https addresses open here.': 'Burada yalnızca http ve https adresleri açılır.',
 };

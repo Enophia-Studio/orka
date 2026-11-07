@@ -9,9 +9,12 @@ import orkaLogo from '../media/orka-logo.svg';
 import type {
   AgentCliView,
   AgentView,
+  BrowserStateView,
   ConfigView,
+  DevServerView,
   Eol,
   FileReason,
+  FromWebview,
   HunkView,
   ImageAttachment,
   LiveSessionView,
@@ -54,6 +57,7 @@ import {
   type DirState,
   type EditorBanner,
 } from './ide/files';
+import { browserFrame, browserPanelHtml, browserServersHtml, browserUpdate, framePoint, keyInput, modifiers, NO_BROWSER } from './ide/browser';
 import { appSkeleton, layout } from './ide/layout';
 import { approvalsBadgeHtml, newSessionMenuHtml, radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml, waitingSessions } from './ide/sidebar';
 
@@ -82,7 +86,7 @@ const ui: {
   organizer: SessionOrganizerView;
   collapsed: Set<string>;
   showHidden: boolean;
-  /** The side panel's tab: the task's plan and changes, Files, or Radar. */
+  /** The side panel's tab: the task's plan and changes, Files, Browser, or Radar. */
   asideTab: AsideTab;
   /** The task shown, as the app reported it with the session. */
   taskId?: string;
@@ -103,7 +107,7 @@ const ui: {
   organizer: { groups: [], assigned: {}, hidden: [] },
   collapsed: new Set((uiState().collapsedSections ?? []).filter((k) => typeof k === 'string').slice(0, 200)),
   showHidden: false,
-  asideTab: uiState().asideTab === 'radar' || uiState().asideTab === 'files' ? uiState().asideTab! : 'task',
+  asideTab: uiState().asideTab === 'radar' || uiState().asideTab === 'files' || uiState().asideTab === 'browser' ? uiState().asideTab! : 'task',
   live: [],
 };
 
@@ -113,7 +117,7 @@ const ui: {
  */
 const drafts = new Map<string, string>();
 
-type AsideTab = 'task' | 'radar' | 'files';
+type AsideTab = 'task' | 'radar' | 'files' | 'browser';
 
 /** The conversation or the open file: the views with the message box and the side panel. */
 function workView(): boolean {
@@ -170,6 +174,7 @@ const el = {
   asideTask: document.getElementById('aside-task'),
   radarPanel: document.getElementById('radar-panel'),
   filesPanel: document.getElementById('files-panel'),
+  browserPanel: document.getElementById('browser-panel'),
   editorPane: document.getElementById('editor-pane'),
   editorHead: document.getElementById('editor-head'),
   editorBanner: document.getElementById('editor-banner'),
@@ -501,6 +506,8 @@ document.addEventListener('input', (e) => {
   } else if (target.id === 'skill-gallery-search') {
     gallery.query = (target as HTMLInputElement).value;
     renderGalleryList();
+  } else if (target.id === 'browser-url') {
+    browserView.typing = true;
   }
 });
 
@@ -532,16 +539,19 @@ function radarAvailable(): boolean {
   return !!el.radarPanel && !!radar;
 }
 
-/** The side panel shows while the task has a plan or changes, or while the user keeps Files or Radar open in it. */
+/** The side panel shows while the task has a plan or changes, or while the user keeps Files, Browser or Radar open in it. */
 function asideOpen(): boolean {
   return (
-    workView() && !ui.asideClosed && (asideContent() || (radarAvailable() && ui.asideTab === 'radar') || (filesAvailable() && ui.asideTab === 'files'))
+    workView() &&
+    !ui.asideClosed &&
+    (asideContent() || (radarAvailable() && ui.asideTab === 'radar') || (filesAvailable() && ui.asideTab === 'files') || (browserAvailable() && ui.asideTab === 'browser'))
   );
 }
 
-/** Its tab: Files or Radar when chosen, or one of them when the task has nothing to show. */
+/** Its tab: Files, Browser or Radar when chosen, or one of them when the task has nothing to show. */
 function shownTab(): AsideTab {
   if (filesAvailable() && ui.asideTab === 'files') return 'files';
+  if (browserAvailable() && ui.asideTab === 'browser') return 'browser';
   if (radarAvailable() && (ui.asideTab === 'radar' || !asideContent())) return 'radar';
   return !asideContent() && filesAvailable() ? 'files' : 'task';
 }
@@ -569,6 +579,12 @@ function updateAside(): void {
     el.filesPanel.hidden = el.aside.hidden || tab !== 'files';
     if (wasHidden && !el.filesPanel.hidden) showFilesPanel();
   }
+  el.aside.classList.toggle('wide', tab === 'browser');
+  if (el.browserPanel) {
+    el.browserPanel.hidden = el.aside.hidden || tab !== 'browser';
+    if (!el.browserPanel.hidden) drawBrowser();
+    syncBrowserView();
+  }
   renderAsideTabs();
   // The top bar offers to show or hide it once there is something in it.
   if (asideContent() !== asideHadContent) {
@@ -579,11 +595,11 @@ function updateAside(): void {
 
 function renderAsideTabs(): void {
   if (!el.asideTabs) return;
-  el.asideTabs.hidden = !radarAvailable() && !filesAvailable();
+  el.asideTabs.hidden = !radarAvailable() && !filesAvailable() && !browserAvailable();
   if (el.asideTabs.hidden) return;
   el.asideTabs.setAttribute('aria-label', t('Side panel'));
   const current = shownTab();
-  const panels: Record<AsideTab, string> = { task: 'aside-task', files: 'files-panel', radar: 'radar-panel' };
+  const panels: Record<AsideTab, string> = { task: 'aside-task', files: 'files-panel', browser: 'browser-panel', radar: 'radar-panel' };
   const tab = (id: AsideTab, label: string, extra: string, disabled: boolean, name?: string) =>
     `<button role="tab" id="aside-tab-${id}" aria-selected="${current === id}" aria-controls="${panels[id]}" tabindex="${current === id ? 0 : -1}" class="${
       current === id ? 'on' : ''
@@ -592,6 +608,7 @@ function renderAsideTabs(): void {
   const html =
     tab('task', escapeHtml(t('Plan and changes')), changes ? `<span class="count">${changes}</span>` : '', !asideContent()) +
     (filesAvailable() ? tab('files', `${icon('files')}<span>${escapeHtml(t('Files'))}</span>`, '', false) : '') +
+    (browserAvailable() ? tab('browser', `${icon('globe')}<span>${escapeHtml(t('Browser'))}</span>`, browserView.state.control ? '<span class="browser-dot" aria-hidden="true"></span>' : '', false) : '') +
     (radarAvailable() ? tab('radar', `${icon('radar')}<span>Radar</span>`, radarBadge(radar), false, radar?.pending ? radarLabel('Radar', radar) : undefined) : '');
   // Rebuilt only when it changed, so a focused tab keeps its focus.
   if (el.asideTabs.dataset.html !== html) {
@@ -604,6 +621,7 @@ function renderAsideTabs(): void {
 function showAsideTab(tab: AsideTab, focus = false): void {
   if (tab === 'radar' && !radarAvailable()) return;
   if (tab === 'files' && !filesAvailable()) return;
+  if (tab === 'browser' && !browserAvailable()) return;
   if (tab === 'task' && !asideContent()) return;
   if (!workView()) {
     ui.view = 'chat';
@@ -794,8 +812,8 @@ function toggleAside(): void {
   if (asideOpen()) ui.asideClosed = true;
   else {
     ui.asideClosed = false;
-    // Nothing of the task to show: open on Radar, or on Files when that was the tab open last.
-    if (!asideContent() && !(ui.asideTab === 'files' && filesAvailable())) {
+    // Nothing of the task to show: open on Radar, or on Files or Browser when that was the tab open last.
+    if (!asideContent() && !(ui.asideTab === 'files' && filesAvailable()) && !(ui.asideTab === 'browser' && browserAvailable())) {
       if (radarAvailable()) ui.asideTab = 'radar';
       else if (filesAvailable()) ui.asideTab = 'files';
     }
@@ -817,7 +835,7 @@ el.asideTabs?.addEventListener('keydown', (e) => {
 });
 
 function asideTabOf(value: string | undefined): AsideTab {
-  return value === 'radar' || value === 'files' ? value : 'task';
+  return value === 'radar' || value === 'files' || value === 'browser' ? value : 'task';
 }
 
 /**
@@ -1065,6 +1083,187 @@ const tree = {
 function filesAvailable(): boolean {
   return layout === 'ide' && !!window.orkaEditor && !!el.filesPanel && !!config?.workspaceOpen && !!config.folder;
 }
+
+// ------------------------------------------------------------------ Browser tab (desktop IDE layout)
+
+type PageInput = Extract<FromWebview, { type: 'browserInput' }>['input'];
+
+/**
+ * The Browser tab: the session's browser as the app last reported it, the session whose frames the
+ * page asked for ('' before the page knows its session), the dev servers found, the keys held down
+ * while the user has the page (let go before control goes back), and whether the user is typing an
+ * address (the app's updates leave it alone meanwhile).
+ */
+const browserView = {
+  state: NO_BROWSER as BrowserStateView,
+  streaming: undefined as string | undefined,
+  servers: undefined as DevServerView[] | 'looking' | undefined,
+  held: new Map<string, PageInput>(),
+  typing: false,
+  lastMove: 0,
+};
+
+/** The Browser tab: the desktop app's IDE layout with a folder open (each session has its browser). */
+function browserAvailable(): boolean {
+  return layout === 'ide' && !!el.browserPanel && !!config?.browserPanel && !!config.workspaceOpen;
+}
+
+/** The tab came into view: drawn once (again after a language change), then updated in place. */
+function drawBrowser(): void {
+  const panel = el.browserPanel;
+  if (!panel) return;
+  if (panel.dataset.drawn !== getLocale()) {
+    panel.dataset.drawn = getLocale();
+    panel.setAttribute('aria-labelledby', 'aside-tab-browser');
+    panel.innerHTML = browserPanelHtml();
+    // Dev servers on this machine are offered at once (the app only looks at local ports and its own processes).
+    if (browserView.servers === undefined) {
+      browserView.servers = 'looking';
+      post({ type: 'browserServers' });
+    }
+    renderBrowserServers();
+  }
+  renderBrowser();
+}
+
+function renderBrowser(): void {
+  const panel = el.browserPanel;
+  if (panel?.dataset.drawn) browserUpdate(panel, browserView.state, browserView.typing);
+  renderAsideTabs();
+}
+
+function renderBrowserServers(): void {
+  const box = document.getElementById('browser-servers');
+  if (!box) return;
+  const servers = browserView.servers;
+  box.hidden = servers === undefined;
+  box.innerHTML =
+    servers === 'looking' ? `<span class="spinner small"></span><span class="muted">${escapeHtml(t('Looking for dev servers…'))}</span>` : servers ? browserServersHtml(servers) : '';
+}
+
+/** Frames come only while the tab shows and the window is in sight; a tab that goes out of sight gives the page back. */
+function syncBrowserView(): void {
+  const panel = el.browserPanel;
+  const shown = !!panel && !panel.hidden && browserAvailable();
+  if (!shown && browserView.state.control) setBrowserControl(false);
+  const want = shown && document.visibilityState !== 'hidden' ? (shownSessionId() ?? '') : undefined;
+  if (want === browserView.streaming) return;
+  const was = browserView.streaming;
+  browserView.streaming = want;
+  // Another session's panel was hidden by the app when that session went out of sight.
+  if (was !== undefined && was === (shownSessionId() ?? '')) post({ type: 'browserView', visible: false });
+  if (want !== undefined) post({ type: 'browserView', visible: true });
+}
+
+/** Another session is shown: nothing of the last one's browser stays. */
+function resetBrowser(): void {
+  browserView.state = NO_BROWSER;
+  browserView.streaming = undefined;
+  browserView.servers = undefined;
+  browserView.held.clear();
+  browserView.typing = false;
+  const panel = el.browserPanel;
+  if (!panel) return;
+  delete panel.dataset.drawn;
+  panel.innerHTML = '';
+}
+
+function openBrowserUrl(): void {
+  const box = document.getElementById('browser-url') as HTMLInputElement | null;
+  const url = box?.value.trim();
+  if (!url) return;
+  browserView.typing = false;
+  // What the user typed is the user's own choice: the app opens it without asking.
+  post({ type: 'browserOpen', url });
+}
+
+/** Take over (the page gets the keyboard focus) or give back (keys still held are let go first). */
+function setBrowserControl(take: boolean): void {
+  if (!take) {
+    for (const input of browserView.held.values()) if (input.kind === 'key') post({ type: 'browserInput', input: { ...input, action: 'up', text: undefined } });
+    browserView.held.clear();
+  }
+  post({ type: 'browserControl', take });
+  if (take) document.getElementById('browser-screen')?.focus();
+}
+
+el.browserPanel?.addEventListener('keydown', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.id === 'browser-url') {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      openBrowserUrl();
+    } else if (e.key === 'Escape' && browserView.typing) {
+      e.preventDefault();
+      e.stopPropagation();
+      browserView.typing = false;
+      renderBrowser();
+    }
+    return;
+  }
+  if (target.id !== 'browser-screen' || !browserView.state.control || e.isComposing) return;
+  // Every key goes to the page (none to Orka or the window), except Shift+Escape, which gives it back.
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === 'Escape' && e.shiftKey) {
+    setBrowserControl(false);
+    el.browserPanel?.querySelector<HTMLElement>('[data-action="browser-control"]')?.focus();
+    return;
+  }
+  const input = keyInput(e, 'down');
+  browserView.held.set(e.code || e.key, input);
+  post({ type: 'browserInput', input });
+});
+
+el.browserPanel?.addEventListener('keyup', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.id !== 'browser-screen' || !browserView.state.control) return;
+  e.preventDefault();
+  e.stopPropagation();
+  browserView.held.delete(e.code || e.key);
+  post({ type: 'browserInput', input: keyInput(e, 'up') });
+});
+
+/** A mouse event over the shown page, while the user has it. */
+function pageMouse(e: MouseEvent, action: 'move' | 'down' | 'up'): void {
+  const frame = document.getElementById('browser-frame') as HTMLImageElement | null;
+  if (!browserView.state.control || !frame || frame.hidden) return;
+  const at = framePoint(frame, e);
+  if (!at) return;
+  e.preventDefault();
+  if (action === 'move') {
+    // At most one move every 40 ms: the page needs no more to follow the pointer.
+    const now = performance.now();
+    if (now - browserView.lastMove < 40) return;
+    browserView.lastMove = now;
+    post({ type: 'browserInput', input: { kind: 'mouse', action, x: at.x, y: at.y, mods: modifiers(e) } });
+    return;
+  }
+  if (action === 'down') document.getElementById('browser-screen')?.focus();
+  post({ type: 'browserInput', input: { kind: 'mouse', action, x: at.x, y: at.y, button: e.button, clicks: Math.max(1, e.detail || 1), mods: modifiers(e) } });
+}
+
+el.browserPanel?.addEventListener('mousedown', (e) => pageMouse(e, 'down'));
+el.browserPanel?.addEventListener('mouseup', (e) => pageMouse(e, 'up'));
+el.browserPanel?.addEventListener('mousemove', (e) => pageMouse(e, 'move'));
+el.browserPanel?.addEventListener('contextmenu', (e) => {
+  if (browserView.state.control && (e.target as HTMLElement).closest('#browser-screen')) e.preventDefault();
+});
+el.browserPanel?.addEventListener(
+  'wheel',
+  (e) => {
+    const frame = document.getElementById('browser-frame') as HTMLImageElement | null;
+    if (!browserView.state.control || !frame || frame.hidden) return;
+    const at = framePoint(frame, e);
+    if (!at) return;
+    e.preventDefault();
+    // Lines or pages scroll as many pixels as a line (40) or a page would.
+    const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
+    post({ type: 'browserInput', input: { kind: 'wheel', x: at.x, y: at.y, dx: e.deltaX * scale, dy: e.deltaY * scale, mods: modifiers(e) } });
+  },
+  { passive: false },
+);
+document.addEventListener('visibilitychange', syncBrowserView);
 
 function sameFolder(a: string | undefined, b: string | undefined): boolean {
   const norm = (p: string | undefined) => (p ?? '').replace(/[\\/]+$/, '').toLowerCase();
@@ -2293,6 +2492,27 @@ document.addEventListener('click', (e) => {
     case 'open-radar':
       showAsideTab('radar', true);
       break;
+    case 'browser-nav':
+      if (target.dataset.nav === 'back' || target.dataset.nav === 'forward' || target.dataset.nav === 'reload') post({ type: 'browserNav', action: target.dataset.nav });
+      break;
+    case 'browser-go':
+      openBrowserUrl();
+      break;
+    case 'browser-open-server':
+      if (target.dataset.url) {
+        const box = document.getElementById('browser-url') as HTMLInputElement | null;
+        if (box) box.value = target.dataset.url;
+        openBrowserUrl();
+      }
+      break;
+    case 'browser-servers':
+      browserView.servers = 'looking';
+      renderBrowserServers();
+      post({ type: 'browserServers' });
+      break;
+    case 'browser-control':
+      setBrowserControl(!browserView.state.control);
+      break;
     case 'radar-switch':
       // Turning Radar on is this click; the panel named the sites it contacts before it.
       post({ type: 'setSetting', key: 'radar.enabled', value: target.dataset.on === 'true' });
@@ -2871,7 +3091,7 @@ function ideTopbar(phase: AgentPhase, folderButton: string): string {
     ? `<button class="usage-btn${ui.usageOpen ? ' open' : ''}" data-action="toggle-usage" title="${attr(t('Token usage per agent'))}">${escapeHtml(t('{n} tokens', { n: fmt(tokens) }))}</button>`
     : '';
   const open = asideOpen();
-  const asideLabel = radarAvailable() || filesAvailable()
+  const asideLabel = radarAvailable() || filesAvailable() || browserAvailable()
     ? open
       ? t('Hide the side panel')
       : t('Show the side panel')
@@ -2882,7 +3102,7 @@ function ideTopbar(phase: AgentPhase, folderButton: string): string {
   const radarNew = !!radar?.pending && !(open && shownTab() === 'radar');
   const radarDot = radarNew ? `<span class="radar-dot" aria-hidden="true"></span>` : '';
   const aside =
-    asideContent() || radarAvailable() || filesAvailable()
+    asideContent() || radarAvailable() || filesAvailable() || browserAvailable()
       ? `<button class="icon-btn aside-btn${open ? ' on' : ''}" data-action="toggle-aside" aria-label="${attr(radarNew ? radarLabel(asideLabel, radar) : asideLabel)}" aria-expanded="${open}" title="${attr(`${asideLabel} (Ctrl+Alt+B)`)}">${icon('aside')}${
           session.changes.length ? `<span class="count">${Number(session.changes.length) || 0}</span>` : ''
         }${radarDot}</button>`
@@ -4552,6 +4772,8 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
         swapDraft(before, message.sessionId);
       }
       setSessionId(message.sessionId);
+      // Another session's browser: nothing of the last one stays in the panel.
+      if (message.sessionId !== before) resetBrowser();
       session = message.session;
       document.body.classList.toggle('busy', session.running);
       markRunning();
@@ -4562,6 +4784,8 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       ui.hunks.clear();
       syncFilesFolder();
       renderAll(true);
+      // The Browser tab asks the session shown now for its frames.
+      updateAside();
       if (layout === 'ide') post({ type: 'listSessions' });
       break;
     }
@@ -4588,6 +4812,18 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       renderRadar();
       break;
     }
+    case 'browserState':
+      browserView.state = message.state;
+      if (!message.state.control) browserView.held.clear();
+      renderBrowser();
+      break;
+    case 'browserFrame':
+      if (el.browserPanel && !el.browserPanel.hidden) browserFrame(el.browserPanel, message.data);
+      break;
+    case 'browserServers':
+      browserView.servers = Array.isArray(message.servers) ? message.servers : [];
+      renderBrowserServers();
+      break;
     case 'radar':
       radar = message.radar;
       radarChanged();

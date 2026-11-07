@@ -1356,6 +1356,68 @@ globalThis.fetch = (input, init) => {
     );
   });
 
+  it("shows the agent's browser live in the Browser tab, and hands the page to the user on Take over", async () => {
+    // A local dev server whose page reports what reaches it.
+    const hits = [];
+    const page = `<!doctype html><title>Local app</title><body style="margin:0">
+<button id="all" style="position:fixed;inset:0;width:100%;height:100%;font-size:40px">Local app</button>
+<script>
+  const report = (what) => fetch('/hit?' + new URLSearchParams(what));
+  document.getElementById('all').addEventListener('mousedown', (e) => report({ kind: 'click', x: e.clientX, y: e.clientY }));
+  addEventListener('keydown', (e) => report({ kind: 'key', key: e.key }));
+</script>`;
+    const dev = http.createServer((req, res) => {
+      if (req.url.startsWith('/hit?')) hits.push(Object.fromEntries(new URL(req.url, 'http://x').searchParams));
+      res.writeHead(200, { 'content-type': 'text/html' }).end(req.url.startsWith('/hit?') ? '' : page);
+    });
+    await new Promise((r) => dev.listen(0, '127.0.0.1', r));
+    const devUrl = `http://localhost:${dev.address().port}/`;
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      await browser.evaluate(`window.cspViolations = []; document.addEventListener('securitypolicyviolation', (e) => window.cspViolations.push(e.violatedDirective + ' ' + e.blockedURI))`);
+      await browser.clickSelector('.topbar .aside-btn');
+      await until(() => browser.evaluate('!!document.querySelector("#aside-tab-browser")'), 'the Browser tab');
+      await browser.clickSelector('#aside-tab-browser');
+      await until(() => browser.evaluate('!!document.querySelector("#browser-panel:not([hidden]) #browser-url")'), 'the Browser panel');
+      assert.match(await browser.evaluate('document.querySelector("#browser-empty").textContent'), /No page is open/);
+      assert.equal(await browser.evaluate('document.querySelector("[data-action=browser-control]").disabled'), true, 'nothing to take over yet');
+
+      // The user types the address: it opens without an approval, and its frames come in.
+      await browser.evaluate(`document.getElementById('browser-url').value = ${JSON.stringify(devUrl.replace('http://', ''))}`);
+      await browser.clickSelector('[data-action="browser-go"]');
+      await until(() => browser.evaluate('(() => { const f = document.getElementById("browser-frame"); return !f.hidden && f.src.startsWith("data:image/jpeg;base64,") && f.naturalWidth === 1280; })()'), 'a frame of the page', 45_000);
+      assert.equal(await browser.evaluate('document.getElementById("browser-url").value'), devUrl);
+
+      // Take over: a click on the frame's middle reaches the middle of the page.
+      await browser.clickSelector('[data-action="browser-control"]');
+      await until(() => browser.evaluate('document.querySelector("[data-action=browser-control]").getAttribute("aria-pressed") === "true"'), 'taken over');
+      assert.equal(await browser.evaluate('document.activeElement.id'), 'browser-screen', 'the page has the keyboard');
+      await browser.clickSelector('#browser-frame');
+      await until(() => hits.find((h) => h.kind === 'click'), 'the click on the page');
+      const click = hits.find((h) => h.kind === 'click');
+      assert.ok(Math.abs(Number(click.x) - 640) <= 12 && Math.abs(Number(click.y) - 400) <= 12, `scaled to the page: ${click.x},${click.y}`);
+      await browser.press('Enter');
+      await until(() => hits.find((h) => h.kind === 'key' && h.key === 'Enter'), 'the key on the page');
+
+      // Meanwhile the agent may look, not act: its click is refused with a clear message.
+      script = [() => toolUse('toolu_b', 'browser', { action: 'click', x: 10, y: 10 }), () => reply('Waiting for you.')];
+      await browser.clickSelector('#input');
+      await browser.type('Click the button');
+      await browser.clickSelector('#send');
+      await until(async () => (await text()).includes('Waiting for you.'), 'the reply');
+      assert.match(JSON.stringify(requests.at(-1).body.messages), /The user has taken over the browser/);
+      assert.equal(hits.filter((h) => h.kind === 'click').length, 1, "the agent's click never reached the page");
+
+      await browser.clickSelector('[data-action="browser-control"]');
+      await until(() => browser.evaluate('document.querySelector("[data-action=browser-control]").getAttribute("aria-pressed") === "false"'), 'given back');
+      assert.deepEqual(await browser.evaluate('window.cspViolations'), []);
+    } finally {
+      dev.close();
+    }
+  });
+
   it('only lets its own window in', async () => {
     const url = await launch();
     const { port } = new URL(url);

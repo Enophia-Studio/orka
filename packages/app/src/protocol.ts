@@ -220,7 +220,39 @@ export interface ConfigView {
   agentClisLeftOut: Array<{ id: string; reason: string }>;
   /** Desktop only: the window's layout and color theme, and how many sessions may run at once (sessions.maxRunning). */
   ui?: { layout: 'ide' | 'classic'; theme: 'system' | 'light' | 'dark'; maxRunning: number };
+  /** Desktop only: the Browser tab (the agent's browser, live) can show. */
+  browserPanel?: true;
 }
+
+/** The Browser panel: the session's browser as the page shows it. */
+export interface BrowserStateView {
+  running: boolean;
+  url: string;
+  canBack: boolean;
+  canForward: boolean;
+  /** The user has taken the page over (the agent may only look). */
+  control: boolean;
+  /** A page is being opened from the address bar. */
+  loading?: boolean;
+  /** Why the last address could not be opened. */
+  error?: string;
+}
+
+/** A dev server the Browser panel offers: one a background process printed, or a common port that answers. */
+export interface DevServerView {
+  url: string;
+  /** The background process that printed it. */
+  process?: string;
+}
+
+/**
+ * The user's input to a taken-over page. x and y: where in the shown frame (0 to 1 of its width
+ * and height); the app turns them into the page's pixels. mods: Alt 1, Ctrl 2, Meta 4, Shift 8.
+ */
+export type BrowserInputView =
+  | { kind: 'mouse'; action: 'move' | 'down' | 'up'; x: number; y: number; button?: number; clicks?: number; mods?: number }
+  | { kind: 'wheel'; x: number; y: number; dx: number; dy: number; mods?: number }
+  | { kind: 'key'; action: 'down' | 'up'; key: string; code: string; keyCode: number; text?: string; mods?: number };
 
 export interface AppVersionView {
   version: string;
@@ -550,12 +582,16 @@ export type ToWebview =
       places?: FolderPlaceView[];
     }
   /** The reply to createFolder `id`: the new folder's path and name, or why there is none. */
-  | { type: 'folderCreated'; id: number; path?: string; name?: string; error?: CreateFolderError };
+  | { type: 'folderCreated'; id: number; path?: string; name?: string; error?: CreateFolderError }
+  /** Desktop Browser panel: the session's browser, a frame of its page (JPEG, base64; never kept), the dev servers found. */
+  | Scoped<{ type: 'browserState'; state: BrowserStateView }>
+  | Scoped<{ type: 'browserFrame'; data: string; width: number; height: number }>
+  | Scoped<{ type: 'browserServers'; servers: DevServerView[] }>;
 
 /** What one session sends to the page (always with its sessionId). */
 export type SessionPost = Extract<
   ToWebview,
-  { type: 'init' | 'event' | 'fileMatches' | 'hunks' | 'setInput' | 'dirEntries' | 'fileContent' | 'fileSaved' | 'saveRefused' }
+  { type: 'init' | 'event' | 'fileMatches' | 'hunks' | 'setInput' | 'dirEntries' | 'fileContent' | 'fileSaved' | 'saveRefused' | 'browserState' | 'browserFrame' | 'browserServers' }
 >;
 
 /** The page's messages that act on one session: its task, its changes, its folder's files. */
@@ -583,6 +619,12 @@ const SESSION_MESSAGE_TYPES = [
   'initMemory',
   'setSessionModel',
   'useModelAsDefault',
+  'browserView',
+  'browserOpen',
+  'browserNav',
+  'browserControl',
+  'browserInput',
+  'browserServers',
 ] as const;
 
 export const SESSION_MESSAGES: ReadonlySet<string> = new Set<string>(SESSION_MESSAGE_TYPES);
@@ -666,6 +708,16 @@ export type FromWebview =
   | Scoped<{ type: 'setSessionModel'; model?: string; effort?: string; profile?: string; option?: { id: string; value: string } }>
   /** Save this session's model, effort and profile as the settings' defaults for new sessions. */
   | Scoped<{ type: 'useModelAsDefault' }>
+  /** Desktop Browser panel: it shows or hides (frames stream only while it shows). */
+  | Scoped<{ type: 'browserView'; visible: boolean }>
+  /** An address the user typed (the user's own consent: no approval). */
+  | Scoped<{ type: 'browserOpen'; url: string }>
+  | Scoped<{ type: 'browserNav'; action: 'back' | 'forward' | 'reload' }>
+  /** Take over (the agent may only look meanwhile) or give back. */
+  | Scoped<{ type: 'browserControl'; take: boolean }>
+  | Scoped<{ type: 'browserInput'; input: BrowserInputView }>
+  /** Look for dev servers on this machine. */
+  | Scoped<{ type: 'browserServers' }>
   | { type: 'openSettings' }
   | { type: 'listTasks' }
   | { type: 'listSessions' }
