@@ -306,10 +306,14 @@ Hooks are your own commands that Orka runs around the agent's work, so your form
 Skills are ready-made expert playbooks for specific kinds of work. They are **global**: the same skills are available in every project and in all three apps.
 
 - **Built in:** `unity`, `debugging`, `testing`, `code-review`, `refactoring`, `git-workflow`, `security`, `performance`, `documentation`, `new-project`, `frontend` (`packages/core/skills/`).
-- **Your own:** in `~/.orka/skills/`, either a single file (`name.md`) or a folder with extra files (`name/SKILL.md`). A file with the same name as a built-in skill replaces it.
-- **Format:** `name` and `description` front matter on top (the agent decides when to use a skill from its description), Markdown instructions below.
+- **Your own:** in `~/.orka/skills/` (`$ORKA_HOME/skills` when `ORKA_HOME` is set), either a single file (`name.md`) or a folder with extra files (`name/SKILL.md`). A file with the same name as a built-in skill replaces it.
+- **Format:** `name` and `description` front matter on top (the agent decides when to use a skill from its description; a YAML block such as `description: >` works too), Markdown instructions below. For a folder skill, `load_skill` tells the agent the folder, so it can find the scripts and files the skill mentions.
 - **Use:** the skill list is part of the system prompt and the agent loads a skill with `load_skill` when a task fits. You can also add one directly: `/unity make a player controller`.
 - **Settings → Skills:** turn skills on or off, open them, **Customize** a built-in skill into your own folder, or start a **New skill**.
+- **Gallery** (**Settings → Skills → Gallery**, desktop and the VS Code panel; VS Code: **Orka: Browse the Skills Gallery**): about 70 more skills to add, with search, a category and a licence filter, **Details** (what a skill needs, such as Python or LibreOffice, its licence terms and notes) and the author and licence on every row. Gallery skills are not always on, because every skill you have is listed in each request's instructions; you add the ones you want.
+  - **Included** (34): copied from Orka on **Enable**, with their licence and a `NOTICE` (source at a fixed commit, copyright, what Orka changed). **Preview** shows the text first. They are Orka's own skills (`unreal-engine`, `godot`, `accessibility`, `api-design`, `database-migrations`, `ci-pipelines`) and openly licensed ones: from [anthropics/skills](https://github.com/anthropics/skills) and [anthropics/claude-plugins-official](https://github.com/anthropics/claude-plugins-official) (Apache-2.0; review agents turned into skills), [obra/superpowers](https://github.com/obra/superpowers) (MIT) and [wshobson/agents](https://github.com/wshobson/agents) (MIT). `packages/core/skills/gallery/`; the apps' `THIRD_PARTY_NOTICES.txt` lists them.
+  - **From GitHub** (37): offered as downloads, because their licence does not let Orka ship them (no licence stated, the Unity Companion License of Unity's own skills, CC BY-SA 4.0 of Trail of Bits' security skills) or because they are big and need programs (Anthropic's Word, PDF, PowerPoint and Excel skills). **Install** first shows a dialog with every URL, the licence and its terms; only then does Orka fetch exactly those files over HTTPS from `raw.githubusercontent.com` at a fixed commit, checking each one's size and SHA-256 (no other host, no redirects, size limits, no path outside the skill's folder) and writing the skill only when every file passed. Orka never runs a skill's scripts; an agent may ask to, with the usual approval.
+  - Installed skills show where they came from in **My skills** and can be **Removed** (after a dialog). Skills whose licence forbids use with other products (such as Anthropic's *claude-security*) are not offered.
 
 ## MCP servers
 
@@ -472,7 +476,7 @@ npm test
 ```
 packages/
 ├── core/                # @orka/core: editor-agnostic engine
-│   ├── skills/          # Built-in skills (Markdown)
+│   ├── skills/          # Built-in skills (Markdown); gallery/ holds the skills to add from the gallery
 │   └── src/
 │       ├── orchestrator/  # Agent loop, events, sub-agent runner
 │       ├── supervisor/    # Supervisor: checkpoints, reviews, interventions
@@ -484,7 +488,7 @@ packages/
 │       ├── changes/       # Line diff, hunks, accept / revert, checkpoints, ShadowGit
 │       ├── browser/       # Headless Chrome/Edge (DevTools protocol)
 │       ├── mcp/           # MCP client (stdio + Streamable HTTP) and manager
-│       ├── skills/        # Skill loader, load_skill tool
+│       ├── skills/        # Skill loader, load_skill tool, skills gallery and its installer
 │       ├── i18n/          # t() and dictionaries (tr)
 │       ├── usage/         # Cost estimates, user price table
 │       └── persistence/   # Task history
