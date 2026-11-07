@@ -2,7 +2,7 @@
 // dialog from one that could not be shown, and where the macOS save dialog starts.
 import assert from 'node:assert/strict';
 import * as esbuild from 'esbuild';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
@@ -45,5 +45,56 @@ describe('Orka desktop system dialogs', () => {
     const args = native.macSaveDialogArgs('Save', suggested);
     assert.match(args[3], /default name \(item 2 of argv\) default location \(POSIX file \(item 3 of argv\)\)/);
     assert.deepEqual(args.slice(-3), ['Save', 'radar-report-2026-11-06.md', path.dirname(suggested)]);
+  });
+
+  it("starts Orka's window as an app, without the browser's own features", () => {
+    const args = native.appWindowArgs('http://127.0.0.1:5000/start?k=1', path.join(dir, 'window'));
+    assert.equal(args[0], '--app=http://127.0.0.1:5000/start?k=1');
+    assert.ok(args.includes(`--user-data-dir=${path.join(dir, 'window')}`));
+    for (const flag of [
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-default-apps',
+      '--disable-extensions',
+      '--disable-sync',
+      '--disable-background-networking',
+      '--disable-component-update',
+      '--disable-breakpad',
+      '--no-pings',
+    ]) {
+      assert.ok(args.includes(flag), flag);
+    }
+    const features = args.filter((a) => a.startsWith('--disable-features='));
+    assert.equal(features.length, 1, 'the browser reads only the last --disable-features');
+    assert.deepEqual(features[0].slice('--disable-features='.length).split(',').filter((f) => /Translate|Autofill/.test(f)), ['Translate', 'TranslateUI', 'AutofillServerCommunication']);
+    assert.ok(!args.some((a) => /gpu|renderer|--headless|--remote-debugging/.test(a)), 'rendering keeps its defaults');
+  });
+
+  it("turns off translation, password saving and autofill in the window's profile, keeping what the browser stored", () => {
+    const profile = path.join(dir, 'profile');
+    native.prepareAppProfile(profile);
+    const fresh = JSON.parse(readFileSync(path.join(profile, 'Default', 'Preferences'), 'utf8'));
+    assert.equal(fresh.translate.enabled, false);
+    assert.equal(fresh.credentials_enable_service, false);
+    assert.equal(fresh.profile.password_manager_enabled, false);
+    assert.equal(fresh.autofill.profile_enabled, false);
+    assert.equal(fresh.autofill.credit_card_enabled, false);
+    assert.equal(fresh.browser.check_default_browser, false);
+
+    // The browser's own entries stay; ours win where it turned a feature back on.
+    const stored = { browser: { window_placement: { left: 10, top: 20 } }, translate: { enabled: true }, profile: { name: 'Orka', password_manager_enabled: true }, extra: [1, 2] };
+    writeFileSync(path.join(profile, 'Default', 'Preferences'), JSON.stringify(stored));
+    native.prepareAppProfile(profile);
+    const merged = JSON.parse(readFileSync(path.join(profile, 'Default', 'Preferences'), 'utf8'));
+    assert.deepEqual(merged.browser, { window_placement: { left: 10, top: 20 }, check_default_browser: false });
+    assert.equal(merged.translate.enabled, false);
+    assert.deepEqual(merged.profile, { name: 'Orka', password_manager_enabled: false });
+    assert.deepEqual(merged.extra, [1, 2]);
+    assert.deepEqual(readdirSync(path.join(profile, 'Default')), ['Preferences'], 'no temporary file left');
+
+    // A broken file is replaced rather than stopping the start.
+    writeFileSync(path.join(profile, 'Default', 'Preferences'), '{not json');
+    native.prepareAppProfile(profile);
+    assert.equal(JSON.parse(readFileSync(path.join(profile, 'Default', 'Preferences'), 'utf8')).translate.enabled, false);
   });
 });

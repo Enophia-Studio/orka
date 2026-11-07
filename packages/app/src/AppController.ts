@@ -60,6 +60,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
+import { checkFolderPath } from './folderBrowser';
 import type {
   AccountView,
   AgentCliView,
@@ -178,6 +179,8 @@ export class AppController implements Disposable {
   /** Provider instances by configuration, shared by all agent roles. */
   private readonly providers = new Map<string, AIProvider>();
   private providersStale = false;
+  /** The config the page was last sent (with an init or alone), as JSON: the same one is not sent again. */
+  private sentConfig?: string;
   /** Open sessions by id (at most one per folder), and the one the chat UI shows: the current folder's. */
   private readonly sessions = new Map<string, SessionController>();
   private activeId?: string;
@@ -326,7 +329,7 @@ export class AppController implements Disposable {
         this.radar?.postAll();
         break;
       case 'newTask':
-        await this.newTask(message.folder);
+        await (message.other === true ? this.newTaskElsewhere(message.folder) : this.newTask(message.folder));
         break;
       case 'setMode':
         await this.updateSetting('permissionMode', message.mode);
@@ -474,8 +477,21 @@ export class AppController implements Disposable {
         await this.reloadSkills();
         break;
       case 'selectFolder':
-      case 'openFolder':
         await this.selectFolder(message.path);
+        break;
+      case 'openFolder':
+        // A path from the page is used only when it is an absolute one; none: the system's dialog.
+        if (message.path === undefined || message.path === '') await this.selectFolder(undefined);
+        else {
+          const target = checkFolderPath(message.path);
+          if (target) await this.selectFolder(target);
+        }
+        break;
+      case 'listFolders':
+        await this.listFolders(message);
+        break;
+      case 'createFolder':
+        await this.createFolder(message);
         break;
       case 'switchSession':
         await this.switchSession(message.sessionId);
@@ -571,7 +587,7 @@ export class AppController implements Disposable {
   private postInit(): void {
     const session = this.activeSession;
     if (session) session.postInit();
-    else this.shell.post({ type: 'init', session: this.idleView, config: this.configView(), taskId: this.idleTaskId });
+    else this.shell.post({ type: 'init', session: this.idleView, config: this.configForPage(), taskId: this.idleTaskId });
   }
 
   private createSessionContext(): SessionContext {
@@ -591,7 +607,7 @@ export class AppController implements Disposable {
       mainReady: () => this.isReady(this.mainProvider()),
       isInstalled: (id, fresh) => this.isInstalled(id, fresh),
       agentEvent: (event) => this.onAgentEvent(event),
-      configView: () => this.configView(),
+      configView: () => this.configForPage(),
       postConfig: () => this.postConfig(),
       postHistory: () => this.postHistory(),
       changed: () => {
@@ -604,6 +620,8 @@ export class AppController implements Disposable {
       runFinished: () => {
         // Providers waiting for an idle moment are rebuilt once no session uses them.
         if (this.providersStale && !this.anyRunning()) this.disposeProviders();
+        // A Claude Code update the user asked for while a session ran.
+        if (this.claudeUpdateWaiting && !this.anyRunning()) void this.updateClaudeCode();
       },
       gate: this.gate,
       runAccounts: (session) => this.runAccounts(session),
@@ -752,7 +770,7 @@ export class AppController implements Disposable {
     const session = this.sessions.get(id);
     if (!session || session.id === this.activeId) return;
     // The shell works in the session's folder; its change shows the session (onFolderChanged).
-    if (!(await this.shell.selectFolder(session.root))) this.postConfig();
+    if (!(await this.shell.selectFolder(session.root))) this.postConfig(true);
   }
 
   /**
@@ -891,17 +909,56 @@ export class AppController implements Disposable {
         if (!live || !target || !this.isCurrentFolder(target)) return;
         // The folder's open session is shown; one that runs goes on (its request is not stopped for a new task).
         if (live.isRunning) {
-          void this.shell.message(
-            'info',
-            t('A session is already running in {folder}. Orka runs one session at a time per folder; stop it or wait, then start a new one.', {
-              folder: path.basename(live.root) || live.root,
-            }),
-          );
+          this.noteRunningInFolder(live);
           return;
         }
       }
     }
-    await this.activeSession?.newTask();
+    // Parallel sessions: "New session" in the folder of the session that runs is another session
+    // there, which waits; the running one goes on (only Stop ends a request).
+    const shown = this.activeSession;
+    if (shown?.isRunning && this.parallel()) {
+      this.noteRunningInFolder(shown);
+      return;
+    }
+    await shown?.newTask();
+  }
+
+  /**
+   * A new task in a folder that need not be a recent one (desktop "New session" > "Other folder…"):
+   * a path chosen in the app's folder picker, or none: the system's dialog chooses. The folder's
+   * session is shown with a new empty task, unless it runs.
+   */
+  private async newTaskElsewhere(folder?: string): Promise<void> {
+    let target = folder === undefined ? undefined : checkFolderPath(folder);
+    if (folder !== undefined && !target) return;
+    // The dialog chooses first, so the open folder chosen there also starts a new task.
+    if (!target && this.shell.chooseFolder) {
+      const chosen = await this.shell.chooseFolder();
+      if (!chosen) return;
+      target = checkFolderPath(chosen);
+      if (!target) return;
+    }
+    if (target && this.isCurrentFolder(target)) return this.newTask(target);
+    const before = this.activeSession;
+    await this.selectFolder(target);
+    const shown = this.activeSession;
+    // Nothing chosen, or the switch was refused (a notice says why).
+    if (!shown || shown === before || shown.isEmpty) return;
+    if (shown.isRunning) {
+      this.noteRunningInFolder(shown);
+      return;
+    }
+    await shown.newTask();
+  }
+
+  private noteRunningInFolder(session: SessionController): void {
+    void this.shell.message(
+      'info',
+      t('A session is already running in {folder}. Orka runs one session at a time per folder; stop it or wait, then start a new one.', {
+        folder: path.basename(session.root) || session.root,
+      }),
+    );
   }
 
   async compact(): Promise<void> {
@@ -1139,16 +1196,45 @@ export class AppController implements Disposable {
     // With parallel sessions the session shown goes on in the background; otherwise it ends.
     if (!this.parallel() && this.activeSession?.isRunning) {
       void this.shell.message('info', t('Stop the agent before switching folders.'));
-      this.postConfig();
+      this.postConfig(true);
       return;
     }
     if (this.parallel() && fsPath && !this.liveFor(fsPath) && !this.hasRoom()) {
       void this.shell.message('info', t('Too many open sessions. Close one first.'));
-      this.postConfig();
+      this.postConfig(true);
       return;
     }
     // The shell reports a change through onDidChangeFolder, which shows the folder's session.
-    if (!(await this.shell.selectFolder(fsPath))) this.postConfig();
+    if (!(await this.shell.selectFolder(fsPath))) this.postConfig(true);
+  }
+
+  /**
+   * The app's own folder picker (desktop): the subfolders of a folder. Only shells with a folder
+   * browser answer; the path is checked first, and none means where the picker starts: the open
+   * folder, else the most recent one, else home.
+   */
+  private async listFolders(message: Extract<FromWebview, { type: 'listFolders' }>): Promise<void> {
+    const browser = this.shell.folderBrowser;
+    const id = message.id;
+    if (!browser || typeof id !== 'number' || !Number.isSafeInteger(id)) return;
+    const places = message.places === true ? await browser.places(this.shell.folders().map((f) => f.path)) : undefined;
+    const dir = message.path === undefined ? path.resolve(this.shell.currentFolder()?.path ?? this.shell.folders()[0]?.path ?? browser.home) : checkFolderPath(message.path);
+    if (!dir) {
+      this.shell.post({ type: 'folderListing', id, path: '', segments: [], entries: [], truncated: false, error: 'invalid', ...(places ? { places } : {}) });
+      return;
+    }
+    const listing = await browser.list(dir, { hidden: message.hidden === true });
+    this.shell.post({ type: 'folderListing', id, ...listing, ...(places ? { places } : {}) });
+  }
+
+  /** The folder picker's "New folder": one folder in the folder shown, never its parents. */
+  private async createFolder(message: Extract<FromWebview, { type: 'createFolder' }>): Promise<void> {
+    const browser = this.shell.folderBrowser;
+    const id = message.id;
+    if (!browser || typeof id !== 'number' || !Number.isSafeInteger(id)) return;
+    const parent = checkFolderPath(message.parent);
+    const result = parent ? await browser.create(parent, message.name) : { error: 'invalid' as const };
+    this.shell.post('path' in result ? { type: 'folderCreated', id, path: result.path, name: path.basename(result.path) } : { type: 'folderCreated', id, error: result.error });
   }
 
   /** Command palette: choose the folder of a multi-root workspace the agent works in. */
@@ -1276,9 +1362,12 @@ export class AppController implements Disposable {
     await this.saveSessionOrganizer(organizer);
   }
 
-  /** A folder named by the UI, if it is one of the recent folders (never any other path). */
+  /**
+   * A folder named by the UI, if it is one of the recent folders or the folder of an open session
+   * (the session list shows both; never any other path).
+   */
   private recentFolder(folder: string): string | undefined {
-    return this.shell.folders().find((f) => samePath(f.path, folder))?.path;
+    return this.shell.folders().find((f) => samePath(f.path, folder))?.path ?? [...this.sessions.values()].find((s) => samePath(s.root, folder))?.root;
   }
 
   private isCurrentFolder(folder: string): boolean {
@@ -1317,6 +1406,11 @@ export class AppController implements Disposable {
     const session = elsewhere ? this.liveFor(target) : this.activeSession;
     const store = session?.store ?? (elsewhere ? new FileTaskStore(this.shell.storage(target).tasks) : undefined);
     if (!store) return;
+    // A running session would save its conversation again when it ends, under a new id.
+    if (session?.isRunning && id === session.taskId) {
+      void this.shell.message('info', t('Stop the agent before deleting this task.'));
+      return;
+    }
     const deleteLabel = t('Delete');
     const choice = await this.shell.message('warning', t('Delete this task from the history? This cannot be undone.'), { modal: true }, deleteLabel);
     if (choice !== deleteLabel) return;
@@ -2055,6 +2149,8 @@ export class AppController implements Disposable {
   }
 
   private claudeCodeUpdate?: Promise<boolean>;
+  /** "claude update" was asked for while a session ran: it runs when the last run ends. */
+  private claudeUpdateWaiting = false;
 
   /**
    * Run "claude update" (a model can need a newer Claude Code than the one installed). Idle CLI
@@ -2067,11 +2163,16 @@ export class AppController implements Disposable {
       if (!quiet) this.publishNotice('error', t('Claude Code CLI not found.'));
       return false;
     }
-    // Never swap the executable under a running agent; a quiet (scheduled) check simply waits.
+    // Never swap the executable under a running agent: a quiet (scheduled) check simply waits, an
+    // update the user asked for runs once no session runs any more.
     if (this.anyRunning()) {
       if (quiet) return false;
-      this.providersStale = true;
-    } else this.disposeProviders();
+      if (!this.claudeUpdateWaiting) this.publishNotice('info', t('Claude Code will be updated when no session is running.'));
+      this.claudeUpdateWaiting = true;
+      return false;
+    }
+    this.claudeUpdateWaiting = false;
+    this.disposeProviders();
     const before = this.claudeCodeStatus.version;
     if (!quiet) this.publishNotice('info', t('Updating Claude Code…'));
     this.claudeCodeUpdate = new Promise<{ ok: boolean; output: string }>((resolve) =>
@@ -2126,7 +2227,7 @@ export class AppController implements Disposable {
         turnOff,
       );
       if (choice !== turnOff) {
-        this.postConfig(); // the checkbox shows it on again
+        this.postConfig(true); // the checkbox shows it on again
         return;
       }
       this.droppedMainNoted.add(id); // the user just chose this; no notice about it
@@ -2976,6 +3077,7 @@ export class AppController implements Disposable {
       folders: folders.length > 1 || (this.shell.canOpenFolder && folders.length) ? folders : undefined,
       folder: root,
       canOpenFolder: this.shell.canOpenFolder,
+      ...(this.shell.folderBrowser ? { canBrowseFolders: true } : {}),
       skillsEnabled: s.skills.enabled,
       skills,
       skillErrors: this.skillErrors,
@@ -3051,10 +3153,27 @@ export class AppController implements Disposable {
     };
   }
 
-  private postConfig(): void {
+  /** The config for a page's init: what the page has from then on. */
+  private configForPage(): ConfigView {
+    const config = this.configView();
+    this.sentConfig = JSON.stringify(config);
+    return config;
+  }
+
+  /**
+   * The page gets the config when it changed (every check and setting posts it, mostly with
+   * nothing new). `refresh`: sent even so, for the page to show it again over what the user just
+   * changed in it (a choice that was refused or cancelled).
+   */
+  private postConfig(refresh = false): void {
     this.pruneKeyNotices();
     this.updateStatus();
-    this.shell.post({ type: 'config', config: this.configView() });
+    const config = this.configView();
+    const json = JSON.stringify(config);
+    if (refresh || json !== this.sentConfig) {
+      this.sentConfig = json;
+      this.shell.post({ type: 'config', config });
+    }
     // Radar's model may have changed with the providers (a key added, a model list loaded).
     this.radar?.postState();
   }

@@ -1,5 +1,6 @@
 import type { ApprovalRequest, ApprovalResponse, EditorContext, NodeHost, Orchestrator } from '@orka/core';
-import type { FromWebview, ToWebview } from './protocol';
+import type { FolderListing } from './folderBrowser';
+import type { CreateFolderError, FolderPlaceView, FromWebview, ToWebview } from './protocol';
 import type { AppSettings, Disposable, SettingsStore } from './settings';
 import type { TerminalProgram } from './terminal';
 
@@ -39,6 +40,20 @@ export interface InputOptions {
 export interface Folder {
   name: string;
   path: string;
+}
+
+/**
+ * The app's own folder picker (desktop): subfolders of any folder on this machine (never a file),
+ * the places to start from, and a new folder. Paths given to it are already checked: absolute,
+ * without NUL, normalised.
+ */
+export interface FolderBrowser {
+  /** Where the picker starts when no folder is open and none is recent. */
+  readonly home: string;
+  list(dir: string, options: { hidden: boolean }): Promise<FolderListing>;
+  /** recent: the shell's recent folders, offered first. */
+  places(recent: string[]): Promise<FolderPlaceView[]>;
+  create(parent: string, name: string): Promise<{ path: string } | { error: CreateFolderError }>;
 }
 
 export interface TerminalHandle {
@@ -84,9 +99,13 @@ export interface AppShell {
   folders(): Folder[];
   /** Work in another folder; `path` empty = let the user choose one. Resolves true when it changed. */
   selectFolder(path?: string): Promise<boolean>;
+  /** The system's folder dialog alone (desktop): the chosen folder, nothing switched; undefined when cancelled. */
+  chooseFolder?(): Promise<string | undefined>;
   onDidChangeFolder(listener: () => void): Disposable;
   /** The user picks folders in the app itself (desktop). */
   readonly canOpenFolder: boolean;
+  /** "Open folder…" shows the app's own folder picker (desktop); without it, selectFolder() picks. */
+  readonly folderBrowser?: FolderBrowser;
 
   // ---- dialogs
   message(level: 'info' | 'warning' | 'error', text: string, options?: { modal?: boolean; detail?: string }, ...actions: string[]): Promise<string | undefined>;

@@ -10,7 +10,8 @@
   Analyze, Stop, Start a session). With ?ide, ?files opens the Files tab on a small in-memory
   folder, ?editor also opens LobbyManager.cs in the editor, ?idle ends the sample run (so Save
   works), ?conflict makes the first save find the file changed on disk, and ?edited marks
-  LobbyManager.cs as edited by the user in Changes (whose hunks ?ide highlights). With ?ide, ?live
+  LobbyManager.cs as edited by the user in Changes (whose hunks ?ide highlights). With ?ide, ?picker
+  opens Orka's own folder picker ("Open folder…") on a small in-memory disk. With ?ide, ?live
   opens two sessions: LobbyDemo's, shown and running, and SharedLib's, waiting for an approval in the
   background (its row, the badge and the window title show it).
 -->
@@ -151,6 +152,7 @@
         if (message.type === 'searchFiles') setTimeout(() => deliver({ type: 'fileMatches', query: message.query, files: ['Assets/Scripts/Net/LobbyManager.cs', 'Assets/Scripts/UI/LobbyView.cs'].filter((f) => f.toLowerCase().includes(message.query.toLowerCase())) }), 0);
         if (ide) radarMock(message);
         if (ide) filesMock(message);
+        if (ide) foldersMock(message);
         accountsMock(message);
         modelMock(message);
       },
@@ -326,6 +328,76 @@
       }
     }
 
+    // ---- The folder picker (desktop app only): an in-memory disk behind "Open folder…" (?picker opens it).
+    const SEP = '\\';
+    const folderTree = {
+      'C:\\': ['$Recycle.Bin', 'Program Files', 'Users', 'Windows'],
+      'C:\\Users': ['you'],
+      'C:\\Users\\you': ['.vscode', 'AppData', 'Desktop', 'Documents', 'Downloads', 'Projects'],
+      'C:\\Users\\you\\Documents': ['Unity Projects', 'notes'],
+      'C:\\Users\\you\\Downloads': Array.from({ length: 2004 }, (_, i) => `download-${String(i).padStart(4, '0')}`),
+      'C:\\Users\\you\\Projects': ['orka-site', 'Unity Tools', 'a project folder with a very long name that does not fit on one line at all'],
+      'D:\\': ['game', 'Locked'],
+      'D:\\game': ['LobbyDemo', 'SharedLib', 'Assets-link'],
+      'D:\\game\\LobbyDemo': ['.git', 'Assets', 'Library', 'Packages', 'ProjectSettings'],
+    };
+    const folderLinks = new Set(['D:\\game\\Assets-link']);
+    const isDriveRoot = (dir) => /^[A-Z]:\\$/.test(dir);
+    const folderJoin = (dir, name) => (isDriveRoot(dir) ? dir : dir + SEP) + name;
+    const folderParent = (dir) => {
+      if (isDriveRoot(dir)) return undefined;
+      const parent = dir.slice(0, dir.lastIndexOf(SEP));
+      return parent.length === 2 ? parent + SEP : parent;
+    };
+    const folderSegments = (dir) => {
+      const parts = dir.split(SEP).filter(Boolean);
+      return parts.map((name, i) => (i ? { name, path: parts.slice(0, i + 1).join(SEP) } : { name: name + SEP, path: name + SEP }));
+    };
+    const hiddenFolder = (name) => name.startsWith('.') || name.startsWith('$') || name === 'AppData';
+    const normalizeFolder = (p) => {
+      const dir = p.split('/').join(SEP);
+      return dir.length > 3 && dir.endsWith(SEP) ? dir.slice(0, -1) : dir;
+    };
+    function foldersMock(message) {
+      const reply = (m) => setTimeout(() => deliver(m), 40);
+      if (message.type === 'ready' && params.has('picker')) setTimeout(() => document.querySelector('[data-action="open-folder"]')?.click(), 300);
+      if (message.type === 'listFolders') {
+        const dir = normalizeFolder(message.path ?? root);
+        const places = message.places
+          ? [
+              { kind: 'recent', name: 'LobbyDemo', path: 'D:\\game\\LobbyDemo' },
+              { kind: 'recent', name: 'SharedLib', path: 'D:\\game\\SharedLib' },
+              { kind: 'home', name: 'you', path: 'C:\\Users\\you' },
+              { kind: 'desktop', name: 'Desktop', path: 'C:\\Users\\you\\Desktop' },
+              { kind: 'documents', name: 'Documents', path: 'C:\\Users\\you\\Documents' },
+              { kind: 'downloads', name: 'Downloads', path: 'C:\\Users\\you\\Downloads' },
+              { kind: 'drive', name: 'C:', path: 'C:\\' },
+              { kind: 'drive', name: 'D:', path: 'D:\\' },
+            ]
+          : undefined;
+        const base = { type: 'folderListing', id: message.id, ...(places ? { places } : {}) };
+        if (!/^[A-Z]:\\/.test(dir)) return reply({ ...base, path: '', segments: [], entries: [], truncated: false, error: 'invalid' });
+        const head = { ...base, path: dir, parent: folderParent(dir), segments: folderSegments(dir) };
+        if (dir === 'D:\\Locked') return reply({ ...head, entries: [], truncated: false, error: 'denied' });
+        const parent = folderParent(dir);
+        const names = folderTree[dir] ?? (parent && folderTree[parent]?.includes(dir.slice(dir.lastIndexOf(SEP) + 1)) ? [] : undefined);
+        if (!names) return reply({ ...head, entries: [], truncated: false, error: 'notFound' });
+        const entries = names
+          .filter((n) => message.hidden || !hiddenFolder(n))
+          .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()))
+          .map((name) => ({ name, path: folderJoin(dir, name), ...(folderLinks.has(folderJoin(dir, name)) ? { link: true } : {}) }));
+        reply({ ...head, entries: entries.slice(0, 2000), truncated: entries.length > 2000 });
+      }
+      if (message.type === 'createFolder') {
+        const name = message.name;
+        if (name.includes('/') || name.includes(SEP)) return reply({ type: 'folderCreated', id: message.id, error: 'separator' });
+        const names = folderTree[message.parent] ?? (folderTree[message.parent] = []);
+        if (names.some((n) => n.toLowerCase() === name.toLowerCase())) return reply({ type: 'folderCreated', id: message.id, error: 'exists' });
+        names.push(name);
+        reply({ type: 'folderCreated', id: message.id, path: folderJoin(message.parent, name), name });
+      }
+    }
+
     // ---- Accounts: what each CLI's status command would say, after a short "checking" (?noaccounts: nothing checked yet).
     const account = (cli, label, login, logout, extra = {}) => ({ cli, label, status: { state: 'unknown' }, loginCommand: login, ...(logout ? { logoutCommand: logout } : {}), installable: ['claude-code', 'antigravity', 'codex'].includes(cli), ...extra });
     const accounts = [
@@ -390,6 +462,7 @@
         folders: [{ name: 'LobbyDemo', path: root }, { name: 'SharedLib', path: 'D:/game/SharedLib' }],
         folder: root,
         canOpenFolder: ide,
+        canBrowseFolders: ide,
         app: { version: '0.6.0', checkUpdates: true, checkedAt: Date.now() - 3600e3 },
         agentClis: [
           { id: 'antigravity', label: 'Antigravity CLI', vendor: 'Google', custom: false, enabled: true, status: { state: 'ready', version: '1.5.1', executable: 'C:/Users/you/AppData/Local/agy/bin/agy.exe' }, path: '', note: "Runs your installed Antigravity CLI (\"agy acp\"), which Google documents for any ACP client. Google's FAQ calls wrapping agy in third-party apps unsupported on consumer plans: read both and decide how you sign in.", termsUrl: 'https://antigravity.google/terms', faqUrl: 'https://antigravity.google/docs/faq', docsUrl: 'https://antigravity.google/docs/ide/extensions/acp/', installHint: 'irm https://antigravity.google/cli/install.ps1 | iex', loginCommand: 'agy', preview: false },

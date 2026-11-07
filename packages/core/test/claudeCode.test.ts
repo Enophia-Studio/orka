@@ -16,7 +16,7 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
   let logFile: string;
   let provider: ClaudeCodeProvider;
 
-  function setup(replies: string[], model?: string) {
+  function setup(replies: Array<string | { events: unknown[] }>, model?: string) {
     process.env.FAKE_CC_SCRIPT = JSON.stringify(replies);
     process.env.FAKE_CC_LOG = logFile;
     provider = new ClaudeCodeProvider({ executable: process.execPath, executableArgs: [FAKE_CLI], model });
@@ -120,6 +120,40 @@ describe('ClaudeCodeProvider (fake CLI speaking the stream-json protocol)', () =
     } finally {
       if (saved !== undefined) process.env.CLAUDE_CONFIG_DIR = saved;
     }
+  });
+
+  it('shows only the text of text blocks: never redacted or other blocks, nor the CLI stand-in messages', async () => {
+    const delta = (index: number, delta: Record<string, unknown>) => ({ type: 'stream_event', event: { type: 'content_block_delta', index, delta } });
+    const start = (index: number, block: Record<string, unknown>) => ({ type: 'stream_event', event: { type: 'content_block_start', index, content_block: block } });
+    setup([
+      {
+        events: [
+          { type: 'stream_event', event: { type: 'message_start', message: { model: 'claude-haiku-4-5' } } },
+          start(0, { type: 'redacted_thinking', data: '_placeholder' }),
+          delta(0, { type: 'text_delta', text: '_placeholder\n' }),
+          start(1, { type: 'thinking', thinking: '' }),
+          delta(1, { type: 'thinking_delta', thinking: 'Short.' }),
+          delta(1, { type: 'signature_delta', signature: 'sig' }),
+          start(2, { type: 'text', text: '' }),
+          delta(2, { type: 'text_delta', text: 'Hello.' }),
+          { type: 'assistant', message: { model: 'claude-haiku-4-5', content: [{ type: 'redacted_thinking', data: '_placeholder' }] } },
+          { type: 'assistant', message: { model: 'claude-haiku-4-5', content: [{ type: 'text', text: 'Hello.' }] } },
+          { type: 'assistant', message: { model: '<synthetic>', content: [{ type: 'text', text: '_placeholder' }] } },
+          { type: 'result', subtype: 'success', is_error: false, result: 'Hello.', stop_reason: 'end_turn', usage: {} },
+        ],
+      },
+    ]);
+    const events: ProviderStreamEvent[] = [];
+    const reply = await provider.chat({ system: 'SYS', messages: [{ role: 'user', content: [{ type: 'text', text: 'Hi' }] }], tools: [] }, (e) => events.push(e));
+    const streamed = events.flatMap((e) => (e.type === 'text_delta' ? [e.text] : [])).join('');
+    assert.equal(streamed, 'Hello.');
+    assert.deepEqual(
+      reply.message.content.map((b) => (b.type === 'text' || b.type === 'reasoning' ? [b.type, b.text] : [b.type])),
+      [
+        ['reasoning', 'Short.'],
+        ['text', 'Hello.'],
+      ],
+    );
   });
 
   it('asks the model to rewrite a tool call it could not parse, once', async () => {

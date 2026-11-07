@@ -28,6 +28,8 @@ const STATIC: Record<string, string> = {
 export interface PageLook {
   layout: 'ide' | 'classic';
   theme: 'system' | 'light' | 'dark';
+  /** The UI's language ("en", "tr"): the browser must not take a Turkish page for English and offer to translate it. */
+  locale?: string;
 }
 
 export interface UiServerOptions {
@@ -236,6 +238,58 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 }
 
 /**
+ * Orka's window is an app, not a web page (README: Orka Desktop). The browser's own menu opens
+ * only in text fields, the editor and on selected text (to copy and paste), and the browser's
+ * shortcuts that would print, save or open a page, open its history, downloads, bookmarks or
+ * help, or leave the page are held back: Ctrl+P, Ctrl+S (the editor saves first), Ctrl+O,
+ * Ctrl+U, Ctrl+J, Ctrl+H, Ctrl+D, Ctrl+Shift+B/O/M/Delete, F1, F7 (caret browsing), Alt+Left and
+ * Alt+Right (Cmd+[ and Cmd+] on macOS), Alt+Home, the Back and Forward keys and mouse buttons,
+ * and a file dropped where nothing takes it. Reloading (F5, Ctrl+R) works only while no session
+ * runs (the page marks that with data-running). Find (Ctrl+F), zoom and the developer tools stay.
+ * The handlers run last (on window, bubbling), so the page's own shortcuts come first, and they
+ * only cancel the browser's default action.
+ */
+const APP_GUARD = `(() => {
+  const mac = /Mac/.test(navigator.platform);
+  const editable = (target) =>
+    target instanceof Element && !!target.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"], .cm-editor');
+  window.addEventListener('contextmenu', (e) => {
+    if (editable(e.target) || String(getSelection() || '').trim()) return;
+    e.preventDefault();
+  });
+  const held = (e) => {
+    // Autofill sends keydown events without a key.
+    const key = typeof e.key !== 'string' ? '' : e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    const mod = (mac ? e.metaKey : e.ctrlKey) && !e.altKey;
+    if (key === 'F1' || key === 'F7' || key === 'BrowserBack' || key === 'BrowserForward' || key === 'BrowserHome') return true;
+    if (key === 'F5' || (mod && key === 'r')) return document.documentElement.hasAttribute('data-running');
+    if (mod && !e.shiftKey && ['p', 's', 'o', 'u', 'j', 'h', 'd'].includes(key)) return true;
+    if (mod && e.shiftKey && ['b', 'o', 'm', 'Delete'].includes(key)) return true;
+    if (mac) return e.metaKey && !e.altKey && (key === '[' || key === ']');
+    return e.altKey && !e.ctrlKey && !e.metaKey && (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'Home');
+  };
+  window.addEventListener('keydown', (e) => {
+    if (held(e)) e.preventDefault();
+  });
+  // The mouse's Back and Forward buttons.
+  for (const type of ['mousedown', 'mouseup', 'auxclick']) {
+    window.addEventListener(type, (e) => {
+      if (e.button === 3 || e.button === 4) e.preventDefault();
+    });
+  }
+  // A file dropped where nothing takes it would replace the app with that file.
+  const files = (e) => !e.defaultPrevented && !!e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files');
+  window.addEventListener('dragover', (e) => {
+    if (!files(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'none';
+  });
+  window.addEventListener('drop', (e) => {
+    if (files(e)) e.preventDefault();
+  });
+})();`;
+
+/**
  * The window's page: the chat UI plus a small bridge standing in for VS Code's webview API
  * (acquireVsCodeApi): messages go out as POSTs once the event stream is open, and come in as
  * window messages, exactly as in VS Code.
@@ -245,10 +299,12 @@ function page(nonce: string, state: unknown, look: PageLook): string {
   // Only known values reach the markup.
   const layout = look.layout === 'classic' ? 'classic' : 'ide';
   const theme = look.theme === 'light' || look.theme === 'dark' ? look.theme : 'system';
+  const lang = look.locale === 'tr' ? 'tr' : 'en';
   return `<!DOCTYPE html>
-<html lang="en" translate="no" data-layout="${layout}" data-theme="${theme}">
+<html lang="${lang}" translate="no" data-layout="${layout}" data-theme="${theme}">
 <head>
   <meta charset="UTF-8">
+  <meta name="google" content="notranslate">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" href="/icon.png">
   <link rel="stylesheet" href="/webview.css">
@@ -260,23 +316,57 @@ function page(nonce: string, state: unknown, look: PageLook): string {
 <body>
   <div id="app"></div>
   <script type="application/json" id="orka-state">${initial}</script>
+  <script nonce="${nonce}">${APP_GUARD}</script>
   <script nonce="${nonce}">
     (() => {
       let state = JSON.parse(document.getElementById('orka-state').textContent);
+      // A reload asks for the new page before the old one's last save arrives: the tab keeps that
+      // state for its next page, which takes it over and saves it.
+      let carried = null;
+      try {
+        carried = sessionStorage.getItem('orka-state');
+        sessionStorage.removeItem('orka-state');
+      } catch {}
       let saveTimer;
+      let leaving = false;
       let sending = Promise.resolve();
       const events = new EventSource('/events');
       const open = new Promise((resolve) => events.addEventListener('open', resolve, { once: true }));
       events.onmessage = (e) => window.postMessage(JSON.parse(e.data), location.origin);
-      const send = (url, body) =>
-        (sending = sending.then(() => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).catch(() => undefined));
+      const request = (url, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), keepalive: leaving });
+      const send = (url, body) => (sending = sending.then(() => request(url, body)).catch(() => undefined));
+      // The state goes at most every 400 ms, and at once (outliving the page) when it is left or hidden.
+      const saveNow = () => {
+        clearTimeout(saveTimer);
+        saveTimer = undefined;
+        if (leaving) {
+          try {
+            sessionStorage.setItem('orka-state', JSON.stringify(state));
+          } catch {}
+        }
+        if (leaving || document.visibilityState === 'hidden') request('/state', state).catch(() => undefined);
+        else send('/state', state);
+      };
+      window.addEventListener('pagehide', () => {
+        leaving = true;
+        saveNow();
+      });
+      if (carried !== null) {
+        try {
+          state = JSON.parse(carried);
+          saveTimer = setTimeout(saveNow, 0);
+        } catch {}
+      }
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden' && saveTimer !== undefined) saveNow();
+      });
       window.acquireVsCodeApi = () => ({
         postMessage: (message) => open.then(() => send('/message', message)),
         getState: () => state,
         setState: (next) => {
           state = next;
-          clearTimeout(saveTimer);
-          saveTimer = setTimeout(() => send('/state', state), 400);
+          if (leaving || document.visibilityState === 'hidden') saveNow();
+          else saveTimer ??= setTimeout(saveNow, 400);
         },
       });
     })();

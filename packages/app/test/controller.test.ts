@@ -119,6 +119,39 @@ describe('desktop session list', () => {
     assert.equal(shell.currentFolder()?.path, folderB);
   });
 
+  it('starts a new session in a folder chosen in the folder picker, never from a relative path', async () => {
+    const { shell, controller } = await start('desktop');
+    const gamma = path.join(home, 'work', 'gamma');
+    mkdirSync(gamma);
+    await controller.handleMessage({ type: 'newTask', folder: 'work/gamma', other: true });
+    assert.equal(shell.currentFolder()?.path, folderA, 'a relative path changes nothing');
+    await controller.handleMessage({ type: 'newTask', folder: gamma, other: true });
+    assert.equal(shell.currentFolder()?.path, gamma);
+    assert.equal(shell.last('init')?.session.items.length, 0, 'an empty session');
+  });
+
+  it("starts a new session in the folder chosen in the system's dialog, the open one too", async () => {
+    const { shell, controller } = await start('desktop');
+    await saveTask(shell, folderA, 'task-a1', 'Fix the alpha build');
+    await controller.handleMessage({ type: 'openTask', id: 'task-a1', folder: folderA });
+    assert.equal(shell.last('init')?.taskId, 'task-a1');
+    let chosen: string | undefined;
+    shell.chooseFolder = async () => chosen;
+    // Cancelled: nothing changes.
+    await controller.handleMessage({ type: 'newTask', other: true });
+    assert.equal(controller.activeSession?.taskId, 'task-a1');
+    // The open folder: a new empty session there.
+    chosen = folderA;
+    await controller.handleMessage({ type: 'newTask', other: true });
+    assert.equal(shell.currentFolder()?.path, folderA);
+    assert.notEqual(controller.activeSession?.taskId, 'task-a1');
+    assert.equal(controller.activeSession?.isEmpty, true, 'an empty session');
+    // Another folder: switched to it.
+    chosen = folderB;
+    await controller.handleMessage({ type: 'newTask', other: true });
+    assert.equal(shell.currentFolder()?.path, folderB);
+  });
+
   it("deletes a task from another folder's history after asking", async () => {
     const { shell, controller } = await start('desktop');
     await saveTask(shell, folderB, 'task-b1', 'Fix the beta build');
@@ -129,6 +162,18 @@ describe('desktop session list', () => {
     assert.deepEqual(await new FileTaskStore(shell.storage(folderB).tasks).list(), []);
     assert.equal(shell.currentFolder()?.path, folderA, 'the open folder stays');
     assert.deepEqual(shell.last('sessions')?.groups[1].tasks, []);
+  });
+
+  it('deletes a task of an open session whose folder dropped out of the recent list', async () => {
+    const { shell, controller } = await start('desktop');
+    await saveTask(shell, folderA, 'task-a1', 'Fix the alpha build');
+    // The list still shows the open session's folder; the recent list no longer has it.
+    shell.folders = () => [{ name: 'beta', path: folderB }];
+    await controller.handleMessage({ type: 'listSessions' });
+    assert.ok(shell.last('sessions')?.groups.some((g) => g.folder === folderA && g.tasks.some((t) => t.id === 'task-a1')));
+    shell.answer = 'Delete';
+    await controller.handleMessage({ type: 'deleteTask', id: 'task-a1', folder: folderA });
+    assert.deepEqual(await new FileTaskStore(shell.storage(folderA).tasks).list(), []);
   });
 });
 
@@ -220,9 +265,43 @@ describe('agent CLIs', () => {
     assert.notEqual(shell.last('config')!.config.main.effective.provider, 'agent:custom:fake');
   });
 
-  it('a new task during a request stops it, keeps it in its own task, and starts empty', async () => {
+  it('a new session in the folder of a running one leaves the run going (desktop)', async () => {
     process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Working on it.' }, { hang: true, afterCancel: ' Stopping now.' }]]);
     const { shell, controller } = await start('desktop', agentSettings);
+    const sent = controller.send('First request');
+    await until(() => shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to start answering');
+    await controller.handleMessage({ type: 'newTask' });
+    await controller.handleMessage({ type: 'newTask', folder: folderA });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const events = shell.posted.flatMap((m) => (m.type === 'event' ? [m.event] : []));
+    assert.ok(!events.some((e) => e.type === 'run_finished' || e.type === 'reset'), 'still running, in the same task');
+    assert.equal(shell.asked.filter((a) => /A session is already running in alpha/.test(a.text)).length, 2, 'the app says why');
+    controller.stop();
+    await sent;
+  });
+
+  it('updates Claude Code only once no session runs', async () => {
+    process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Working on it.' }, { hang: true, afterCancel: ' Stopping now.' }]]);
+    // A stand-in for the executable: "update" fails at once, nothing is replaced.
+    const { shell, controller } = await start('desktop', { ...agentSettings, 'claudeCode.enabled': true, 'claudeCode.path': process.execPath, 'claudeCode.autoUpdate': false });
+    const notices = () => shell.posted.flatMap((m) => (m.type === 'event' && m.event.type === 'notice' ? [m.event.message] : []));
+    const sent = controller.send('First request');
+    await until(() => shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to start answering');
+    assert.equal(await controller.updateClaudeCode(), false);
+    assert.equal(await controller.updateClaudeCode(), false);
+    assert.deepEqual(
+      notices().filter((n) => /Claude Code/.test(n)),
+      ['Claude Code will be updated when no session is running.'],
+      'nothing runs under the running agent, and the app says when it will',
+    );
+    controller.stop();
+    await sent;
+    await until(() => notices().includes('Updating Claude Code…'), 'the update once the run ended');
+  });
+
+  it('a new task during a request stops it, keeps it in its own task, and starts empty (one session)', async () => {
+    process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Working on it.' }, { hang: true, afterCancel: ' Stopping now.' }]]);
+    const { shell, controller } = await start('vscode', agentSettings);
     const sent = controller.send('First request');
     await until(() => shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to start answering');
     // Two clicks: the second one waits for the first instead of starting yet another task.
@@ -445,6 +524,32 @@ describe('desktop appearance settings', () => {
   });
 });
 
+describe('config messages', () => {
+  it('go to the page only when the config changed, or to show it again over a refused choice', async () => {
+    const { shell, controller } = await start('desktop');
+    const internals = controller as unknown as { postConfig(refresh?: boolean): void };
+    const configs = () => shell.posted.filter((m) => m.type === 'config').length;
+    await controller.handleMessage({ type: 'ready' });
+    await tick();
+    const before = configs();
+    // A check or setting that changed nothing: the page has this config from its init.
+    internals.postConfig();
+    internals.postConfig();
+    assert.equal(configs(), before, 'the same config is not sent again');
+    await controller.handleMessage({ type: 'setSetting', key: 'desktop.theme', value: 'dark' });
+    await tick();
+    assert.equal(configs(), before + 1, 'a changed config is sent');
+    assert.equal(shell.last('config')?.config.ui?.theme, 'dark');
+    internals.postConfig(true);
+    assert.equal(configs(), before + 2, 'sent again to undo what the user changed in the page');
+    // A page that loads again gets the config with its init; the next unchanged one is not sent.
+    await controller.handleMessage({ type: 'ready' });
+    internals.postConfig();
+    assert.equal(configs(), before + 2);
+    assert.equal(shell.pageConfig()?.ui?.theme, 'dark');
+  });
+});
+
 describe('Orka update check', () => {
   const realFetch = globalThis.fetch;
   let requests = 0;
@@ -627,6 +732,20 @@ describe('desktop Files and editor', () => {
     await collecting;
     await save(controller, 'a.txt', 'mine\n');
     assert.equal(readFileSync(path.join(folderA, 'a.txt'), 'utf8'), 'mine\n');
+  });
+
+  it('refuses to delete the task of a running session, which would save it again under a new id', async () => {
+    process.env.FAKE_ACP_SCRIPT = JSON.stringify([[{ chunk: 'Working.' }, { hang: true }]]);
+    const { shell, controller } = await start('desktop', agentSettings);
+    const sent = controller.send('Do something');
+    await until(() => orchestratorOf(controller).isRunning && shell.posted.some((m) => m.type === 'event' && m.event.type === 'assistant_delta'), 'the agent to work');
+    const id = sessionOf(controller).taskId;
+    shell.answer = 'Delete';
+    await controller.handleMessage({ type: 'deleteTask', id, folder: folderA });
+    assert.equal(sessionOf(controller).taskId, id, 'the session keeps its task');
+    assert.equal(shell.asked.at(-1)?.text, 'Stop the agent before deleting this task.');
+    controller.stop();
+    await sent;
   });
 
   it("protects a save made through another path to a file the agent changed", async () => {

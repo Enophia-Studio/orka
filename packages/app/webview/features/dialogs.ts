@@ -47,8 +47,20 @@ export function askInPage(dialog: DialogView): Promise<string | number | undefin
   });
 }
 
-/** A modal question is open: keyboard shortcuts of the page stay out of its way. */
+/** Other modals of the page (the folder picker): while one is open, so is a modal. */
+const otherModals: Array<() => boolean> = [];
+
+export function addModal(isOpen: () => boolean): void {
+  otherModals.push(isOpen);
+}
+
+/** A modal question (or another modal of the page) is open: keyboard shortcuts of the page stay out of its way. */
 export function modalOpen(): boolean {
+  return !!topModal() || otherModals.some((isOpen) => isOpen());
+}
+
+/** One of the app's own modal questions is open (above the page's other modals). */
+export function questionOpen(): boolean {
   return !!topModal();
 }
 

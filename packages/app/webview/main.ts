@@ -25,11 +25,12 @@ import type {
   ToWebview,
 } from '../src/protocol';
 import { forShownSession, post, saveUiState, setSessionId, shownSessionId, uiState } from './core/bridge';
-import { attr, escapeHtml, icon, renderMarkdown } from './core/dom';
+import { attr, escapeHtml, icon, markdownBlocks, renderFinishedMarkdown, renderMarkdown } from './core/dom';
 import type { EditorCursor, EditorHandle, EditorRange } from './core/editorApi';
 import { ago, appendToDraft, applyWidths, fmt } from './core/format';
 import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAccountHtml, type AddAccountState } from './features/accounts';
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
+import { folderPickerCreated, folderPickerListing, openFolderPicker } from './features/folderPicker';
 import { hunksHtml } from './features/hunks';
 import { contextRing, effortLabel, modelButtonHtml, modelMenuHtml } from './features/modelMenu';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
@@ -50,7 +51,7 @@ import {
   type EditorBanner,
 } from './ide/files';
 import { appSkeleton, layout } from './ide/layout';
-import { approvalsBadgeHtml, radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml, waitingSessions } from './ide/sidebar';
+import { approvalsBadgeHtml, newSessionMenuHtml, radarEntryHtml, sessionListHtml, sessionMenuHtml, sidebarFrame, themeSwitchHtml, waitingSessions } from './ide/sidebar';
 
 let session: SessionView = emptySession();
 let config: ConfigView | undefined;
@@ -234,6 +235,12 @@ function liveSessions(): LiveSessionView[] {
 function setLive(sessions: LiveSessionView[]): void {
   ui.live = sessions;
   for (const id of drafts.keys()) if (!sessions.some((s) => s.id === id)) drafts.delete(id);
+  markRunning();
+}
+
+/** data-running while any open session works: the desktop window holds back a reload then. */
+function markRunning(): void {
+  document.documentElement.toggleAttribute('data-running', session.running || ui.live.some((s) => s.state !== 'idle'));
 }
 
 /** The window's title as the page loaded it; "(n) " goes before it while other sessions wait for approval. */
@@ -246,7 +253,8 @@ function renderSidebar(): void {
   const live = liveSessions();
   const list = document.getElementById('side-list');
   if (list) {
-    closeSessionMenu();
+    // A menu of a row goes with the rows; the folder choice of New session stays open.
+    if (!sessionMenu?.classList.contains('new-session-menu')) closeSessionMenu();
     list.innerHTML = sessionListHtml({
       groups: ui.sessions,
       organizer: ui.organizer,
@@ -589,6 +597,8 @@ function toggleSidebar(): void {
 
 /** The … menu of one session, under its button (one at a time, closed by any re-render of the list). */
 let sessionMenu: HTMLElement | undefined;
+/** The button the open menu belongs to. */
+let menuButton: HTMLElement | undefined;
 
 function openSessionMenu(button: HTMLElement): void {
   closeSessionMenu();
@@ -599,28 +609,75 @@ function openSessionMenu(button: HTMLElement): void {
   showMenuAt(button, sessionMenuHtml(id, folder, ui.organizer, live));
 }
 
-/** A menu of the session list (a session's or an account's …) under its button. */
-function showMenuAt(button: HTMLElement, html: string): void {
+/**
+ * New session: the folder of the new session is chosen first, in a menu under the button (the
+ * current folder preselected). Nothing changes until a folder is chosen.
+ */
+function openNewSessionMenu(button: HTMLElement): void {
+  closeSessionMenu();
+  showMenuAt(button, newSessionMenuHtml(config?.folders ?? [], config?.folder, liveSessions()), 'new-session-menu');
+}
+
+/** Ctrl+Alt+N: the folder choice under the New session button that shows (the list's, or the rail's). */
+function newSessionFromKeyboard(): void {
+  const button = [...document.querySelectorAll<HTMLElement>('#sidebar [data-action="new-session"]:not([data-folder])')].find((b) => b.getClientRects().length > 0);
+  if (button) openNewSessionMenu(button);
+  else post({ type: 'newTask' });
+}
+
+/** A new empty session in a folder (a recent one; other: one chosen in a folder picker, none: the system's dialog). */
+function startSessionIn(folder: string | undefined, other = false): void {
+  void beforeFolderChange(folder).then((go) => {
+    if (!go) return;
+    post(other ? { type: 'newTask', folder, other: true } : { type: 'newTask', folder });
+    ui.view = 'chat';
+    saveFilesState();
+    renderView();
+    el.input.focus();
+  });
+}
+
+/** A menu of the session list (a session's or an account's …, the folder choice of New session) under its button. */
+function showMenuAt(button: HTMLElement, html: string, cls = ''): void {
   sessionMenu = document.createElement('div');
-  sessionMenu.className = 'composer-menu session-menu';
+  sessionMenu.className = `composer-menu session-menu${cls ? ` ${cls}` : ''}`;
   sessionMenu.setAttribute('role', 'menu');
   sessionMenu.innerHTML = html;
   document.body.appendChild(sessionMenu);
   const at = button.getBoundingClientRect();
   const menu = sessionMenu.getBoundingClientRect();
-  const top = at.bottom + menu.height + 8 > innerHeight ? Math.max(8, at.top - menu.height - 4) : at.bottom + 4;
+  // Below the button, or above it when it does not fit there; always inside the window.
+  const below = at.bottom + 4;
+  const above = at.top - menu.height - 4;
+  const top = below + menu.height + 8 <= innerHeight || above < 8 ? Math.min(below, Math.max(8, innerHeight - menu.height - 8)) : above;
   sessionMenu.style.top = `${top}px`;
-  sessionMenu.style.left = `${Math.min(at.left, innerWidth - menu.width - 8)}px`;
+  sessionMenu.style.left = `${Math.max(8, Math.min(at.left, innerWidth - menu.width - 8))}px`;
   button.setAttribute('aria-expanded', 'true');
-  sessionMenu.querySelector<HTMLElement>('.menu-item')?.focus();
+  menuButton = button;
+  sessionMenu.querySelector<HTMLElement>('.menu-item[aria-checked="true"]:not(:disabled), .menu-item:not(:disabled)')?.focus();
 }
 
-function closeSessionMenu(): void {
+/** Close the open menu; refocus: the focus goes back to its button (Escape). */
+function closeSessionMenu(refocus = false): void {
   if (!sessionMenu) return;
+  const focusInside = sessionMenu.contains(document.activeElement);
   sessionMenu.remove();
   sessionMenu = undefined;
-  document.querySelector('.side-more[aria-expanded="true"]')?.setAttribute('aria-expanded', 'false');
+  menuButton?.setAttribute('aria-expanded', 'false');
+  if (refocus && focusInside && menuButton?.isConnected) menuButton.focus();
+  menuButton = undefined;
 }
+
+// The menus of the session list: arrow keys, Home and End move between their items.
+document.addEventListener('keydown', (e) => {
+  if (!sessionMenu || !sessionMenu.contains(document.activeElement)) return;
+  const items = [...sessionMenu.querySelectorAll<HTMLElement>('.menu-item:not(:disabled)')];
+  const at = items.indexOf(document.activeElement as HTMLElement);
+  const next = e.key === 'ArrowDown' ? at + 1 : e.key === 'ArrowUp' ? at - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : undefined;
+  if (next === undefined || !items.length) return;
+  e.preventDefault();
+  items[(next + items.length) % items.length].focus();
+});
 
 function toggleSection(key: string): void {
   if (ui.collapsed.has(key)) ui.collapsed.delete(key);
@@ -821,7 +878,7 @@ if (layout === 'ide') {
   document.addEventListener('keydown', (e) => {
     // An Escape that closed a dialog is used up.
     if (e.key === 'Escape' && !e.defaultPrevented && !modalOpen()) {
-      if (sessionMenu) closeSessionMenu();
+      if (sessionMenu) closeSessionMenu(true);
       else if (el.composerMenu && !el.composerMenu.hidden) {
         renderComposerMenu(false);
         el.input.focus();
@@ -852,7 +909,7 @@ if (layout === 'ide') {
       searchSessions();
     } else if (e.code === 'KeyN' && e.altKey) {
       e.preventDefault();
-      post({ type: 'newTask' });
+      newSessionFromKeyboard();
     } else if (e.code === 'KeyL' && !e.altKey && editor?.handle) {
       e.preventDefault();
       void sendSelection();
@@ -1119,6 +1176,11 @@ function closeEditorNow(): void {
   if (el.editorHost) el.editorHost.innerHTML = '';
   if (ui.view === 'editor') ui.view = 'chat';
   saveFilesState();
+}
+
+/** Work in another folder (none: the system's folder dialog); unsaved changes in the editor are asked about before the folder changes under it. */
+function openFolder(folder?: string): void {
+  void beforeFolderChange(folder).then((go) => go && post({ type: 'openFolder', path: folder }));
 }
 
 /** A folder switch the user asked for: with unsaved changes, first ask. */
@@ -1613,6 +1675,8 @@ function mentionAtCursor(): { start: number; query: string } | undefined {
 
 function updateSuggestions(): void {
   const value = el.input.value;
+  // Most keys: no "/" command and no "@" mention, and no list open. Nothing to do.
+  if (!composer.suggest && !value.includes('@') && !value.trimStart().startsWith('/')) return;
   const command = /^\/([\w-]*)$/.exec(value.trimStart());
   if (command) {
     const q = command[1].toLowerCase();
@@ -1764,6 +1828,29 @@ function submit(): void {
 }
 
 el.send.addEventListener('click', submit);
+
+/**
+ * Escape stops the running request, as in Claude Code, when it has nothing else to close: no
+ * dialog, menu, popup or suggestion list is open, and the focus is in the message box, in the
+ * conversation or nowhere (the editor and the settings keep their own Escape). Captured before the
+ * page's other Escape handlers, so an Escape that closes a menu never stops the agent too.
+ */
+document.addEventListener(
+  'keydown',
+  (e) => {
+    if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || !session.running || !workView()) return;
+    const overlay =
+      modalOpen() || ui.modelMenuOpen || ui.agentsOpen || !!sessionMenu || !!addAccount || (!!el.composerMenu && !el.composerMenu.hidden) || (!!composer.suggest && !el.suggest.hidden);
+    if (overlay) return;
+    const target = e.target;
+    if (target !== el.input && target !== document.body && !(target instanceof Node && el.transcript.contains(target))) return;
+    // A text field in the conversation, such as an approval card's note, keeps its own Escape.
+    if (target !== el.input && target instanceof Element && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
+    e.preventDefault();
+    post({ type: 'stop' });
+  },
+  true,
+);
 el.input.addEventListener('keydown', (e) => {
   const s = composer.suggest;
   if (s && s.items.length && !el.suggest.hidden) {
@@ -1803,9 +1890,22 @@ el.input.addEventListener('blur', () =>
   }, 150),
 );
 
+/** The text length and box width the message box last measured its height for. */
+const grown = { length: 0, width: 0 };
+
+/**
+ * The message box grows with its text, up to 240px. Measuring it from scratch (height: auto) lays
+ * out the whole page again, so that happens only when the text got shorter or the box narrower or
+ * wider; a key that adds text only grows the box when the text no longer fits.
+ */
 function autoGrow(): void {
-  el.input.style.height = 'auto';
-  el.input.style.height = `${Math.min(el.input.scrollHeight, 240)}px`;
+  const input = el.input;
+  const { length } = input.value;
+  const width = input.clientWidth;
+  if (length < grown.length || width !== grown.width || !input.style.height) input.style.height = 'auto';
+  grown.length = length;
+  grown.width = width;
+  if (input.style.height === 'auto' || input.scrollHeight > input.clientHeight) input.style.height = `${Math.min(input.scrollHeight, 240)}px`;
 }
 
 // ------------------------------------------------------------------ interaction
@@ -1815,7 +1915,7 @@ document.addEventListener('click', (e) => {
   const clicked = e.target as HTMLElement;
   if (el.composerMenu && !el.composerMenu.hidden && !clicked.closest('#composer-menu, .composer-add')) renderComposerMenu(false);
   if (ui.modelMenuOpen && clicked.isConnected && !clicked.closest('#model-menu, .model-btn')) openModelMenu(false);
-  if (sessionMenu && !clicked.closest('.session-menu, .side-more')) closeSessionMenu();
+  if (sessionMenu && !clicked.closest('.session-menu, .side-more') && !menuButton?.contains(clicked)) closeSessionMenu();
   if (layout === 'ide' && ui.agentsOpen && clicked.isConnected && !clicked.closest('#agents-panel, .agent-btn, .modal-backdrop, .dialogs')) {
     ui.agentsOpen = false;
     renderAgentsPanel();
@@ -1966,8 +2066,9 @@ document.addEventListener('click', (e) => {
       post({ type: 'handoff', agent: target.dataset.agent ?? '', text: el.input.value });
       break;
     case 'open-folder':
-      // Unsaved changes in the editor are asked about before the folder changes under it.
-      void beforeFolderChange(path || undefined).then((go) => go && post({ type: 'openFolder', path: path || undefined }));
+      // Desktop: without a path, Orka's own folder picker chooses the folder (or hands over to the system's dialog).
+      if (!path && config?.canBrowseFolders) openFolderPicker(openFolder, target);
+      else openFolder(path || undefined);
       break;
     case 'dialog-action':
     case 'dialog-pick':
@@ -2201,11 +2302,28 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'new-session':
+      // A folder's own + starts there; New session first asks for the folder.
+      if (target.dataset.folder) startSessionIn(target.dataset.folder);
+      else if (target.getAttribute('aria-expanded') === 'true') closeSessionMenu();
+      else openNewSessionMenu(target);
+      break;
+    case 'new-session-in':
+      closeSessionMenu();
+      startSessionIn(target.dataset.folder || undefined);
+      break;
+    case 'new-session-other': {
+      const opener = menuButton;
+      closeSessionMenu();
+      // Orka's own folder picker (its "Use system dialog…" chooses no path: the system's dialog).
+      if (config?.canBrowseFolders) openFolderPicker((folder) => startSessionIn(folder, true), opener ?? null);
+      else startSessionIn(undefined, true);
+      break;
+    }
     case 'open-session': {
       const folder = target.dataset.folder || undefined;
       void beforeFolderChange(folder).then((go) => {
         if (!go) return;
-        post(action === 'new-session' ? { type: 'newTask', folder } : { type: 'openTask', id: id!, folder });
+        post({ type: 'openTask', id: id!, folder });
         ui.view = 'chat';
         saveFilesState();
         renderView();
@@ -2618,7 +2736,8 @@ function renderMeta(): void {
   const glyph = session.running ? 'stop' : layout === 'ide' ? 'arrowUp' : 'send';
   el.send.innerHTML = `${icon(glyph)}<span>${escapeHtml(label)}</span>`;
   el.send.setAttribute('aria-label', label);
-  el.send.title = layout === 'ide' ? `${label}${session.running ? '' : ' (Enter)'}` : '';
+  // Escape stops it too (see below); in the IDE layout the button then shows its name as well.
+  el.send.title = session.running ? `${label} (Esc)` : layout === 'ide' ? `${label} (Enter)` : '';
   el.send.classList.toggle('danger', session.running);
   el.send.disabled = !config?.workspaceOpen;
   const u = session.usage;
@@ -3707,12 +3826,14 @@ function itemHtml(item: TranscriptItem, nested: boolean): string {
       return `<div class="msg user" data-id="${attr(item.id)}"><div class="bubble">${escapeHtml(item.text)}</div>${chips.length ? `<div class="chips sent">${chips.join('')}</div>` : ''}${rewind}</div>`;
     }
     case 'assistant': {
-      if (nested) return item.text.trim() ? `<div class="step-note" data-id="${attr(item.id)}">${renderMarkdown(item.text)}</div>` : '';
+      // A finished answer's HTML is kept for the next time it is drawn (another session shown, a full redraw).
+      const markdown = item.streaming ? renderMarkdown : renderFinishedMarkdown;
+      if (nested) return item.text.trim() ? `<div class="step-note" data-id="${attr(item.id)}">${markdown(item.text)}</div>` : '';
       const reasoning = item.reasoning.trim()
-        ? `<details class="reasoning"${item.streaming && !item.text ? ' open' : ''}><summary>${escapeHtml(t('Thinking'))}</summary><div class="reasoning-body">${renderMarkdown(item.reasoning)}</div></details>`
+        ? `<details class="reasoning"${item.streaming && !item.text ? ' open' : ''}><summary>${escapeHtml(t('Thinking'))}</summary><div class="reasoning-body">${markdown(item.reasoning)}</div></details>`
         : '';
       const body = item.text
-        ? `<div class="markdown">${renderMarkdown(item.text)}</div>`
+        ? `<div class="markdown">${markdown(item.text)}</div>`
         : item.streaming && !item.reasoning
           ? '<div class="typing"><span></span><span></span><span></span></div>'
           : '';
@@ -3924,14 +4045,83 @@ function nodeFor(item: TranscriptItem): HTMLElement {
   const wrapper = document.createElement('div');
   wrapper.innerHTML = itemHtml(item, false);
   const node = wrapper.firstElementChild as HTMLElement;
-  node.querySelectorAll('.markdown pre').forEach((pre) => {
+  node.querySelectorAll('.markdown').forEach(addCopyButtons);
+  return node;
+}
+
+/** A Copy button in each code block of rendered Markdown that has none yet. */
+function addCopyButtons(markdown: Element): void {
+  markdown.querySelectorAll('pre').forEach((pre) => {
+    if (pre.querySelector(':scope > .copy')) return;
     const button = document.createElement('button');
     button.className = 'copy';
     button.dataset.action = 'copy';
     button.textContent = t('Copy');
     pre.appendChild(button);
   });
-  return node;
+}
+
+/**
+ * A streaming answer's node, as the last frame left it: the reasoning it shows, and the Markdown
+ * blocks before the last one (their sources, and how many nodes of its .markdown they made). Text
+ * only grows at the end, so those blocks no longer change.
+ */
+interface StreamedNode {
+  reasoning: string;
+  raws: string[];
+  nodes: number;
+}
+const streamedNodes = new WeakMap<HTMLElement, StreamedNode>();
+
+/** Blocks before this index are done; the last block that is not blank lines can still change. */
+function settledBlocks(blocks: Array<{ type: string }>): number {
+  let last = blocks.length - 1;
+  while (last > 0 && blocks[last].type === 'space') last--;
+  return Math.max(0, last);
+}
+
+/**
+ * Show a streaming answer's new text in its node: the blocks finished since the last frame are
+ * added and only the last block is rendered again, instead of the whole answer on every frame.
+ * Returns false when the node needs a full render (anything but the text changed, or the text
+ * changed before its end); the finished answer is always rendered whole.
+ */
+function patchStreaming(node: HTMLElement, item: TranscriptItem): boolean {
+  const view = streamedNodes.get(node);
+  if (!view || item.kind !== 'assistant' || !item.streaming || !item.text || item.reasoning !== view.reasoning) return false;
+  const body = node.querySelector<HTMLElement>(':scope > .markdown');
+  const blocks = body && markdownBlocks(item.text);
+  if (!body || !blocks) return false;
+  const done = settledBlocks(blocks);
+  if (done < view.raws.length || view.raws.some((raw, i) => blocks[i].raw !== raw)) return false;
+  // The last frame's last block goes; the blocks finished since stay for good; the last block follows.
+  while (body.childNodes.length > view.nodes) body.lastChild!.remove();
+  const finished = blocks.slice(view.raws.length, done);
+  if (finished.length) {
+    body.insertAdjacentHTML('beforeend', finished.map((b) => b.html()).join(''));
+    view.raws.push(...finished.map((b) => b.raw));
+    view.nodes = body.childNodes.length;
+  }
+  body.insertAdjacentHTML('beforeend', blocks.slice(done).map((b) => b.html()).join(''));
+  addCopyButtons(body);
+  return true;
+}
+
+/** A streaming answer's node was rendered whole: its Markdown is laid out by blocks, so the next frames can patch it. */
+function startStreaming(node: HTMLElement, item: TranscriptItem): void {
+  if (item.kind !== 'assistant' || !item.streaming || !item.text) return;
+  const body = node.querySelector<HTMLElement>(':scope > .markdown');
+  const blocks = body && markdownBlocks(item.text);
+  if (!body || !blocks) return;
+  const done = settledBlocks(blocks);
+  body.innerHTML = blocks
+    .slice(0, done)
+    .map((b) => b.html())
+    .join('');
+  const view: StreamedNode = { reasoning: item.reasoning, raws: blocks.slice(0, done).map((b) => b.raw), nodes: body.childNodes.length };
+  body.insertAdjacentHTML('beforeend', blocks.slice(done).map((b) => b.html()).join(''));
+  addCopyButtons(body);
+  streamedNodes.set(node, view);
 }
 
 function nearBottom(): boolean {
@@ -3943,16 +4133,22 @@ function scrollToBottom(): void {
   el.transcript.scrollTop = el.transcript.scrollHeight;
 }
 
-function renderTranscript(): void {
-  const stick = nearBottom();
+/**
+ * The transcript stays at its end if it was there. `toBottom`: the caller scrolls it to its end
+ * once the page is drawn (a session shown anew), so where the old one was is not asked: that would
+ * lay out the old transcript just before it goes.
+ */
+function renderTranscript(toBottom = false): void {
+  const stick = !toBottom && nearBottom();
   el.transcript.innerHTML = '';
   renderStarters();
   if (!session.items.length) {
     el.transcript.innerHTML = renderEmptyState();
-    updateToBottom();
+    if (!toBottom) updateToBottom();
     return;
   }
   for (const item of session.items) el.transcript.appendChild(nodeFor(item));
+  if (toBottom) return;
   if (stick) scrollToBottom();
   updateToBottom();
 }
@@ -3963,13 +4159,18 @@ if (layout === 'ide') {
   if (toBottom) toBottom.innerHTML = icon('arrowDown');
 }
 
-function renderAll(): void {
+/** `toBottom`: the transcript ends scrolled to its end (a session shown anew), laid out once. */
+function renderAll(toBottom = false): void {
   renderStatic();
   renderChrome();
   renderView();
-  renderTranscript();
+  renderTranscript(toBottom);
   renderSidebar();
   renderRadar();
+  if (toBottom) {
+    scrollToBottom();
+    updateToBottom();
+  }
 }
 
 /** Keep what the user typed/toggled (approval notes, open <details>) across a re-render. */
@@ -4023,7 +4224,9 @@ function flush(): void {
     const item = session.items.find((i) => i.id === id);
     if (!item) continue;
     const existing = el.transcript.querySelector<HTMLElement>(`:scope > [data-id="${CSS.escape(id)}"]`);
+    if (existing && patchStreaming(existing, item)) continue;
     const node = nodeFor(item);
+    startStreaming(node, item);
     if (existing) {
       // Keep keyboard focus in an approval note that is being typed while the card re-renders.
       const focused = document.activeElement;
@@ -4048,6 +4251,7 @@ function onEvent(event: AgentEvent): void {
   const changedId = applyEvent(session, event);
   // Sent messages offer "Go back" only while the agent is idle.
   document.body.classList.toggle('busy', session.running);
+  markRunning();
   switch (event.type) {
     case 'plan':
       renderPlan();
@@ -4117,6 +4321,12 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
     case 'closeDialog':
       closeDialog(message.id);
       break;
+    case 'folderListing':
+      folderPickerListing(message);
+      break;
+    case 'folderCreated':
+      folderPickerCreated(message);
+      break;
     case 'setInput':
       // Going back puts the message into the box again, to edit and resend. Radar's proposal goes
       // after a draft the user had typed: an unsent text is never replaced without asking.
@@ -4134,14 +4344,14 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       setSessionId(message.sessionId);
       session = message.session;
       document.body.classList.toggle('busy', session.running);
+      markRunning();
       config = message.config;
       ui.taskId = message.taskId;
       setLocale(config.locale);
       applyAppearance();
       ui.hunks.clear();
       syncFilesFolder();
-      renderAll();
-      scrollToBottom();
+      renderAll(true);
       if (layout === 'ide') post({ type: 'listSessions' });
       break;
     }

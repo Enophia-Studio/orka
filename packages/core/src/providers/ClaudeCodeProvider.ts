@@ -245,6 +245,8 @@ class CliSession {
   private exited = false;
   private idleTimer?: NodeJS.Timeout;
   private model = '';
+  /** The streaming message's content blocks by index: their type ("text", "thinking", "redacted_thinking", ...). */
+  private readonly blocks = new Map<number, string>();
   private pending?: {
     onEvent: (event: CliStreamEvent) => void;
     resolve: (result: TurnResult) => void;
@@ -349,16 +351,22 @@ class CliSession {
       case 'stream_event': {
         const event = message.event;
         if (message.parent_tool_use_id) break;
-        if (event?.type === 'content_block_delta') {
-          if (event.delta?.type === 'text_delta' && event.delta.text) pending.onEvent({ type: 'text', text: event.delta.text });
-          else if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
+        // Each message numbers its content blocks anew; only a text block's text is the answer.
+        if (event?.type === 'message_start') this.blocks.clear();
+        else if (event?.type === 'content_block_start') this.blocks.set(event.index, String(event.content_block?.type ?? ''));
+        else if (event?.type === 'content_block_delta') {
+          const kind = this.blocks.get(event.index);
+          if (event.delta?.type === 'text_delta' && event.delta.text && (kind === undefined || kind === 'text')) pending.onEvent({ type: 'text', text: event.delta.text });
+          else if (event.delta?.type === 'thinking_delta' && event.delta.thinking && (kind === undefined || kind === 'thinking')) {
             pending.onEvent({ type: 'thinking', text: event.delta.thinking });
           }
         }
         break;
       }
       case 'assistant': {
-        if (message.parent_tool_use_id) break;
+        // Sub-agent messages, and the CLI's own stand-in messages (model "<synthetic>": a
+        // placeholder for an interrupted or failed request, whose error the result reports).
+        if (message.parent_tool_use_id || message.message?.model === '<synthetic>') break;
         for (const block of message.message?.content ?? []) {
           if (block.type === 'text' && typeof block.text === 'string') pending.text += block.text;
           else if (block.type === 'thinking' && typeof block.thinking === 'string') pending.reasoning += block.thinking;

@@ -3,9 +3,9 @@
 import { type ApprovalRequest, type ApprovalResponse, type EditorContext, NodeHost } from '@orka/core';
 import { createHash } from 'node:crypto';
 import * as path from 'node:path';
-import type { ToWebview } from '../src/protocol';
+import type { ConfigView, ToWebview } from '../src/protocol';
 import type { Disposable, SettingsStore } from '../src/settings';
-import type { AppShell, Folder, InputOptions, SecretStore, StateStore, TerminalHandle } from '../src/shell';
+import type { AppShell, Folder, FolderBrowser, InputOptions, SecretStore, StateStore, TerminalHandle } from '../src/shell';
 import type { TerminalProgram } from '../src/terminal';
 
 export class MemorySettings implements SettingsStore {
@@ -69,6 +69,10 @@ export class FakeShell implements AppShell {
   /** The test's home folder stands in for ~/.orka (Radar keeps its files in radar/ there). */
   readonly orkaHome: string;
   readonly canOpenFolder: boolean;
+  /** The desktop app's own folder picker; none by default (as in VS Code), set by the tests that use it. */
+  folderBrowser?: FolderBrowser;
+  /** The system's folder dialog; none by default, set by the tests that use it. */
+  chooseFolder?: () => Promise<string | undefined>;
   readonly visible = true;
   readonly posted: ToWebview[] = [];
   readonly asked: Array<{ level: string; text: string; actions: string[]; detail?: string; modal?: boolean }> = [];
@@ -114,6 +118,12 @@ export class FakeShell implements AppShell {
     return this.posted.filter((m): m is Extract<ToWebview, { type: T }> => m.type === type).at(-1);
   }
 
+  /** The config the page has now: from the newest init or config (an unchanged config is not sent again). */
+  pageConfig(): ConfigView | undefined {
+    const message = this.posted.filter((m): m is Extract<ToWebview, { type: 'init' | 'config' }> => m.type === 'init' || m.type === 'config').at(-1);
+    return message?.config;
+  }
+
   storage(root: string): { tasks: string; snapshots: string } {
     const key = createHash('sha1').update(path.resolve(root).toLowerCase()).digest('hex').slice(0, 12);
     return { tasks: path.join(this.home, 'tasks', key), snapshots: path.join(this.home, 'snapshots', `${key}.git`) };
@@ -136,6 +146,7 @@ export class FakeShell implements AppShell {
   }
 
   async selectFolder(fsPath?: string): Promise<boolean> {
+    fsPath ??= await this.chooseFolder?.();
     if (!fsPath || fsPath === this.folder) return false;
     this.folder = fsPath;
     for (const listener of this.folderListeners) listener();
