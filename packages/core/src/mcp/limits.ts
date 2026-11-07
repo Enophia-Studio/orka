@@ -57,3 +57,10 @@ export function readMcpServerLimits(raw: unknown): Record<string, McpServerLimit
   return out;
 }
 
+
+/** Of a server's tools (in its order), those the model gets: on its allow-list (all without one), at most its own tool limit. */
+export function allowedMcpTools<T>(tools: readonly T[], nameOf: (tool: T) => string, limits: McpServerLimits | undefined): T[] {
+  const allowed = limits?.allowedTools;
+  const list = allowed ? tools.filter((tool) => allowed.includes(nameOf(tool))) : [...tools];
+  return limits?.maxTools ? list.slice(0, limits.maxTools) : list;
+}

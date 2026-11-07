@@ -430,7 +430,7 @@ describe('parallel sessions (desktop IDE layout)', () => {
     const { shell, controller } = await start('desktop', { mcpServers: { shared: server } });
     // What a new task of the session gets (the orchestrator asks for it once per task).
     const toolsFor = async (session: SessionController) =>
-      [...new Set((await (controller as unknown as { mcpTools(s: SessionController): Promise<Tool[]> }).mcpTools(session)).map((tool) => tool.name.split('__')[1]))];
+      [...new Set((await (controller as unknown as { mcpTools(s: SessionController): Promise<{ tools: Tool[] }> }).mcpTools(session)).tools.map((tool) => tool.name.split('__')[1]))];
     const states = (session: SessionController) => session.mcp.status().map((s) => [s.name, s.state]);
     const a = controller.activeSession!;
     shell.answer = 'Allow';

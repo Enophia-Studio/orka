@@ -3,9 +3,9 @@ import type { Tool } from '../tools/Tool';
 import { ToolError } from '../tools/Tool';
 import type { JsonSchema } from '../types';
 import { McpClient, type McpServerConfig, type McpState, type McpToolInfo } from './McpClient';
-import { MCP_LIMIT_DEFAULTS, type McpLimits, type McpServerLimits } from './limits';
+import { allowedMcpTools, MCP_LIMIT_DEFAULTS, type McpLimits, type McpServerLimits } from './limits';
 
-export { MCP_LIMIT_DEFAULTS, MCP_LIMIT_RANGES, type McpLimits, type McpServerLimits, readMcpLimits, readMcpServerLimits } from './limits';
+export { allowedMcpTools, MCP_LIMIT_DEFAULTS, MCP_LIMIT_RANGES, type McpLimits, type McpServerLimits, readMcpLimits, readMcpServerLimits } from './limits';
 
 export interface McpServerStatus {
   name: string;
@@ -102,10 +102,7 @@ export class McpManager {
 
   /** A server's tools the model may get: those on its allow-list (all without one), at most its own tool limit. */
   private exposedTools(server: string, tools: McpToolInfo[]): McpToolInfo[] {
-    const allowed = this.serverLimits[server]?.allowedTools;
-    const list = allowed ? tools.filter((tool) => allowed.includes(tool.name)) : tools;
-    const max = this.limitsFor(server).maxTools;
-    return max ? list.slice(0, max) : list;
+    return allowedMcpTools(tools, (tool) => tool.name, this.serverLimits[server]);
   }
 
   status(): McpServerStatus[] {

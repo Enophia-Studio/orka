@@ -46,6 +46,7 @@ import {
   catalogRunKind,
   catalogServerName,
   findCatalogEntry,
+  allowedMcpTools,
   capMcpTools,
   McpManager,
   readMcpServerLimits,
@@ -1346,7 +1347,8 @@ export class AppController implements Disposable {
         enabled: source === 'workspace' ? workspaceAllowed : !config.disabled,
         state: s?.state ?? 'idle',
         tools: s?.tools ?? 0,
-        exposed: s?.exposed ?? 0,
+        // From the settings, so a change shows before the next task applies it.
+        exposed: allowedMcpTools(s?.toolNames ?? [], (n) => n, this.settings.mcp.serverLimits[name]).length,
         toolNames: s?.toolNames ?? [],
         limits: this.settings.mcp.serverLimits[name] ?? {},
         error: s?.error,

@@ -68,6 +68,7 @@ export { AGENT_POLICIES, agentPolicy, type AgentPolicy, type AuthKind, NOT_IN_CA
 export { type AcpAction, actionFor, commandOf } from './acp/mapping';
 export { MAX_RESULT_CHARS, McpClient, type McpServerConfig, type McpState, type McpToolInfo, truncateResult } from './mcp/McpClient';
 export {
+  allowedMcpTools,
   capMcpTools,
   MCP_LIMIT_DEFAULTS,
   MCP_LIMIT_RANGES,

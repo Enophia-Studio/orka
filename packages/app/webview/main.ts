@@ -4282,6 +4282,8 @@ function openReview(): void {
 
 function closeReview(): void {
   review = undefined;
+  // With nothing left to list the panel only hides: the review must not stay in it.
+  el.changes.innerHTML = '';
   renderChanges();
 }
 
