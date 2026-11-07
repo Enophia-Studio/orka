@@ -168,6 +168,16 @@ export class NodeHost implements Host {
         finish(null);
       });
       child.on('close', (code) => finish(code));
+      // After a stop or timeout, a grandchild started just as the tree was killed can keep the
+      // output pipes open: once the shell itself has exited, stop waiting for them shortly after.
+      child.on('exit', (code) => {
+        if (!aborted && !timedOut) return;
+        setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          finish(code);
+        }, 300).unref();
+      });
     });
   }
 
