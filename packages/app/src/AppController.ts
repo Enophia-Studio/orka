@@ -930,8 +930,15 @@ export class AppController implements Disposable {
    * session is shown with a new empty task, unless it runs.
    */
   private async newTaskElsewhere(folder?: string): Promise<void> {
-    const target = folder === undefined ? undefined : checkFolderPath(folder);
+    let target = folder === undefined ? undefined : checkFolderPath(folder);
     if (folder !== undefined && !target) return;
+    // The dialog chooses first, so the open folder chosen there also starts a new task.
+    if (!target && this.shell.chooseFolder) {
+      const chosen = await this.shell.chooseFolder();
+      if (!chosen) return;
+      target = checkFolderPath(chosen);
+      if (!target) return;
+    }
     if (target && this.isCurrentFolder(target)) return this.newTask(target);
     const before = this.activeSession;
     await this.selectFolder(target);

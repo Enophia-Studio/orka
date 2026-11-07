@@ -99,6 +99,8 @@ export interface AppShell {
   folders(): Folder[];
   /** Work in another folder; `path` empty = let the user choose one. Resolves true when it changed. */
   selectFolder(path?: string): Promise<boolean>;
+  /** The system's folder dialog alone (desktop): the chosen folder, nothing switched; undefined when cancelled. */
+  chooseFolder?(): Promise<string | undefined>;
   onDidChangeFolder(listener: () => void): Disposable;
   /** The user picks folders in the app itself (desktop). */
   readonly canOpenFolder: boolean;

@@ -71,6 +71,8 @@ export class FakeShell implements AppShell {
   readonly canOpenFolder: boolean;
   /** The desktop app's own folder picker; none by default (as in VS Code), set by the tests that use it. */
   folderBrowser?: FolderBrowser;
+  /** The system's folder dialog; none by default, set by the tests that use it. */
+  chooseFolder?: () => Promise<string | undefined>;
   readonly visible = true;
   readonly posted: ToWebview[] = [];
   readonly asked: Array<{ level: string; text: string; actions: string[]; detail?: string; modal?: boolean }> = [];
@@ -144,6 +146,7 @@ export class FakeShell implements AppShell {
   }
 
   async selectFolder(fsPath?: string): Promise<boolean> {
+    fsPath ??= await this.chooseFolder?.();
     if (!fsPath || fsPath === this.folder) return false;
     this.folder = fsPath;
     for (const listener of this.folderListeners) listener();

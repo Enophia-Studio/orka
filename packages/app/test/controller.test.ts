@@ -130,6 +130,28 @@ describe('desktop session list', () => {
     assert.equal(shell.last('init')?.session.items.length, 0, 'an empty session');
   });
 
+  it("starts a new session in the folder chosen in the system's dialog, the open one too", async () => {
+    const { shell, controller } = await start('desktop');
+    await saveTask(shell, folderA, 'task-a1', 'Fix the alpha build');
+    await controller.handleMessage({ type: 'openTask', id: 'task-a1', folder: folderA });
+    assert.equal(shell.last('init')?.taskId, 'task-a1');
+    let chosen: string | undefined;
+    shell.chooseFolder = async () => chosen;
+    // Cancelled: nothing changes.
+    await controller.handleMessage({ type: 'newTask', other: true });
+    assert.equal(controller.activeSession?.taskId, 'task-a1');
+    // The open folder: a new empty session there.
+    chosen = folderA;
+    await controller.handleMessage({ type: 'newTask', other: true });
+    assert.equal(shell.currentFolder()?.path, folderA);
+    assert.notEqual(controller.activeSession?.taskId, 'task-a1');
+    assert.equal(controller.activeSession?.isEmpty, true, 'an empty session');
+    // Another folder: switched to it.
+    chosen = folderB;
+    await controller.handleMessage({ type: 'newTask', other: true });
+    assert.equal(shell.currentFolder()?.path, folderB);
+  });
+
   it("deletes a task from another folder's history after asking", async () => {
     const { shell, controller } = await start('desktop');
     await saveTask(shell, folderB, 'task-b1', 'Fix the beta build');

@@ -124,7 +124,7 @@ export class DesktopShell implements AppShell, Disposable {
   }
 
   async selectFolder(fsPath?: string): Promise<boolean> {
-    const target = fsPath ?? (await pickFolder(t('Choose the project folder the agent works in.')));
+    const target = fsPath ?? (await this.chooseFolder());
     if (!target) return false;
     if (!isDirectory(target)) {
       void this.message('warning', t('Not a folder: {path}', { path: target }));
@@ -138,6 +138,10 @@ export class DesktopShell implements AppShell, Disposable {
     this.useFolder(target);
     for (const listener of this.folderListeners) listener();
     return true;
+  }
+
+  chooseFolder(): Promise<string | undefined> {
+    return pickFolder(t('Choose the project folder the agent works in.'));
   }
 
   private useFolder(folder: string): void {
