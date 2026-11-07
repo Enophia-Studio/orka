@@ -53,8 +53,8 @@ export function serverLimitsHtml(server: McpServerView, global: McpLimits): stri
   const own = server.limits ?? {};
   const fields = KEYS.map((key) => {
     const [min, max] = MCP_LIMIT_RANGES[key];
-    // A server's maxTools counts that server alone; there is no global value to show.
-    const placeholder = key === 'maxTools' ? t('No limit') : String(global[key]);
+    // A server's maxTools counts that server alone (0 = no limit); there is no global value to show.
+    const placeholder = key === 'maxTools' ? '0' : String(global[key]);
     return `<label class="row"><span class="grow">${escapeHtml(label(key, true))}</span><input class="num${key === 'maxResultChars' ? ' wide' : ''}" type="number" min="${min}" max="${max}" data-mcp-limit="${key}" placeholder="${attr(placeholder)}" value="${own[key] === undefined ? '' : attr(String(own[key]))}">${unit(key) ? `<span class="muted">${escapeHtml(unit(key))}</span>` : ''}</label>`;
   }).join('');
   const allowed = own.allowedTools;
@@ -76,7 +76,7 @@ export function serverLimitsHtml(server: McpServerView, global: McpLimits): stri
     <div class="muted small">${escapeHtml(t('Empty fields follow the limits for every server.'))}</div>
     ${fields}
     ${tools}
-    <div class="key-row">
+    <div class="key-row wrap">
       <button class="btn primary" data-action="mcp-limits-save" data-name="${attr(server.name)}">${escapeHtml(t('Save'))}</button>
       <button class="btn" data-action="mcp-limits-reset" data-name="${attr(server.name)}">${escapeHtml(t('Use the limits for every server'))}</button>
     </div>

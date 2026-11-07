@@ -131,7 +131,9 @@
           { id: 't-now', title: L('Rework the lobby in my Unity project: add a ready state and a 4-player limit.', 'Unity projemde lobby sistemini yeniden düzenle: hazır (ready) durumu ekle ve 4 oyuncu sınırı koy.'), createdAt: new Date(Date.now() - 3600e3).toISOString(), updatedAt: new Date(Date.now() - 120e3).toISOString(), requests: 3, model: 'claude-opus-5-5', usage: { inputTokens: 5900, outputTokens: 2410, cacheReadTokens: 51200, cacheWriteTokens: 6100 } },
           { id: 't-old', title: 'Explain the networking architecture', createdAt: new Date(Date.now() - 2 * 86400e3).toISOString(), updatedAt: new Date(Date.now() - 2 * 86400e3).toISOString(), requests: 1, model: 'gemini-3.8-flash', usage: { inputTokens: 900, outputTokens: 400, cacheReadTokens: 0, cacheWriteTokens: 0 } },
         ] }), 0);
-        if (message.type === 'getHunks') setTimeout(() => deliver({ type: 'hunks', path: message.path, hunks: [
+        // Parts of a changed file; Keep and Revert part take one out (as the app does), so review mode can step through them.
+        if (message.type === 'getHunks' || message.type === 'keepHunk' || message.type === 'revertHunk') {
+          if (!devHunks.has(message.path)) devHunks.set(message.path, [
           { header: '@@ -10,6 +10,9 @@', hidden: 0, lines: [
             { type: ' ', text: 'public class LobbyManager : NetworkBehaviour' }, { type: ' ', text: '{' },
             { type: '-', text: '    private readonly Dictionary<PlayerRef, bool> ready = new();' },
@@ -143,7 +145,10 @@
             { type: ' ', text: '    public void OnPlayerJoined(NetworkRunner runner, PlayerRef player)' }, { type: ' ', text: '    {' },
             { type: '+', text: '        if (Ready.Count >= MaxPlayers) { runner.Disconnect(player); return; }' },
             { type: '+', text: '        Ready.Set(player, false);' }, { type: ' ', text: '    }' } ] },
-        ] }), 60);
+        ]);
+          if (message.type !== 'getHunks') devHunks.get(message.path).splice(message.index, 1);
+          setTimeout(() => deliver({ type: 'hunks', path: message.path, hunks: devHunks.get(message.path) }), 60);
+        }
         if (message.type === 'setSetting' && message.key === 'language') setTimeout(() => { lang = message.value === 'tr' ? 'tr' : 'en'; deliver({ type: 'config', config: makeConfig(false) }); }, 0);
         if (message.type === 'setSetting' && message.key === 'desktop.theme') setTimeout(() => { theme = message.value; deliver({ type: 'config', config: makeConfig(false) }); }, 0);
         if (message.type === 'listSessions') setTimeout(() => deliver({ type: 'sessions', taskId: 't-now', organizer: { groups: [{ id: 'g-1', name: L('Release 1.2', 'Sürüm 1.2') }], assigned: { 't-2': 'g-1', 's-1': 'g-1' }, hidden: ['t-4'] }, groups: [
@@ -321,6 +326,7 @@
     const dirs = { '': ['Assets', 'Library', 'Packages'], Assets: ['Data', 'Scripts'], 'Assets/Scripts': ['Net', 'UI'], 'Assets/Scripts/Net': [], 'Assets/Scripts/UI': [], 'Assets/Data': [], Library: [], Packages: [] };
     const fakeHash = (text) => { let h = 2166136261; for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619) >>> 0; return h.toString(16).padStart(8, '0').repeat(8); };
     let conflictOnce = params.has('conflict');
+    const devHunks = new Map();
     function filesMock(message) {
       const reply = (m) => setTimeout(() => deliver(m), 30);
       if (message.type === 'listDir') {
@@ -639,6 +645,21 @@
           for (const f of files) data.items.add(f);
           document.getElementById('input')?.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
         }, 50);
+      }
+      // ?review: review mode of the Changes panel; ?review=comment with a comment box open, ?review=summary at the end.
+      if (params.has('review')) {
+        setTimeout(() => {
+          document.querySelector('[data-action="review-start"]')?.click();
+          const mode = params.get('review');
+          setTimeout(() => {
+            if (mode === 'comment') document.querySelector('[data-action="review-comment"]')?.click();
+            if (mode === 'summary') {
+              const click = (a) => document.querySelector('[data-action="' + a + '"]')?.click();
+              click('review-keep');
+              setTimeout(() => { click('review-comment'); const box = document.getElementById('review-comment'); if (box) { box.value = 'Use MaxPlayers from the lobby settings instead of a constant.'; click('review-comment-save'); } click('review-next'); click('review-keep'); click('review-next'); }, 150);
+            }
+          }, 150);
+        }, 300);
       }
       // ?gallery: Settings > Skills > Gallery; ?gallery=details opens two entries, ?gallery=preview a skill's text, ?gallery=install the download consent.
       if (params.has('gallery')) {

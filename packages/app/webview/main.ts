@@ -37,6 +37,19 @@ import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAcc
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
 import { folderPickerCreated, folderPickerListing, openFolderPicker } from './features/folderPicker';
 import { hunksHtml } from './features/hunks';
+import {
+  addComment,
+  currentPart,
+  decide,
+  feedbackText,
+  hunksToFetch,
+  receiveHunks,
+  reviewHtml,
+  type ReviewState,
+  startReview,
+  step,
+  syncFiles,
+} from './features/review';
 import { fitWithin, MAX_IMAGE_EDGE, pickImages } from './features/images';
 import { catalogFormHtml, catalogHtml, catalogListHtml, type CatalogState, missingFields } from './features/mcpCatalog';
 import {
@@ -2266,6 +2279,42 @@ document.addEventListener('click', (e) => {
       target.setAttribute('disabled', '');
       post({ type: 'revertHunk', path: path!, index: Number(target.dataset.index), ...hunkHeader(target) });
       break;
+    case 'review-start':
+      openReview();
+      break;
+    case 'review-close':
+      closeReview();
+      break;
+    case 'review-next':
+      reviewStep(1);
+      break;
+    case 'review-prev':
+      reviewStep(-1);
+      break;
+    case 'review-keep':
+      reviewDecide('kept');
+      break;
+    case 'review-revert':
+      reviewDecide('reverted');
+      break;
+    case 'review-comment':
+      if (review && currentPart(review)) {
+        review.commenting = true;
+        renderChanges();
+      }
+      break;
+    case 'review-comment-save':
+      saveReviewComment();
+      break;
+    case 'review-comment-cancel':
+      if (review) {
+        review.commenting = false;
+        renderChanges();
+      }
+      break;
+    case 'review-feedback':
+      reviewToComposer();
+      break;
     case 'accept-all':
       post({ type: 'acceptAll' });
       break;
@@ -3912,7 +3961,7 @@ function mcpTab(): string {
       <div class="card-text">${escapeHtml(
         t('MCP servers give the agents tools that work outside the project: the Unity Editor, Blender, a browser, a database… They start when a task needs them. Tools a server marks as destructive always ask first.'),
       )}</div>
-      <div class="key-row">
+      <div class="key-row wrap">
         <button class="btn primary" data-action="mcp-view" data-view="catalog">${icon('plus')}${escapeHtml(t('Add from catalog'))}</button>
         <button class="btn" data-action="import-mcp">${escapeHtml(t('Import from Claude Code'))}</button>
         <button class="btn" data-action="edit-mcp">${escapeHtml(t('Edit list'))}</button>
@@ -4198,21 +4247,118 @@ function renderPlan(): void {
 }
 
 /** In the desktop app's IDE layout the hunks are highlighted and their buttons carry the header; elsewhere they are plain, as always. */
-function changeHunksHtml(change: FileChange): string {
-  const ide = layout === 'ide';
-  const highlight = ide && window.orkaEditor ? (path: string, lines: string[]) => window.orkaEditor?.highlightLines(path, lines) : undefined;
-  return hunksHtml(change, ui.hunks.get(change.absPath), { highlight, withHeader: ide });
+/** The desktop editor's highlighter for changed lines (IDE layout), else none. */
+function changeHighlighter(): ((path: string, lines: string[]) => string[] | undefined) | undefined {
+  return layout === 'ide' && window.orkaEditor ? (path: string, lines: string[]) => window.orkaEditor?.highlightLines(path, lines) : undefined;
 }
+
+function changeHunksHtml(change: FileChange): string {
+  return hunksHtml(change, ui.hunks.get(change.absPath), { highlight: changeHighlighter(), withHeader: layout === 'ide' });
+}
+
+/** Review mode of the Changes panel (features/review.ts), while it is open. */
+let review: ReviewState | undefined;
+
+function renderReview(): void {
+  if (!review) return;
+  syncFiles(review, session.changes);
+  const fetch = hunksToFetch(review);
+  if (fetch) {
+    review.hunks.set(fetch, undefined);
+    post({ type: 'getHunks', path: fetch });
+  }
+  const focused = el.changes.contains(document.activeElement) && document.activeElement?.id !== 'review-comment';
+  el.changes.innerHTML = reviewHtml(review, { highlight: changeHighlighter(), running: session.running });
+  const box = document.getElementById('review-comment') as HTMLTextAreaElement | null;
+  if (box) box.focus();
+  else if (focused) el.changes.querySelector<HTMLElement>('.review')?.focus();
+}
+
+function openReview(): void {
+  review = startReview(session.changes);
+  renderChanges();
+  el.changes.querySelector<HTMLElement>('.review')?.focus();
+}
+
+function closeReview(): void {
+  review = undefined;
+  renderChanges();
+}
+
+/** The review's comments and decisions go into the message box, after any draft; the user sends them. */
+function reviewToComposer(): void {
+  if (!review) return;
+  el.input.value = appendToDraft(el.input.value, feedbackText(review));
+  closeReview();
+  el.input.dispatchEvent(new Event('input'));
+  el.input.focus();
+}
+
+function reviewDecide(action: 'kept' | 'reverted'): void {
+  if (!review || (action === 'reverted' && session.running)) return;
+  const message = decide(review, action);
+  if (message) post(message);
+  renderChanges();
+}
+
+function reviewStep(direction: 1 | -1): void {
+  if (!review) return;
+  step(review, direction);
+  renderChanges();
+}
+
+function saveReviewComment(): void {
+  const box = document.getElementById('review-comment') as HTMLTextAreaElement | null;
+  if (!review || !box) return;
+  if (addComment(review, box.value)) renderChanges();
+}
+
+// Review keys: n and p step, k keeps, r reverts, c comments, Esc closes (the comment box first).
+// Only while the focus is in the review, outside a text field.
+document.addEventListener('keydown', (e) => {
+  if (!review || modalOpen() || e.ctrlKey || e.metaKey || e.altKey) {
+    if (review && e.key === 'Enter' && (e.ctrlKey || e.metaKey) && (e.target as HTMLElement | null)?.id === 'review-comment') {
+      e.preventDefault();
+      saveReviewComment();
+    }
+    return;
+  }
+  const target = e.target as HTMLElement | null;
+  if (!target || !el.changes.contains(target)) return;
+  if (target.id === 'review-comment') {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      review.commenting = false;
+      renderChanges();
+      el.changes.querySelector<HTMLElement>('.review')?.focus();
+    }
+    return;
+  }
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) return;
+  const key = e.key.toLowerCase();
+  if (key === 'escape') closeReview();
+  else if (key === 'n') reviewStep(1);
+  else if (key === 'p') reviewStep(-1);
+  else if (key === 'k') reviewDecide('kept');
+  else if (key === 'r') reviewDecide('reverted');
+  else if (key === 'c' && currentPart(review)) {
+    review.commenting = true;
+    renderChanges();
+  } else return;
+  e.preventDefault();
+});
 
 function renderChanges(): void {
   const changes: FileChange[] = session.changes;
-  el.changes.hidden = !workView() || !changes.length;
+  el.changes.hidden = !workView() || (!changes.length && !review);
   updateAside();
   if (el.changes.hidden) return;
+  if (review) return renderReview();
   const badge = { added: 'A', modified: 'M', deleted: 'D' } as const;
   el.changes.innerHTML = `
     <div class="panel-head">
       <strong>${escapeHtml(t('Changes'))}</strong><span class="muted">${escapeHtml(tn('{n} file', '{n} files', changes.length))}</span><span class="spacer"></span>
+      <button class="link" data-action="review-start" title="${attr(t('Step through the changes part by part: n/p, k keep, r revert, c comment'))}">${escapeHtml(t('Review'))}</button>
       <button class="link" data-action="accept-all" title="${attr(t('Keep all changes'))}">${escapeHtml(t('Accept all'))}</button>
       <button class="link" data-action="revert-all" title="${attr(t('Undo all AI changes'))}">${escapeHtml(t('Revert all'))}</button>
     </div>
@@ -4847,6 +4993,8 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       document.body.classList.toggle('busy', session.running);
       markRunning();
       config = message.config;
+      // A review belongs to the session and task it started in.
+      if (message.sessionId !== before || message.taskId !== ui.taskId) review = undefined;
       ui.taskId = message.taskId;
       setLocale(config.locale);
       applyAppearance();
@@ -4958,6 +5106,10 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
       }
       break;
     case 'hunks':
+      if (review) {
+        receiveHunks(review, message.path, message.hunks);
+        renderChanges();
+      }
       if (ui.hunks.has(message.path)) {
         ui.hunks.set(message.path, message.hunks);
         renderChanges();

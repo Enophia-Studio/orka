@@ -782,6 +782,10 @@ textarea {
   gap: 6px;
 }
 
+.key-row.wrap {
+  flex-wrap: wrap;
+}
+
 .key {
   flex: 1;
   min-width: 0;
@@ -2103,6 +2107,127 @@ input.num.wide {
 
 .hunk-body .hl.del {
   background: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground, #c74e39) 16%, transparent);
+}
+
+/* ---------------------------------------------------------------- review mode */
+
+.review {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  outline: none;
+}
+
+.review:focus-visible {
+  box-shadow: 0 0 0 1px var(--focus, var(--accent));
+  border-radius: var(--radius-sm);
+}
+
+.review-file {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.review-file .file {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--fg-strong);
+  cursor: pointer;
+  font-size: var(--fs-12);
+}
+
+.review-file .file:hover {
+  text-decoration: underline;
+}
+
+.review .hunk-body {
+  max-height: 46vh;
+}
+
+.review-whole {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-12);
+}
+
+.review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.review-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.review-actions .icon {
+  width: 13px;
+  height: 13px;
+}
+
+.review kbd {
+  font-family: var(--mono, monospace);
+  font-size: var(--fs-11);
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  opacity: 0.8;
+}
+
+.review-comment {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  font-size: var(--fs-12);
+  padding: 4px 6px;
+  border-left: 2px solid var(--sub-border, var(--border));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.review-comment .icon {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  margin-top: 2px;
+}
+
+.review-comment-box textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+}
+
+.review-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: var(--fs-12);
+}
+
+.review-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-comments {
+  margin: 0;
+  padding-left: 16px;
+  overflow-wrap: anywhere;
 }
 
 /* ---------------------------------------------------------------- skills */

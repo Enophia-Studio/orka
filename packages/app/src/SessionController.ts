@@ -802,7 +802,9 @@ export class SessionController {
    */
   async revertHunk(absPath: string, index: number, header?: string): Promise<void> {
     const orchestrator = this.orchestrator;
-    if (!Number.isInteger(index) || index < 0 || this.workingNearby()) return;
+    if (!Number.isInteger(index) || index < 0) return;
+    // Nothing is undone while another session works nearby; the page still hears that the part stayed.
+    if (this.workingNearby()) return this.postHunks(absPath);
     const hunk = (await orchestrator.changes.hunks(absPath))[index];
     if (hunk && isShown(hunk, header) && (await orchestrator.changes.hunkTouchesUserEdit(absPath, index))) {
       void this.ctx.shell.message('warning', t('This part includes lines you edited; it was left as is.'));
