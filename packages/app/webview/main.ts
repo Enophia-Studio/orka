@@ -1844,6 +1844,8 @@ document.addEventListener(
     if (overlay) return;
     const target = e.target;
     if (target !== el.input && target !== document.body && !(target instanceof Node && el.transcript.contains(target))) return;
+    // A text field in the conversation, such as an approval card's note, keeps its own Escape.
+    if (target !== el.input && target instanceof Element && target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return;
     e.preventDefault();
     post({ type: 'stop' });
   },

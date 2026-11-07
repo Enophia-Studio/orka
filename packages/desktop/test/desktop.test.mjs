@@ -790,6 +790,26 @@ globalThis.fetch = (input, init) => {
     }
   });
 
+  it("leaves the request running on an Escape in an approval card's note field", async () => {
+    const other = twoFolders();
+    try {
+      const url = await launch();
+      await browser.navigate(url);
+      await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+      script = [() => toolUse('toolu_a', 'write_file', { path: 'a.txt', content: 'from A\n' }), () => reply('A is done.')];
+      await waitingInWork();
+      assert.equal(await browser.evaluate('(() => { const f = document.querySelector(".approval input.feedback"); f.focus(); return document.activeElement === f; })()'), true);
+      await browser.press('Escape');
+      await sleep(400);
+      assert.equal(await browser.evaluate('document.body.classList.contains("busy")'), true, 'still working');
+      assert.equal(await browser.evaluate('!!document.querySelector(".approval [data-action=approve]")'), true, 'still waiting for the approval');
+      await browser.clickSelector('.approval [data-action="approve"]');
+      await until(async () => (await text()).includes('A is done.'), 'the reply after the approval');
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
   it('shows the running session of a folder instead of starting a second one there', async () => {
     const other = twoFolders();
     try {
