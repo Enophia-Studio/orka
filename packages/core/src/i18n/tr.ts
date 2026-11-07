@@ -1877,4 +1877,7 @@ export const TR: Record<string, string> = {
   'Start the server (run a task) to choose which of its tools the model may use.': 'Modelin hangi araçlarını kullanabileceğini seçmek için sunucuyu başlatın (bir görev çalıştırın).',
   'Empty fields follow the limits for every server.': 'Boş alanlar tüm sunucular için geçerli sınırları izler.',
   'Use the limits for every server': 'Tüm sunucuların sınırlarını kullan',
+  '{model} does not accept images, so the attached images were not sent.': '{model} görsel kabul etmiyor, bu yüzden eklenen görseller gönderilmedi.',
+  '{file} was not attached: only PNG, JPEG, GIF and WebP images can be.': '{file} eklenmedi: yalnızca PNG, JPEG, GIF ve WebP görselleri eklenebilir.',
+  '{file} was not attached: it is larger than {mb} MB.': '{file} eklenmedi: {mb} MB’tan büyük.',
 };

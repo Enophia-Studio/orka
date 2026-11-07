@@ -45,6 +45,8 @@ export interface AIProvider {
   readonly id: string;
   readonly label: string;
   readonly model: string;
+  /** false: the model takes text only, so images are left out (with a notice); unset: it can see. */
+  readonly acceptsImages?: boolean;
   chat(request: ChatRequest, onEvent: (event: ProviderStreamEvent) => void): Promise<ChatResponse>;
   /** Release long-lived resources (e.g. local CLI processes). */
   dispose?(): void;
