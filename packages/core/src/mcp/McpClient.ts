@@ -79,6 +79,7 @@ export class McpClient {
   private nextId = 1;
   private readonly pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   private starting?: Promise<void>;
+  private startTimeoutMs = START_TIMEOUT_MS;
 
   constructor(
     readonly name: string,
@@ -86,11 +87,15 @@ export class McpClient {
     private readonly clientInfo = { name: 'orka', version: VERSION },
   ) {}
 
-  /** Start the server (once), do the handshake and load its tool list. */
-  start(timeoutMs = START_TIMEOUT_MS): Promise<void> {
+  /**
+   * Start the server (once), do the handshake and load its tool list. The timeout given is kept,
+   * so a restart on demand (a tool call after a crash) waits as long as the first start.
+   */
+  start(timeoutMs?: number): Promise<void> {
+    if (timeoutMs !== undefined) this.startTimeoutMs = timeoutMs;
     if (this.state === 'ready') return Promise.resolve();
     if (this.starting) return this.starting;
-    this.starting = this.doStart(timeoutMs).finally(() => (this.starting = undefined));
+    this.starting = this.doStart(this.startTimeoutMs).finally(() => (this.starting = undefined));
     return this.starting;
   }
 

@@ -1681,21 +1681,23 @@ export class Orchestrator {
         ? `\n\nFiles changed by this command (revertible in the Changes panel): ${byCommand.slice(0, 30).map((c) => `${c.path} (${c.status})`).join(', ')}${byCommand.length > 30 ? `, and ${byCommand.length - 30} more` : ''}`
         : '';
       const hooks = action.category === 'edit' && !result.isError && view.path ? await this.afterEditHooks(view.path, signal) : '';
+      // A tool that cuts its own result to the user's limit (MCP) is not cut again at the general one.
+      const reported = tool.capsOwnResult ? result.content : truncateMiddle(result.content, MAX_TOOL_RESULT_CHARS);
+      // Edits made by a command or a worker sub-agent count even when the call was stopped from its card.
+      const changedElsewhere = byCommand.some((c) => !NON_CODE_EXTENSIONS.has(path.extname(c.path).toLowerCase())) || delegatedEdits;
       if (cancelledAlone()) {
         // The tool noticed the stop and returned what it had: the agent hears that the user stopped it.
-        const reported = truncateMiddle(result.content, MAX_TOOL_RESULT_CHARS);
         const content = `${CANCELLED_BY_USER}${reported ? `\n\nWhat it reported before it stopped:\n${reported}` : ''}${note}`;
         this.emit({ type: 'tool_call', call: { ...view, ...done, status: 'cancelled', output: content } });
-        return { result: { type: 'tool_result', toolCallId: call.id, content, isError: true }, changedCode: byCommand.length > 0, ranCommand: false };
+        return { result: { type: 'tool_result', toolCallId: call.id, content, isError: true }, changedCode: changedElsewhere, ranCommand: false };
       }
-      const content = truncateMiddle(result.content, MAX_TOOL_RESULT_CHARS) + note + hooks;
+      const content = reported + note + hooks;
       this.emit({ type: 'tool_call', call: { ...view, ...done, status: result.isError ? 'error' : 'done', output: content, image: result.thumb } });
       const changedCode =
         ((action.category === 'edit' || action.category === 'delete') &&
           !result.isError &&
           !NON_CODE_EXTENSIONS.has(path.extname(view.path ?? '').toLowerCase())) ||
-        byCommand.some((c) => !NON_CODE_EXTENSIONS.has(path.extname(c.path).toLowerCase())) ||
-        delegatedEdits;
+        changedElsewhere;
       const ranCommand = call.name === 'run_command' && !own.signal.aborted;
       if (!result.isError && this.secretFile === undefined) this.secretFile = secretTouched(call);
       const images = result.images?.length ? { images: result.images } : {};

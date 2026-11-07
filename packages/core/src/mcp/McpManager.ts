@@ -150,6 +150,8 @@ export class McpManager {
     return {
       name: toolName,
       readOnly,
+      // Settings → MCP → Limits sets this server's cap, which may be above the agent's general one.
+      capsOwnResult: true,
       description: `[MCP server "${server}"] ${info.description?.trim() || info.annotations?.title || info.name}`,
       inputSchema: schema,
       describe: (input) => ({

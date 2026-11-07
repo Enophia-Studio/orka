@@ -9,7 +9,7 @@ import type { AgentEvent } from '../src/orchestrator/events';
 import { Orchestrator } from '../src/orchestrator/Orchestrator';
 import { PermissionManager } from '../src/permissions/PermissionManager';
 import type { Tool, ToolContext } from '../src/tools/Tool';
-import { ScriptedProvider, tempWorkspace, text } from './helpers';
+import { call, lastToolResults, ScriptedProvider, tempWorkspace, text } from './helpers';
 
 const SCRIPT = path.resolve(__dirname, '../../test/fixtures/fake-mcp.mjs');
 const FAKE = { command: process.execPath, args: [SCRIPT], env: { FAKE_MCP_EXTRA: '1' } };
@@ -100,6 +100,49 @@ describe('MCP limits', () => {
     } finally {
       McpClient.prototype.start = original;
     }
+  });
+
+  it('a server that crashed is started again by the next call with its own start timeout', async () => {
+    manager.sync({ unity: FAKE }, { servers: { unity: { startTimeoutSeconds: 120 } } });
+    const tools = await manager.tools();
+    const client = (manager as unknown as { clients: Map<string, { client: McpClient }> }).clients.get('unity')!.client;
+    const child = (client as unknown as { child: { kill(): void; once(event: string, fn: () => void): void } }).child;
+    await new Promise<void>((resolve) => {
+      child.once('exit', () => setImmediate(resolve));
+      child.kill();
+    });
+    assert.equal(client.state, 'error');
+    const seen: number[] = [];
+    const inner = client as unknown as { doStart(timeoutMs: number): Promise<void> };
+    const doStart = inner.doStart.bind(client);
+    inner.doStart = (timeoutMs: number) => {
+      seen.push(timeoutMs);
+      return doStart(timeoutMs);
+    };
+    assert.equal((await tool(tools, 'mcp__unity__slow').execute({ ms: 10 }, ctx())).content, 'done');
+    assert.deepEqual(seen, [120_000]);
+  });
+
+  it('a result above the agent\'s general cut keeps the length the MCP limit allows', async () => {
+    manager.sync({ unity: FAKE }, { servers: { unity: { maxResultChars: 100_000 } } });
+    const tools = await manager.tools();
+    let seen = '';
+    const provider = new ScriptedProvider([
+      () => [call('mcp__unity__big_output', { size: 60_000 })],
+      (req) => {
+        seen = lastToolResults(req)[0].content;
+        return [text('ok')];
+      },
+    ]);
+    const orchestrator = new Orchestrator({
+      host: new NodeHost({ workspaceRoot: ws.root }),
+      getProvider: () => provider,
+      permissions: new PermissionManager('autonomous'),
+      getSettings: () => ({ maxIterations: 3, autoVerify: false, commandTimeoutMs: 10_000 }),
+      getExtraTools: async () => ({ tools }),
+    });
+    assert.equal(await orchestrator.run('big'), 'completed');
+    assert.equal(seen, 'x'.repeat(60_000));
   });
 
   it('gives the model only allowed tools, at most the server limit, and shows both counts', async () => {
