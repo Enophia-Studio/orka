@@ -3,11 +3,19 @@ import type { Tool } from '../tools/Tool';
 import { ToolError } from '../tools/Tool';
 import type { JsonSchema } from '../types';
 import { McpClient, type McpServerConfig, type McpState, type McpToolInfo } from './McpClient';
+import { MCP_LIMIT_DEFAULTS, type McpLimits, type McpServerLimits } from './limits';
+
+export { MCP_LIMIT_DEFAULTS, MCP_LIMIT_RANGES, type McpLimits, type McpServerLimits, readMcpLimits, readMcpServerLimits } from './limits';
 
 export interface McpServerStatus {
   name: string;
   state: McpState;
+  /** Tools the server lists. */
   tools: number;
+  /** Of those, the ones the model gets (allow-list and the server's own tool limit applied). */
+  exposed: number;
+  /** The names of the tools the server lists (empty until it started). */
+  toolNames: string[];
   error?: string;
   disabled?: boolean;
 }
@@ -19,18 +27,37 @@ export function mcpToolName(server: string, tool: string): string {
 }
 
 /**
+ * At most max MCP tools for the model (0 = all), in server order; with a notice for the user when
+ * some were left out. Providers refuse requests with too many tools, and each tool costs tokens.
+ */
+export function capMcpTools(tools: Tool[], max: number): { tools: Tool[]; notice?: string } {
+  if (!max || tools.length <= max) return { tools };
+  return {
+    tools: tools.slice(0, max),
+    notice: t('MCP servers offer {total} tools; the model gets the first {n} of them (Settings → MCP → Limits).', { total: tools.length, n: max }),
+  };
+}
+
+/**
  * Keeps one client per configured MCP server alive across tasks, restarts a server when its
  * configuration changes, and exposes all their tools as agent tools.
  */
 export class McpManager {
   private readonly clients = new Map<string, { client: McpClient; key: string }>();
   private configs: Record<string, McpServerConfig> = {};
+  private limits: McpLimits = { ...MCP_LIMIT_DEFAULTS };
+  private serverLimits: Record<string, McpServerLimits> = {};
 
   constructor(private readonly onChange: () => void = () => {}) {}
 
-  /** Apply the current configuration: removed or changed servers are stopped (started again on demand). */
-  sync(configs: Record<string, McpServerConfig>): void {
+  /**
+   * Apply the current configuration: removed or changed servers are stopped (started again on
+   * demand). Limits apply from the next start, call and task; changing them restarts nothing.
+   */
+  sync(configs: Record<string, McpServerConfig>, limits?: { global?: McpLimits; servers?: Record<string, McpServerLimits> }): void {
     this.configs = configs;
+    if (limits?.global) this.limits = limits.global;
+    if (limits?.servers) this.serverLimits = limits.servers;
     for (const [name, entry] of this.clients) {
       const config = configs[name];
       if (!config || config.disabled || JSON.stringify(config) !== entry.key) {
@@ -41,17 +68,29 @@ export class McpManager {
     this.onChange();
   }
 
+  /** One server's limits: its own values, else the global ones. */
+  limitsFor(server: string): McpLimits {
+    const own = this.serverLimits[server] ?? {};
+    return {
+      maxResultChars: own.maxResultChars ?? this.limits.maxResultChars,
+      callTimeoutSeconds: own.callTimeoutSeconds ?? this.limits.callTimeoutSeconds,
+      startTimeoutSeconds: own.startTimeoutSeconds ?? this.limits.startTimeoutSeconds,
+      // A server's own tool limit; the global one counts every server's tools together (capMcpTools).
+      maxTools: own.maxTools ?? 0,
+    };
+  }
+
   /** Start every enabled server (in parallel) and return their tools. Servers that fail are skipped. */
   async tools(): Promise<Tool[]> {
     const names = Object.keys(this.configs).filter((n) => !this.configs[n].disabled);
-    await Promise.all(names.map((name) => this.client(name).start().catch(() => undefined)));
+    await Promise.all(names.map((name) => this.client(name).start(this.limitsFor(name).startTimeoutSeconds * 1000).catch(() => undefined)));
     this.onChange();
     const tools: Tool[] = [];
     const used = new Set<string>();
     for (const name of names) {
       const client = this.clients.get(name)?.client;
       if (client?.state !== 'ready') continue;
-      for (const info of client.tools) {
+      for (const info of this.exposedTools(name, client.tools)) {
         const toolName = mcpToolName(name, info.name);
         if (used.has(toolName)) continue;
         used.add(toolName);
@@ -61,13 +100,24 @@ export class McpManager {
     return tools;
   }
 
+  /** A server's tools the model may get: those on its allow-list (all without one), at most its own tool limit. */
+  private exposedTools(server: string, tools: McpToolInfo[]): McpToolInfo[] {
+    const allowed = this.serverLimits[server]?.allowedTools;
+    const list = allowed ? tools.filter((tool) => allowed.includes(tool.name)) : tools;
+    const max = this.limitsFor(server).maxTools;
+    return max ? list.slice(0, max) : list;
+  }
+
   status(): McpServerStatus[] {
     return Object.entries(this.configs).map(([name, config]) => {
       const client = this.clients.get(name)?.client;
+      const ready = client?.state === 'ready';
       return {
         name,
         state: config.disabled ? 'idle' : (client?.state ?? 'idle'),
-        tools: client?.state === 'ready' ? client.tools.length : 0,
+        tools: ready ? client.tools.length : 0,
+        exposed: ready ? this.exposedTools(name, client.tools).length : 0,
+        toolNames: ready ? client.tools.map((tool) => tool.name) : [],
         error: client?.error,
         disabled: config.disabled,
       };
@@ -117,8 +167,10 @@ export class McpManager {
       execute: async (input, ctx) => {
         const client = this.clients.get(server)?.client;
         if (!client) throw new ToolError(`The MCP server "${server}" is not running any more.`);
+        const limits = this.limitsFor(server);
+        const timeoutMs = limits.callTimeoutSeconds ? limits.callTimeoutSeconds * 1000 : Math.max(ctx.commandTimeoutMs, 60_000);
         try {
-          return await client.callTool(info.name, input, ctx.signal, Math.max(ctx.commandTimeoutMs, 60_000));
+          return await client.callTool(info.name, input, ctx.signal, timeoutMs, limits.maxResultChars);
         } catch (error) {
           if (ctx.signal.aborted) throw error;
           throw new ToolError(`MCP server "${server}" failed: ${error instanceof Error ? error.message : String(error)}`);

@@ -66,8 +66,19 @@ export {
 } from './acp/catalog';
 export { AGENT_POLICIES, agentPolicy, type AgentPolicy, type AuthKind, NOT_IN_CATALOG } from './acp/policy';
 export { type AcpAction, actionFor, commandOf } from './acp/mapping';
-export { McpClient, type McpServerConfig, type McpState, type McpToolInfo } from './mcp/McpClient';
-export { McpManager, type McpServerStatus, mcpToolName } from './mcp/McpManager';
+export { MAX_RESULT_CHARS, McpClient, type McpServerConfig, type McpState, type McpToolInfo, truncateResult } from './mcp/McpClient';
+export {
+  capMcpTools,
+  MCP_LIMIT_DEFAULTS,
+  MCP_LIMIT_RANGES,
+  type McpLimits,
+  McpManager,
+  type McpServerLimits,
+  type McpServerStatus,
+  mcpToolName,
+  readMcpLimits,
+  readMcpServerLimits,
+} from './mcp/McpManager';
 export {
   buildCatalogServer,
   type CatalogBuild,

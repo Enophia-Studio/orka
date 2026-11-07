@@ -131,8 +131,11 @@ export interface OrchestratorOptions {
   getLightProvider?: () => AIProvider | undefined;
   /** Snapshots around terminal commands, so the files they change can be reverted. */
   commandSnapshots?: ShadowGit;
-  /** More tools for new tasks, e.g. from MCP servers; loaded when a task starts and frozen with it. */
-  getExtraTools?: () => Promise<Tool[]>;
+  /**
+   * More tools for new tasks, e.g. from MCP servers; loaded when a task starts and frozen with it.
+   * Notices (some tools left out by a limit) are shown to the user.
+   */
+  getExtraTools?: () => Promise<Tool[] | { tools: Tool[]; notices?: string[] }>;
   /**
    * A third-party coding agent (Gemini CLI, Codex, ...) as the main agent, over ACP; read when a
    * request starts. While it returns a runtime, requests run in the agent's own loop and
@@ -425,7 +428,9 @@ export class Orchestrator {
     this.extraLoaded = true;
     if (!this.options.getExtraTools) return;
     try {
-      this.extraTools = await this.options.getExtraTools();
+      const extra = await this.options.getExtraTools();
+      this.extraTools = Array.isArray(extra) ? extra : extra.tools;
+      for (const message of Array.isArray(extra) ? [] : (extra.notices ?? [])) this.emit({ type: 'notice', level: 'info', message });
     } catch (error) {
       this.extraTools = [];
       this.emit({ type: 'notice', level: 'warning', message: t('MCP tools are not available: {error}', { error: errorMessage(error) }) });
