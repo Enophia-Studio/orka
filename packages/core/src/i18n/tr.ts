@@ -1839,4 +1839,21 @@ export const TR: Record<string, string> = {
   'You have the page: the agent can only look at it until you give it back.': 'Sayfa sende: sen geri verene kadar Agent sayfaya yalnızca bakabilir.',
   'The agent and you share this browser. It closes with the session; nothing is recorded.': 'Bu tarayıcıyı Agent ile paylaşıyorsun. Oturumla birlikte kapanır; hiçbir şey kaydedilmez.',
   'Only http and https addresses open here.': 'Burada yalnızca http ve https adresleri açılır.',
+  // Wait reasons, retries and stopping one tool
+  'Starting {agent}': '{agent} başlatılıyor',
+  'Starting the CLI': 'CLI başlatılıyor',
+  'Running {tool}': '{tool} çalışıyor',
+  'Waiting for your approval': 'Onayın bekleniyor',
+  'Retrying in {n}s (attempt {attempt}/{max})': '{n} sn sonra yeniden deneniyor (deneme {attempt}/{max})',
+  'Rate limited until {time} (attempt {attempt}/{max})': '{time} saatine kadar rate limit (deneme {attempt}/{max})',
+  'Compacting the conversation': 'Konuşma compact ediliyor',
+  'Waiting for the {agent} sub-agent': '{agent} sub-agent bekleniyor',
+  'Waiting for a sub-agent': 'Bir sub-agent bekleniyor',
+  'The conversation is intact: send "continue" to try again.': 'Konuşma yerinde duruyor: yeniden denemek için "continue" gönder.',
+  'What it changed so far stays under Changes. Send "continue" to resume.': 'Şimdiye kadar değiştirdikleri Değişiklikler altında duruyor. Kaldığı yerden sürdürmek için "continue" gönder.',
+  'Stop this tool': 'Bu aracı durdur',
+  'Retries after a connection or server error': 'Bağlantı veya sunucu hatasından sonra yeniden deneme',
+  'A dropped connection, a server error, an overloaded model or a short rate limit is tried again after a growing wait. 0 = never.':
+    'Kopan bağlantı, sunucu hatası, aşırı yüklü model veya kısa bir rate limit, giderek uzayan bir beklemeden sonra yeniden denenir. 0 = hiç.',
+  '(The answer was cut off; it starts again.)': '(Yanıt yarıda kesildi; baştan başlıyor.)',
 };

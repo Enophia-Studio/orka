@@ -11,8 +11,10 @@ import {
   type AIProvider,
   type ChatRequest,
   type ChatResponse,
+  isConnectionError,
   ProviderError,
   type ProviderStreamEvent,
+  retryAfterFrom,
   type StopReason,
 } from './AIProvider';
 
@@ -67,7 +69,7 @@ export class OpenAIProvider implements AIProvider {
     const calls = new Map<number, { id: string; name: string; args: string }>();
 
     try {
-      const stream = await this.client.chat.completions.create(params, { signal: request.signal });
+      const stream = await this.client.chat.completions.create(params, { signal: request.signal, ...(request.selfRetry ? { maxRetries: 0 } : {}) });
       for await (const chunk of stream as AsyncIterable<ChatCompletionChunk>) {
         if (chunk.model) servedModel = chunk.model;
         if (chunk.usage) {
@@ -222,8 +224,9 @@ function mapApiError(error: unknown): Error {
   if (error instanceof OpenAI.AuthenticationError || error instanceof OpenAI.PermissionDeniedError) {
     return new ProviderError(`OpenAI rejected the API key (${error.status}). ${error.message}`, 'auth', error.status);
   }
+  const retry = error instanceof OpenAI.APIError ? { retryAfterMs: retryAfterFrom(error.headers) } : {};
   if (error instanceof OpenAI.RateLimitError) {
-    return new ProviderError(`OpenAI rate limit reached. ${error.message}`, 'rate_limit', error.status);
+    return new ProviderError(`OpenAI rate limit reached. ${error.message}`, 'rate_limit', error.status, undefined, retry);
   }
   if (error instanceof OpenAI.BadRequestError || error instanceof OpenAI.NotFoundError) {
     return new ProviderError(`OpenAI rejected the request: ${error.message}`, 'bad_request', error.status);
@@ -232,8 +235,10 @@ function mapApiError(error: unknown): Error {
     return new ProviderError(`Could not reach the OpenAI API: ${error.message}`, 'network');
   }
   if (error instanceof OpenAI.APIError) {
-    return new ProviderError(`OpenAI API error: ${error.message}`, 'server', error.status);
+    return new ProviderError(`OpenAI API error: ${error.message}`, 'server', error.status, undefined, retry);
   }
+  // A stream cut mid-answer (connection reset): the caller may try again.
+  if (isConnectionError(error)) return new ProviderError(`The connection to the OpenAI API broke off: ${(error as Error).message}`, 'network');
   return error instanceof Error ? error : new Error(String(error));
 }
 

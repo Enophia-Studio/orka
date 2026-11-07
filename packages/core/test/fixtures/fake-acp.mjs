@@ -4,7 +4,7 @@
 //   {toolCall: {id, title, kind, status, locations, rawInput, content}} {toolCallUpdate: {id, status, text}}
 //   {permission: {id, title, kind, rawInput, locations, diff: {path, oldText, newText}}}
 //   {readFile: {path, line, limit}} {writeFile: {path, content}} {directWrite: {path, content}}
-//   {terminal: {command, args, cwd}} {hang: true} {stop: "end_turn" | "refusal" | ...}
+//   {terminal: {command, args, cwd}} {hang: true} {stop: "end_turn" | "refusal" | ...} {exit: code} (dies mid-turn)
 //   {rename: {from, to}} (the agent's own tool, like directWrite)
 // Every message and answer is logged as a JSON line to FAKE_ACP_LOG. FAKE_ACP_NEEDS_LOGIN=1 makes
 // session/new fail with "auth required"; FAKE_ACP_IMAGES=1 advertises image prompts;
@@ -136,7 +136,8 @@ async function runTurn(sessionId, steps) {
   try {
     for (const step of steps) {
       if (cancelled) return 'cancelled';
-      if (step.chunk !== undefined) update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: step.chunk } });
+      if (step.exit !== undefined) process.exit(step.exit);
+      else if (step.chunk !== undefined) update(sessionId, { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: step.chunk } });
       else if (step.thought !== undefined) update(sessionId, { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: step.thought } });
       else if (step.usage) update(sessionId, { sessionUpdate: 'usage_update', ...step.usage });
       else if (step.plan) update(sessionId, { sessionUpdate: 'plan', entries: step.plan.map((e) => ({ priority: 'medium', status: 'pending', ...e })) });

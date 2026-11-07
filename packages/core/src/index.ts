@@ -34,6 +34,7 @@ export {
   type SupervisorSettings,
 } from './supervisor/Supervisor';
 export * from './ui/transcript';
+export { clockTime, toolLabel, waitCountsDown, waitLabel } from './ui/waitStatus';
 export * from './radar';
 export { type CostEstimate, estimateCost, isPrice, type Price, type PriceTable } from './usage/pricing';
 export { FileTaskStore, newTaskId, type TaskSnapshot, type TaskSummary } from './persistence/TaskStore';

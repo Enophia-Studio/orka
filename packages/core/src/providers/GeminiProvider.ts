@@ -5,6 +5,7 @@ import {
   type AIProvider,
   type ChatRequest,
   type ChatResponse,
+  isConnectionError,
   ProviderError,
   type ProviderStreamEvent,
   type StopReason,
@@ -203,12 +204,19 @@ function mapFinishReason(reason: string | undefined, blockReason: string | undef
 function mapError(error: unknown): Error {
   if (error instanceof ApiError) {
     if (error.status === 401 || error.status === 403) return new ProviderError(`Gemini rejected the API key (${error.status}). ${error.message}`, 'auth', error.status);
-    if (error.status === 429) return new ProviderError(`Gemini rate limit reached. ${error.message}`, 'rate_limit', error.status);
+    const retry = { retryAfterMs: geminiRetryDelay(error.message) };
+    if (error.status === 429) return new ProviderError(`Gemini rate limit reached. ${error.message}`, 'rate_limit', error.status, undefined, retry);
     if (error.status >= 400 && error.status < 500) return new ProviderError(`Gemini rejected the request: ${error.message}`, 'bad_request', error.status);
-    return new ProviderError(`Gemini API error: ${error.message}`, 'server', error.status);
+    return new ProviderError(`Gemini API error: ${error.message}`, 'server', error.status, undefined, retry);
   }
-  if (error instanceof Error && /fetch failed|ECONNREFUSED|ENOTFOUND|network/i.test(error.message)) {
+  if (error instanceof Error && (isConnectionError(error) || /ECONNREFUSED|ENOTFOUND|network/i.test(error.message))) {
     return new ProviderError(`Could not reach the Gemini API: ${error.message}`, 'network');
   }
   return error instanceof Error ? error : new Error(String(error));
+}
+
+/** The wait Gemini asks for in its error body (a RetryInfo "retryDelay": "30s"), in ms. */
+export function geminiRetryDelay(message: string): number | undefined {
+  const match = /"retryDelay"\s{0,4}:\s{0,4}"(\d{1,6}(?:\.\d{1,3})?)s"/.exec(message);
+  return match ? Math.round(Number(match[1]) * 1000) : undefined;
 }

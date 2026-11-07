@@ -5,8 +5,10 @@
 // FAKE_CC_LOG: file that receives one JSON line per received user message.
 // FAKE_CC_HOLD: a file; each reply streams its first part, then waits until that file exists
 //   (a turn that is still running meanwhile), and removes it, so the next reply waits again.
+// FAKE_CC_CRASHED: a file; a "__CRASH_ONCE__:text" reply streams a little and exits (code 3) while
+//   the file is missing, then creates it, so the next process answers with the text.
 // "--version" and "auth status" answer at once, as the real CLI does.
-import { appendFileSync, existsSync, rmSync } from 'node:fs';
+import { appendFileSync, existsSync, rmSync, writeFileSync } from 'node:fs';
 
 const replies = JSON.parse(process.env.FAKE_CC_SCRIPT || '[]');
 const log = process.env.FAKE_CC_LOG;
@@ -56,12 +58,23 @@ async function handle(message) {
     if (!reply.events.some((e) => e.type === 'result')) out({ type: 'result', subtype: 'success', is_error: false, result: '', stop_reason: 'end_turn', usage: {} });
     return;
   }
+  if (typeof reply === 'string' && reply.startsWith('__CRASH_ONCE__:') && !existsSync(process.env.FAKE_CC_CRASHED)) {
+    writeFileSync(process.env.FAKE_CC_CRASHED, 'crashed');
+    out({ type: 'stream_event', event: { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Half an ans' } } });
+    setTimeout(() => process.exit(3), 50);
+    return;
+  }
+  if (typeof reply === 'string' && reply.startsWith('__CRASH_ONCE__:')) return answer(reply.slice('__CRASH_ONCE__:'.length));
   if (reply.startsWith('__ERROR__:')) {
     const error = reply.slice('__ERROR__:'.length);
     out({ type: 'assistant', message: { content: [{ type: 'text', text: error }] } });
     out({ type: 'result', subtype: 'success', is_error: true, result: error, usage: {} });
     return;
   }
+  return answer(reply);
+}
+
+async function answer(reply) {
   out({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'pondering' } } });
   // Stream in small uneven chunks so tags get split across deltas.
   for (let i = 0; i < reply.length; i += 7) {

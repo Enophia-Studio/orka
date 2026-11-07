@@ -4,7 +4,7 @@
  * a future desktop renderer alike.
  */
 import type { FileChange } from '../changes/ChangeTracker';
-import type { AgentEvent, AgentPhase, AgentUsage, CompactionView, ContextFill, NoticeLevel, SupervisorScope, SupervisorStatus, ToolCallView } from '../orchestrator/events';
+import type { AgentEvent, AgentPhase, AgentUsage, CompactionView, ContextFill, NoticeLevel, SupervisorScope, SupervisorStatus, ToolCallView, WaitStatus } from '../orchestrator/events';
 import type { Plan } from '../planning/Plan';
 import type { Usage } from '../types';
 
@@ -38,6 +38,8 @@ export interface SessionView {
   usageByAgent?: AgentUsage[];
   /** How full the main agent's context is (none: its provider does not say). */
   context?: ContextFill;
+  /** Why the running request waits (none while idle). */
+  wait?: WaitStatus;
 }
 
 const MAX_LIVE_OUTPUT = 20_000;
@@ -61,12 +63,16 @@ export function applyEvent(state: SessionView, event: AgentEvent): string | unde
       return undefined;
     case 'run_finished':
       state.running = false;
+      state.wait = undefined;
       for (const item of state.items) if (item.kind === 'assistant') item.streaming = false;
       // Drop assistant bubbles that ended up empty (turns that only called tools).
       state.items = state.items.filter((i) => !(i.kind === 'assistant' && !i.text.trim() && !i.reasoning.trim()));
       return undefined;
     case 'phase':
       state.phase = event.phase;
+      return undefined;
+    case 'wait':
+      state.wait = event.wait;
       return undefined;
     case 'plan':
       state.plan = event.plan;
@@ -101,6 +107,15 @@ export function applyEvent(state: SessionView, event: AgentEvent): string | unde
     case 'reasoning_delta': {
       const item = find(state, event.id, 'assistant');
       if (item) item.reasoning += event.text;
+      return event.id;
+    }
+    case 'assistant_retry': {
+      // The next attempt streams the whole answer again: nothing is shown twice.
+      const item = find(state, event.id, 'assistant');
+      if (item) {
+        item.text = '';
+        item.reasoning = '';
+      }
       return event.id;
     }
     case 'assistant_end': {
@@ -178,7 +193,7 @@ export function slimSession(state: SessionView, maxChars = 4_000): SessionView {
         sub: item.sub ? { ...item.sub, running: false, items: slimItems(item.sub.items) } : undefined,
       };
     });
-  return { ...state, running: false, phase: 'idle', items: slimItems(state.items) };
+  return { ...state, running: false, phase: 'idle', wait: undefined, items: slimItems(state.items) };
 }
 
 /** Find a tool item at any nesting depth. */
