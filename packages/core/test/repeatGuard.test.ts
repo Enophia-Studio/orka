@@ -27,6 +27,14 @@ describe('RepeatGuard', () => {
     assert.equal(guard.push(`${long}\n${long}\n${long}\n${long}\n`), undefined);
   });
 
+  it('allows far more repeats in a code block: a tilemap or a YAML excerpt may repeat a line on purpose', () => {
+    const guard = new RepeatGuard(3);
+    assert.equal(guard.push(`Here:\n\`\`\`csharp\n${'{0,0,0},\n'.repeat(29)}~~~\n\`\`\`\n`), undefined);
+    assert.equal(guard.push(`~~~yaml\n${'- {fileID: 0}\n'.repeat(29)}~~~\n`), undefined);
+    assert.equal(guard.push('again\nagain\nagain\n'), 'again', 'after the block, a loop counts as before');
+    assert.equal(guard.push(`\`\`\`\n${'x\n'.repeat(30)}`), 'x', 'a block that only loops is still stopped');
+  });
+
   it('keeps one copy of the line when the answer is cut', () => {
     assert.equal(collapseRepeats('Intro\n_placeholder\n_placeholder\n\n_placeholder', '_placeholder'), 'Intro\n_placeholder');
   });
