@@ -1293,20 +1293,43 @@ function stripVersion(spec: string): string {
   return (at > 0 ? spec.slice(0, at) : spec).toLowerCase();
 }
 
-/** The catalog entry a configured server came from: the same name, the same URL, or the same package. */
+/**
+ * The catalog entry a configured server came from: the same URL, or the same package (with the
+ * options that pick one of several entries of one package, such as --prebuilt=mysql). A name
+ * alone is not enough: a hand-made "mysql" server that runs another package is not the catalog's.
+ * When several entries still fit, none is named.
+ */
 export function findCatalogEntry(name: string, config: McpServerConfig, platform: string): McpCatalogEntry | undefined {
   const byName = catalogEntry(name);
-  if (byName && byName.transport === ('url' in config ? 'http' : 'stdio')) return byName;
   if ('url' in config) {
     const bare = (u: string) => u.split('?')[0].replace(/\/+$/, '').toLowerCase();
-    return MCP_CATALOG.find((e) => e.transport === 'http' && e.url && bare(e.url) === bare(config.url));
+    const fits = MCP_CATALOG.filter((e) => e.transport === 'http' && e.url && bare(e.url) === bare(config.url));
+    return byName && fits.includes(byName) ? byName : fits.length === 1 ? fits[0] : undefined;
   }
   const own = packageOf(config);
-  if (!own) return undefined;
-  return MCP_CATALOG.find((e) => {
+  const fits = MCP_CATALOG.filter((e) => {
     const launch = e.transport === 'stdio' ? catalogLaunch(e, platform) : undefined;
-    return !!launch && packageOf(launch) === own;
+    if (!launch) return false;
+    const theirs = packageOf(launch);
+    // A local program (no package runner): the same command line, by name only.
+    if (!theirs) return e === byName && sameCommandLine(launch, config);
+    return theirs === own;
   });
+  if (byName && fits.includes(byName) && (fits.length === 1 || choosesVariant(byName, config, platform))) return byName;
+  const variants = fits.length > 1 ? fits.filter((e) => choosesVariant(e, config, platform)) : fits;
+  return variants.length === 1 ? variants[0] : undefined;
+}
+
+/** The server passes every "--option=value" the entry passes (what tells entries of one package apart). */
+function choosesVariant(entry: McpCatalogEntry, config: { args?: string[] }, platform: string): boolean {
+  const own = new Set((config.args ?? []).map((a) => a.toLowerCase()));
+  const options = (catalogLaunch(entry, platform)?.args ?? []).filter((a) => a.startsWith('--') && a.includes('=') && !a.includes('{'));
+  return options.every((a) => own.has(a.toLowerCase()));
+}
+
+function sameCommandLine(launch: McpCatalogLaunch, config: { command: string; args?: string[] }): boolean {
+  const line = (command: string, args: string[] = []) => [command, ...args].join(' ').toLowerCase();
+  return line(launch.command, launch.args) === line(config.command, config.args);
 }
 
 /** A free name for a new server from this entry: its id, else id-2, id-3, ... */

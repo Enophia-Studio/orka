@@ -141,6 +141,19 @@ describe('MCP catalog', () => {
     assert.equal(findCatalogEntry('mine', { command: 'node', args: ['server.js'] }, 'linux'), undefined);
     // A same-named server of the other transport is not that entry.
     assert.equal(findCatalogEntry('playwright', { url: 'http://localhost:9999/mcp' }, 'linux'), undefined);
+    // Entries of one package are told apart by the option that picks the variant.
+    const toolbox = (db: string) => ({ command: 'npx', args: ['-y', '@toolbox-sdk/server', `--prebuilt=${db}`, '--stdio'] });
+    assert.equal(findCatalogEntry('mysql-db', toolbox('mysql'), 'win32')?.id, 'toolbox-mysql');
+    assert.equal(findCatalogEntry('toolbox-mysql-2', toolbox('mysql'), 'win32')?.id, 'toolbox-mysql');
+    assert.equal(findCatalogEntry('toolbox-postgres', toolbox('sqlite'), 'win32')?.id, 'toolbox-sqlite');
+    assert.equal(findCatalogEntry('db', toolbox('oracle'), 'win32'), undefined, 'none when no variant fits');
+    assert.equal(findCatalogEntry('db', { command: 'npx', args: ['-y', '@toolbox-sdk/server', '--stdio'] }, 'win32'), undefined, 'none when several fit');
+    // A hand-made server that shares an entry's name but runs another package is not that entry.
+    assert.equal(findCatalogEntry('mysql', { command: 'uvx', args: ['some-other-mysql-mcp'] }, 'linux'), undefined);
+    assert.equal(findCatalogEntry('memory', { command: 'node', args: ['my-memory.js'] }, 'linux'), undefined);
+    assert.equal(findCatalogEntry('context7', { url: 'https://example.org/mcp' }, 'linux'), undefined);
+    // The same name with the entry's own package still matches, options aside.
+    assert.equal(findCatalogEntry('postgres-mcp-pro', { command: 'uvx', args: ['postgres-mcp', '--access-mode=unrestricted'] }, 'linux')?.id, 'postgres-mcp-pro');
   });
 
   it('picks a free server name', () => {
