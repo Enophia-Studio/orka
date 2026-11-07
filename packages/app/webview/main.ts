@@ -2,6 +2,7 @@ import type { AgentEvent, AgentPhase, AgentUsage, FileChange, ModelInfo, Plan, S
 import { getLocale, setLocale, t, tn } from '@orka/core/src/i18n';
 import { isSecretFile } from '@orka/core/src/permissions/secrets';
 import { applyEvent, emptySession } from '@orka/core/src/ui/transcript';
+import { catalogEntry } from '@orka/core/src/mcp/catalog';
 import { estimateCost } from '@orka/core/src/usage/pricing';
 import orkaLogo from '../media/orka-logo.svg';
 import type {
@@ -32,6 +33,7 @@ import { accountKey, accountMenuHtml, accountsEntryHtml, accountsTabHtml, addAcc
 import { answerDialog, askInPage, closeDialog, modalOpen, showDialog } from './features/dialogs';
 import { folderPickerCreated, folderPickerListing, openFolderPicker } from './features/folderPicker';
 import { hunksHtml } from './features/hunks';
+import { catalogFormHtml, catalogHtml, catalogListHtml, type CatalogState, missingFields } from './features/mcpCatalog';
 import { contextRing, effortLabel, modelButtonHtml, modelMenuHtml } from './features/modelMenu';
 import { radarBadge, radarLabel, radarPanelHtml, radarSettingsCard } from './features/radar';
 import {
@@ -422,6 +424,62 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && addAccount && !modalOpen()) {
     e.preventDefault();
     closeAddAccount();
+  }
+});
+
+/** Settings > MCP: the user's servers or Orka's catalog; the catalog's search, filter and open details. */
+let mcpView: 'servers' | 'catalog' = 'servers';
+const catalog: CatalogState = { query: '', category: '', open: new Set() };
+/** The catalog's Add form (an entry with fields), with the required fields found empty. */
+let catalogForm: { id: string; missing: string[] } | undefined;
+const catalogLayer = document.createElement('div');
+catalogLayer.className = 'catalog-layer';
+document.body.appendChild(catalogLayer);
+
+function openCatalogForm(id: string, missing: string[] = []): void {
+  const entry = catalogEntry(id);
+  if (!entry) return;
+  // Values typed so far stay when the form is drawn again (to mark empty required fields).
+  const typed = catalogValues();
+  catalogForm = { id, missing };
+  catalogLayer.innerHTML = `<div class="modal-backdrop" data-action="catalog-form-close">${catalogFormHtml(entry, missing)}</div>`;
+  for (const input of catalogLayer.querySelectorAll<HTMLInputElement>('[data-catalog-field]')) {
+    const value = typed[input.dataset.catalogField!];
+    if (value !== undefined) input.value = value;
+  }
+  (catalogLayer.querySelector<HTMLElement>('[aria-invalid="true"]') ?? catalogLayer.querySelector<HTMLElement>('[data-catalog-field]') ?? catalogLayer.querySelector<HTMLElement>('.btn.primary'))?.focus();
+}
+
+/** The values in the open form; cleared from the page as soon as the form closes. */
+function catalogValues(): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const input of catalogLayer.querySelectorAll<HTMLInputElement>('[data-catalog-field]')) values[input.dataset.catalogField!] = input.value;
+  return values;
+}
+
+function closeCatalogForm(): void {
+  if (!catalogForm) return;
+  catalogForm = undefined;
+  catalogLayer.innerHTML = '';
+}
+
+/** Add from the catalog: an entry with fields asks for them first; the app always asks for consent before anything is written. */
+function addFromCatalog(id: string, values: Record<string, string> = {}): void {
+  post({ type: 'addMcpFromCatalog', id, values });
+}
+
+// Typing in the catalog's search box redraws only the list, so the box keeps its focus.
+document.addEventListener('input', (e) => {
+  const target = e.target as HTMLElement;
+  if (target.id !== 'mcp-catalog-search') return;
+  catalog.query = (target as HTMLInputElement).value;
+  renderCatalogList();
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && catalogForm && !modalOpen()) {
+    e.preventDefault();
+    closeCatalogForm();
   }
 });
 
@@ -1840,7 +1898,7 @@ document.addEventListener(
   (e) => {
     if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing || !session.running || !workView()) return;
     const overlay =
-      modalOpen() || ui.modelMenuOpen || ui.agentsOpen || !!sessionMenu || !!addAccount || (!!el.composerMenu && !el.composerMenu.hidden) || (!!composer.suggest && !el.suggest.hidden);
+      modalOpen() || ui.modelMenuOpen || ui.agentsOpen || !!sessionMenu || !!addAccount || !!catalogForm || (!!el.composerMenu && !el.composerMenu.hidden) || (!!composer.suggest && !el.suggest.hidden);
     if (overlay) return;
     const target = e.target;
     if (target !== el.input && target !== document.body && !(target instanceof Node && el.transcript.contains(target))) return;
@@ -2457,6 +2515,41 @@ document.addEventListener('click', (e) => {
     case 'edit-mcp':
       post({ type: 'editMcpServers' });
       break;
+    case 'mcp-view':
+      mcpView = target.dataset.view === 'catalog' ? 'catalog' : 'servers';
+      renderSettings();
+      break;
+    case 'catalog-details':
+      if (catalog.open.has(id!)) catalog.open.delete(id!);
+      else catalog.open.add(id!);
+      renderCatalogList();
+      break;
+    case 'catalog-add': {
+      const entry = catalogEntry(id);
+      if (entry?.fields.length) openCatalogForm(entry.id);
+      else if (entry) addFromCatalog(entry.id);
+      break;
+    }
+    case 'catalog-link':
+      post({ type: 'openMcpCatalogLink', id: id!, link: target.dataset.link === 'setup' ? 'setup' : target.dataset.link === 'field' ? 'field' : 'homepage', field: target.dataset.field });
+      break;
+    case 'catalog-form-submit': {
+      const entry = catalogEntry(id);
+      if (!entry) break;
+      const values = catalogValues();
+      const missing = missingFields(entry, values);
+      if (missing.length) {
+        openCatalogForm(entry.id, missing);
+        break;
+      }
+      closeCatalogForm();
+      addFromCatalog(entry.id, values);
+      break;
+    }
+    case 'catalog-form-close':
+      // The backdrop closes the form only when clicked itself, not through the form.
+      if (target === clicked || target.tagName === 'BUTTON') closeCatalogForm();
+      break;
     case 'reload-skills':
       post({ type: 'reloadSkills' });
       break;
@@ -2506,6 +2599,11 @@ document.addEventListener('change', (e) => {
       if (go) post({ type: 'selectFolder', path: folder });
       else target.value = config?.folder ?? '';
     });
+    return;
+  }
+  if (target instanceof HTMLSelectElement && target.id === 'mcp-catalog-category') {
+    catalog.category = target.value;
+    renderCatalogList();
     return;
   }
   if (target instanceof HTMLInputElement && target.dataset.mcp) {
@@ -3401,9 +3499,23 @@ function skillsTab(): string {
     <p class="footnote">${escapeHtml(t('Your skills folder: {path}. A skill is a Markdown file with a name and a description at the top; a file with the name of a built-in skill replaces it.', { path: config.skillsFolder }))}</p>`;
 }
 
+/** Servers (the user's list) or Catalog (Orka's bundled list to add from). */
+function mcpViewSwitch(): string {
+  const button = (view: 'servers' | 'catalog', label: string) =>
+    `<button class="seg-btn" role="radio" aria-checked="${mcpView === view}" data-action="mcp-view" data-view="${view}">${escapeHtml(label)}</button>`;
+  return `<div class="seg mcp-view" role="radiogroup" aria-label="MCP">${button('servers', t('My servers'))}${button('catalog', t('Catalog'))}</div>`;
+}
+
+/** The catalog's list alone (search and filter changes), so the search box keeps its focus. */
+function renderCatalogList(): void {
+  const list = document.getElementById('mcp-catalog-list');
+  if (list && config) list.innerHTML = catalogListHtml(catalog, config.mcp.servers, config.mcp.platform);
+}
+
 function mcpTab(): string {
   if (!config) return '';
   const m = config.mcp;
+  if (mcpView === 'catalog') return `${mcpViewSwitch()}${catalogHtml(catalog, m.servers, m.platform)}`;
   const state = (s: McpServerView) =>
     !s.enabled
       ? statusPill(false, t('Off'))
@@ -3428,6 +3540,7 @@ function mcpTab(): string {
     )
     .join('');
   return `
+    ${mcpViewSwitch()}
     <div class="card">
       <div class="card-head">${icon('plug', 'sub')}<strong>MCP</strong><span class="spacer"></span>
         <label class="switch"><input type="checkbox" data-setting="mcp.enabled"${m.enabled ? ' checked' : ''}> ${escapeHtml(m.enabled ? t('On') : t('Off'))}</label></div>
@@ -3435,12 +3548,13 @@ function mcpTab(): string {
         t('MCP servers give the agents tools that work outside the project: the Unity Editor, Blender, a browser, a database… They start when a task needs them. Tools a server marks as destructive always ask first.'),
       )}</div>
       <div class="key-row">
-        <button class="btn primary" data-action="import-mcp">${escapeHtml(t('Import from Claude Code'))}</button>
+        <button class="btn primary" data-action="mcp-view" data-view="catalog">${icon('plus')}${escapeHtml(t('Add from catalog'))}</button>
+        <button class="btn" data-action="import-mcp">${escapeHtml(t('Import from Claude Code'))}</button>
         <button class="btn" data-action="edit-mcp">${escapeHtml(t('Edit list'))}</button>
         <button class="icon-btn" data-action="restart-mcp" aria-label="${attr(t('Restart servers'))}" title="${attr(t('Restart servers'))}">${icon('refresh')}</button>
       </div>
     </div>
-    <div class="card skills-list">${rows || `<p class="footnote">${escapeHtml(t('No MCP servers yet. Import yours from Claude Code, or add them to the list (settings.json).'))}</p>`}</div>
+    <div class="card skills-list">${rows || `<p class="footnote">${escapeHtml(t('No MCP servers yet. Add one from the catalog, import yours from Claude Code, or add them to the list (settings.json).'))}</p>`}</div>
     <p class="footnote">${escapeHtml(t('A server is a command (stdio) or a URL (HTTP). A .mcp.json in the project folder is used after you allow it once.'))}</p>`;
 }
 
@@ -3628,8 +3742,10 @@ function aboutCard(app: ConfigView['app']): string {
 function renderSettings(): void {
   el.settings.hidden = ui.view !== 'settings' || !config;
   if (el.settings.hidden || !config) return;
-  // Keep scroll when settings re-render after a change.
+  // Keep scroll when settings re-render after a change, and the catalog's search box its focus and caret.
   const scroll = el.settings.scrollTop;
+  const search = document.activeElement instanceof HTMLInputElement && document.activeElement.id === 'mcp-catalog-search' ? document.activeElement : undefined;
+  const caret = search ? [search.selectionStart, search.selectionEnd] : undefined;
   const tabs: Array<[SettingsTab, string]> = [
     ['agents', 'Agents'],
     ['accounts', t('Accounts')],
@@ -3656,6 +3772,11 @@ function renderSettings(): void {
       .join('')}</nav>
     <div class="settings-body">${body}</div>`;
   el.settings.scrollTop = scroll;
+  const searchAgain = caret && document.getElementById('mcp-catalog-search');
+  if (caret && searchAgain instanceof HTMLInputElement) {
+    searchAgain.focus();
+    searchAgain.setSelectionRange(caret[0], caret[1]);
+  }
 }
 
 function renderView(): void {
@@ -4445,6 +4566,7 @@ window.addEventListener('message', (e: MessageEvent<ToWebview>) => {
     case 'showSettings':
       ui.view = 'settings';
       if (message.tab) ui.tab = message.tab;
+      if (message.mcp) mcpView = message.mcp;
       if (ui.tab === 'skills') post({ type: 'reloadSkills' });
       if (ui.tab === 'accounts') checkAccountsOnce();
       renderView();

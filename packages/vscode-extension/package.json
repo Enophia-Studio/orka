@@ -187,6 +187,11 @@
         "icon": "$(plug)"
       },
       {
+        "command": "orka.showMcpCatalog",
+        "title": "%command.showMcpCatalog%",
+        "category": "Orka"
+      },
+      {
         "command": "orka.importMcpFromClaude",
         "title": "%command.importMcpFromClaude%",
         "category": "Orka"

@@ -36,6 +36,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     vscode.commands.registerCommand('orka.handoffFreebuff', () => controller.handOff('freebuff')),
     vscode.commands.registerCommand('orka.importMcpFromClaude', () => controller.importMcpFromClaude()),
     vscode.commands.registerCommand('orka.showMcp', () => controller.showSettings('mcp')),
+    vscode.commands.registerCommand('orka.showMcpCatalog', () => controller.showSettings('mcp', 'catalog')),
     ...registerQuickActions((text) => controller.ask(text)),
     vscode.commands.registerCommand('orka.keepHunk', (uri: vscode.Uri, index: number) => controller.keepHunk(uri.fsPath, index)),
     vscode.commands.registerCommand('orka.revertHunkInline', (uri: vscode.Uri, index: number) => controller.revertHunk(uri.fsPath, index)),

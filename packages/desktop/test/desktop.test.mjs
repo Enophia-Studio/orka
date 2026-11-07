@@ -1204,6 +1204,51 @@ globalThis.fetch = (input, init) => {
     }
   });
 
+  it('adds an MCP server from the bundled catalog only after the consent dialog, and never shows its key again', async () => {
+    const key = 'BSA-e2e-secret-key';
+    const url = await launch();
+    await browser.navigate(url);
+    await until(async () => (await text()).includes('What should we build?'), 'the chat UI');
+    await browser.clickSelector('[data-action="open-settings"]');
+    await browser.clickSelector('[data-action="tab"][data-tab="mcp"]');
+    await browser.clickSelector('[data-action="mcp-view"][data-view="catalog"]');
+    await until(() => browser.evaluate('!!document.getElementById("mcp-catalog-search")'), 'the catalog');
+    // Searching redraws only the list: the box keeps its focus.
+    await browser.evaluate(`(() => { const box = document.getElementById('mcp-catalog-search'); box.focus(); box.value = 'brave'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+    assert.deepEqual(await browser.evaluate('[...document.querySelectorAll(".catalog-row")].map((r) => r.dataset.entry)'), ['brave-search']);
+    assert.equal(await browser.evaluate('document.activeElement.id'), 'mcp-catalog-search');
+
+    const fill = async () => {
+      await browser.clickSelector('[data-action="catalog-add"][data-id="brave-search"]');
+      await until(() => browser.evaluate('!!document.querySelector(".catalog-form [data-catalog-field=BRAVE_API_KEY]")'), 'the Add form');
+      assert.equal(await browser.evaluate('document.querySelector("[data-catalog-field=BRAVE_API_KEY]").type'), 'password');
+      await browser.evaluate(`document.querySelector('[data-catalog-field=BRAVE_API_KEY]').value = ${JSON.stringify(key)}`);
+      await browser.clickSelector('[data-action="catalog-form-submit"]');
+      await until(() => browser.evaluate('!!document.querySelector(".modal-backdrop .dialog[role=alertdialog]")'), 'the consent dialog');
+    };
+    await fill();
+    const consent = await browser.evaluate('document.querySelector(".modal-backdrop .dialog").textContent');
+    assert.match(consent, /npx -y @brave\/brave-search-mcp-server --transport stdio/, 'the exact command');
+    assert.match(consent, /downloads this third-party server/);
+    assert.ok(!consent.includes(key), 'the key is not in the dialog');
+    assert.equal(await browser.evaluate('document.querySelectorAll("[data-catalog-field]").length'), 0, 'the form and its values are gone');
+    // Cancel: nothing written.
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-cancel"]');
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(settingsFile().mcpServers, undefined);
+
+    await fill();
+    await browser.clickSelector('.modal-backdrop [data-action="dialog-action"]');
+    await until(() => settingsFile().mcpServers?.['brave-search'], 'the server in the settings');
+    assert.deepEqual(settingsFile().mcpServers['brave-search'], {
+      command: 'npx',
+      args: ['-y', '@brave/brave-search-mcp-server', '--transport', 'stdio'],
+      env: { BRAVE_API_KEY: key },
+    });
+    await until(() => browser.evaluate('!!document.querySelector(".catalog-row[data-entry=brave-search] .pill.ok")'), 'shown as added');
+    assert.ok(!(await browser.evaluate(`document.documentElement.outerHTML.includes(${JSON.stringify(key)})`)), 'the key is never on the page');
+  });
+
   it("offers the agent's own model and thought level in the message box menu, and shows how full the context is", async () => {
     const log = path.join(home, 'fake-acp.log');
     addSettings({ ...fakeAgentSettings, provider: 'agent:custom:fake', 'agentClis.enabled': ['custom:fake'] });

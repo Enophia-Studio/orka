@@ -202,7 +202,8 @@ export interface ConfigView {
   skills: SkillView[];
   skillErrors: string[];
   skillsFolder: string;
-  mcp: { enabled: boolean; servers: McpServerView[] };
+  /** platform: the system the app runs on (process.platform), for which catalog servers can run. */
+  mcp: { enabled: boolean; servers: McpServerView[]; platform: string };
   /** Agents that run on their own in a terminal (Freebuff); Orka hands tasks over to them. */
   externalAgents: ExternalAgentView[];
   pricing: PriceTable;
@@ -293,6 +294,8 @@ export interface McpServerView {
   state: 'idle' | 'starting' | 'ready' | 'error' | 'closed';
   tools: number;
   error?: string;
+  /** The MCP catalog entry it came from (added from the catalog, imported, or the same package or URL). */
+  catalogId?: string;
 }
 
 export interface HunkView {
@@ -485,7 +488,7 @@ export type ToWebview =
   | Scoped<{ type: 'event'; event: AgentEvent }>
   | { type: 'config'; config: ConfigView }
   | { type: 'showAgents' }
-  | { type: 'showSettings'; tab?: SettingsTab }
+  | { type: 'showSettings'; tab?: SettingsTab; mcp?: 'servers' | 'catalog' }
   | { type: 'showHistory' }
   | { type: 'history'; tasks: TaskSummary[]; currentId?: string }
   /** Desktop: the tasks of the recent folders, for the session list; taskId: the task open now (saved or not). */
@@ -689,6 +692,10 @@ export type FromWebview =
   | { type: 'importMcp' }
   | { type: 'restartMcp' }
   | { type: 'editMcpServers' }
+  /** Add a server from Orka's bundled catalog: the app builds it from the entry and asks for consent first. */
+  | { type: 'addMcpFromCatalog'; id: string; values: Record<string, string> }
+  /** A catalog entry's page: its homepage, its setup step's page, or where a field's value is created. */
+  | { type: 'openMcpCatalogLink'; id: string; link: 'homepage' | 'setup' | 'field'; field?: string }
   /** The answer to a dialog: the action, the text entered or the index picked; undefined = cancelled. */
   | { type: 'dialogResult'; id: string; value?: string | number }
   /**

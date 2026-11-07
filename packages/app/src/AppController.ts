@@ -31,6 +31,13 @@ import {
   isNewerVersion,
   listModels,
   loadSkills,
+  buildCatalogServer,
+  catalogAvailable,
+  catalogCommandLine,
+  catalogEntry,
+  catalogRunKind,
+  catalogServerName,
+  findCatalogEntry,
   McpManager,
   type McpServerConfig,
   MODEL_CATALOG,
@@ -512,6 +519,16 @@ export class AppController implements Disposable {
       case 'editMcpServers':
         await this.shell.openSettings('mcpServers');
         break;
+      case 'addMcpFromCatalog':
+        await this.addMcpFromCatalog(message.id, message.values);
+        break;
+      case 'openMcpCatalogLink': {
+        const entry = catalogEntry(message.id);
+        const url =
+          message.link === 'setup' ? entry?.setup?.link : message.link === 'field' ? entry?.fields.find((f) => f.name === message.field)?.link : entry?.homepage;
+        if (url?.startsWith('https://')) await this.shell.openExternal(url);
+        break;
+      }
       case 'radar':
         if (message.action === 'poll') await this.radar?.poll();
         else if (message.action === 'analyze') await this.radar?.analyze();
@@ -1150,11 +1167,13 @@ export class AppController implements Disposable {
         state: s?.state ?? 'idle',
         tools: s?.tools ?? 0,
         error: s?.error,
+        catalogId: findCatalogEntry(name, config, process.platform)?.id,
       };
     };
     const own = this.settings.mcp.servers;
     return {
       enabled: this.settings.mcp.enabled,
+      platform: process.platform,
       servers: [
         ...Object.entries(own).map(([n, c]) => view(n, c, 'settings')),
         ...Object.entries(workspace.servers)
@@ -1162,6 +1181,72 @@ export class AppController implements Disposable {
           .map(([n, c]) => view(n, c, 'workspace')),
       ],
     };
+  }
+
+  /**
+   * Add a server from Orka's bundled catalog. The page names only an entry and the values of that
+   * entry's fields; the command, URL and everything else come from the catalog. A modal shows the
+   * exact command or URL and what starting it means (a package runner downloads third-party code
+   * on its first start) and only "Add and turn on" writes it, switched on, to the user-level MCP list.
+   * Values never appear in a message or a log; secret ones are not shown again.
+   */
+  async addMcpFromCatalog(id: string, values: unknown): Promise<void> {
+    const entry = catalogEntry(id);
+    if (!entry) return;
+    if (!catalogAvailable(entry, process.platform)) {
+      void this.shell.message('info', t('{name} is not available on this system.', { name: entry.name }));
+      return;
+    }
+    const given = values && typeof values === 'object' ? (values as Record<string, unknown>) : {};
+    const built = buildCatalogServer(entry, given, process.platform);
+    if (!built.ok) {
+      const text = built.missing.length
+        ? t('Fill in: {fields}', { fields: built.missing.join(', ') })
+        : t('These values cannot be used (a line break, or too long): {fields}', { fields: built.invalid.join(', ') });
+      void this.shell.message('warning', text);
+      return;
+    }
+    const config = built.config;
+    const servers = this.settings.mcp.servers;
+    const name = catalogServerName(entry, Object.keys(servers));
+    const lines: string[] = [];
+    if ('url' in config) {
+      lines.push(t('Address: {url}', { url: config.url }));
+      if (config.headers) lines.push(t('Headers: {names} (values hidden)', { names: Object.keys(config.headers).join(', ') }));
+    } else {
+      lines.push(t('Command: {command}', { command: catalogCommandLine(config) }));
+      if (config.env) lines.push(t('Environment: {names} (values hidden)', { names: Object.keys(config.env).join(', ') }));
+    }
+    const kind = catalogRunKind(entry, process.platform);
+    lines.push(
+      kind === 'download'
+        ? t('On its first start, {runner} downloads this third-party server and runs it on your computer with your user rights. It is made by {vendor}, not by Orka.', {
+            runner: 'command' in config ? config.command : '',
+            vendor: entry.vendor,
+          })
+        : kind === 'program'
+          ? t('Orka starts this program on your computer with your user rights. It is made by {vendor}, not by Orka.', { vendor: entry.vendor })
+          : kind === 'local-url'
+            ? t('Orka connects to a server running on this computer at this address.')
+            : t('Orka sends the agents’ tool requests, and the headers you entered, to this address. It is run by {vendor}, not by Orka.', { vendor: entry.vendor }),
+    );
+    if (entry.fields.some((f) => f.secret && given[f.name])) lines.push(t('Secret values are stored in your Orka settings file and passed only to this server.'));
+    lines.push(t('It is added to your MCP servers (user settings) as {name}, turned on, and starts with the next task.', { name }));
+    const add = t('Add and turn on');
+    const choice = await this.shell.message('warning', t('Add the MCP server {name}?', { name: entry.name }), { modal: true, detail: lines.join('\n\n') }, add);
+    if (choice !== add) return;
+    // The list as stored now (it may have changed while the dialog was open), entries Orka could not
+    // read included, so nothing of the user's is dropped; a name taken meanwhile gets the next one.
+    const stored = this.shell.settings.get<unknown>('mcpServers', {});
+    const current = stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as Record<string, unknown>) : {};
+    const finalName = catalogServerName(entry, [...Object.keys(current), ...Object.keys(this.settings.mcp.servers)]);
+    await this.updateSetting('mcpServers', { ...current, [finalName]: config });
+    void this.shell.message(
+      'info',
+      this.settings.mcp.enabled
+        ? t('{name} was added to your MCP servers. It starts with the next task.', { name: finalName })
+        : t('{name} was added, but MCP is off: turn it on in Settings > MCP.', { name: finalName }),
+    );
   }
 
   /** Copy the MCP servers configured for Claude Code (~/.claude.json) into Orka's settings. */
@@ -2083,9 +2168,9 @@ export class AppController implements Disposable {
     this.shell.post({ type: 'showAgents' });
   }
 
-  showSettings(tab?: SettingsTab): void {
+  showSettings(tab?: SettingsTab, mcp?: 'servers' | 'catalog'): void {
     this.shell.reveal();
-    this.shell.post({ type: 'showSettings', tab });
+    this.shell.post({ type: 'showSettings', tab, ...(mcp ? { mcp } : {}) });
   }
 
   showHistory(): void {

@@ -83,6 +83,7 @@
   "config.fallback.provider": "Where the main agent continues when its provider hits a usage or rate limit, or cannot be reached (e.g. the Claude Code session limit): a provider id, or 'inherit' for off. The rest of that request runs on it.",
   "config.fallback.model": "Fallback model; empty = that provider's default model.",
   "command.showMcp": "Show MCP Servers",
+  "command.showMcpCatalog": "Browse the MCP Catalog",
   "command.importMcpFromClaude": "Import MCP Servers from Claude Code",
   "config.mcp.enabled": "Give the agents the tools of the configured MCP servers (Unity Editor, Blender, databases, ...).",
   "config.mcpServers": "MCP servers by name. Each is either {\"command\": \"...\", \"args\": [...], \"env\": {...}} (a local program speaking stdio) or {\"url\": \"http://localhost:8080/mcp\"} (Streamable HTTP). A .mcp.json in the workspace is used too, after you allow it.",
